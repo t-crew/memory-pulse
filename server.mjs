@@ -20,8 +20,9 @@
  *   MEMORY_PULSE_LEDGER  override the ledger path (default: ./.memory-pulse/events.jsonl)
  */
 import readline from "node:readline";
-import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const API = (process.env.MEMORY_PULSE_API ?? "https://memory-pulse.strategic-innovations.workers.dev").replace(/\/$/, "");
 const KEY = process.env.MEMORY_PULSE_KEY ?? null;
@@ -186,7 +187,7 @@ async function dispatch(msg) {
     return ok(id, {
       protocolVersion: SUPPORTED.includes(wanted) ? wanted : SUPPORTED[0],
       capabilities: { tools: {} },
-      serverInfo: { name: "memory-pulse", version: "0.1.0" },
+      serverInfo: { name: "memory-pulse", version: "0.1.1" },
     });
   }
   if (method === "notifications/initialized" || method === "initialized") return;
@@ -204,8 +205,16 @@ async function dispatch(msg) {
   if (id !== undefined) fail(id, -32601, `method not found: ${method}`);
 }
 
-// Importable for tests; only run the transport when invoked as a binary.
-if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split("/").pop())) {
+// Importable for tests; the transport runs only when this file is the entry
+// point. Compared by REALPATH, not by name: npm invokes the bin through a
+// .bin/memory-pulse symlink, and a basename comparison silently failed there —
+// the published package installed, exited 0, and served nothing. Found by
+// running the stranger-install test against the real registry.
+let isMain = false;
+try {
+  isMain = Boolean(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+} catch { /* argv[1] missing or unreadable — we are being imported */ }
+if (isMain) {
   process.stderr.write(`memory-pulse: ledger ${ledgerPath()} — api ${API}\n`);
   const rl = readline.createInterface({ input: process.stdin, terminal: false });
   // In-flight calls are drained before exit. Exiting the moment stdin closes

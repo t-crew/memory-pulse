@@ -86,3 +86,22 @@ test("a torn ledger line is skipped, not fatal", async () => {
   const out = await handleCall("remember", { cause: "c4", effect: "e4" });
   assert.equal(out.written, true, "the ledger must survive a torn line");
 });
+
+test("the transport starts when invoked through a bin-style symlink, like npm does", async () => {
+  // The 0.1.0 regression: a basename comparison decided "not the main module"
+  // when argv[1] was the .bin/memory-pulse symlink, so the published server
+  // installed fine and served nothing. This runs the real invocation shape.
+  const { mkdtempSync, symlinkSync } = await import("node:fs");
+  const { spawnSync } = await import("node:child_process");
+  const { fileURLToPath } = await import("node:url");
+  const { dirname } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "mp-bin-"));
+  const real = join(dirname(fileURLToPath(import.meta.url)), "..", "server.mjs");
+  const shim = join(dir, "memory-pulse");
+  symlinkSync(real, shim);
+  const out = spawnSync(process.execPath, [shim], {
+    input: '{"jsonrpc":"2.0","id":1,"method":"ping"}\n',
+    encoding: "utf8", timeout: 10000, cwd: dir,
+  });
+  assert.match(out.stdout, /"id":1/, `expected a ping reply through the symlink, got stdout=${JSON.stringify(out.stdout)} stderr=${JSON.stringify(out.stderr?.slice(0, 200))}`);
+});

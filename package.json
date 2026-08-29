@@ -1,14 +1,36 @@
 {
   "name": "memory-pulse",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Causal memory for coding agents that costs ~670 tokens, not your context window. Four MCP tools: re-enter a project, recall what caused what, record findings, run code against memory.",
   "type": "module",
-  "bin": { "memory-pulse": "./server.mjs" },
-  "files": ["server.mjs", "README.md", "LICENSE"],
-  "scripts": { "test": "node --test test/*.test.js" },
-  "keywords": ["mcp", "modelcontextprotocol", "memory", "claude-code", "codex", "agent-memory", "context", "token-savings"],
+  "bin": {
+    "memory-pulse": "server.mjs"
+  },
+  "files": [
+    "server.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": [
+    "mcp",
+    "modelcontextprotocol",
+    "memory",
+    "claude-code",
+    "codex",
+    "agent-memory",
+    "context",
+    "token-savings"
+  ],
   "author": "Travis Crew",
   "license": "MIT",
-  "repository": { "type": "git", "url": "git+https://github.com/t-crew/memory-pulse.git" },
-  "engines": { "node": ">=18" }
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/t-crew/memory-pulse.git"
+  },
+  "engines": {
+    "node": ">=18"
+  }
 }
