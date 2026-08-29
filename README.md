@@ -33,28 +33,28 @@ When the answer isn't there, you get nothing — not a plausible guess.
 
 ## Install
 
-**Claude Code** (plugin — includes the MCP server):
+**Claude Code** (plugin — no npm needed, installs straight from this repo):
 
 ```
 /plugin marketplace add t-crew/memory-pulse
 /plugin install memory-pulse@memory-pulse
 ```
 
-or as a plain MCP server:
+**Codex CLI / Cursor / any MCP client** — clone this repo and point at it
+(zero dependencies, nothing to build):
 
 ```
-claude mcp add memory-pulse -- npx -y memory-pulse
+git clone https://github.com/t-crew/memory-pulse
 ```
-
-**Codex CLI** — add to `~/.codex/config.toml`:
 
 ```toml
+# Codex: ~/.codex/config.toml
 [mcp_servers.memory-pulse]
-command = "npx"
-args = ["-y", "memory-pulse"]
+command = "node"
+args = ["/path/to/memory-pulse/server.mjs"]
 ```
 
-**Cursor / any MCP client** — stdio server, command `npx -y memory-pulse`.
+For other clients: stdio server, command `node /path/to/memory-pulse/server.mjs`.
 
 Then just tell your agent to remember things, and start sessions with "pulse
 the memory". It figures the rest out from the tool descriptions.
