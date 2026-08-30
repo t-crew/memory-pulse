@@ -1,17 +1,27 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
   "name": "io.github.t-crew/memory-pulse",
-  "description": "Causal project memory for coding agents — ~670 tokens of tool definitions, corrections always surface first, ledger stays a local file.",
-  "repository": { "url": "https://github.com/t-crew/memory-pulse", "source": "github" },
-  "version": "0.1.0",
+  "description": "Causal project memory for coding agents \u2014 ~670 tokens of tool definitions, corrections always surface first, ledger stays a local file.",
+  "repository": {
+    "url": "https://github.com/t-crew/memory-pulse",
+    "source": "github"
+  },
+  "version": "0.1.1",
   "packages": [
     {
       "registry_type": "npm",
       "identifier": "memory-pulse",
-      "version": "0.1.0",
-      "transport": { "type": "stdio" },
+      "version": "0.1.1",
+      "transport": {
+        "type": "stdio"
+      },
       "environment_variables": [
-        { "name": "MEMORY_PULSE_KEY", "description": "License key (optional; free tier without one)", "is_required": false, "is_secret": true }
+        {
+          "name": "MEMORY_PULSE_KEY",
+          "description": "License key (optional; free tier without one)",
+          "is_required": false,
+          "is_secret": true
+        }
       ]
     }
   ]
