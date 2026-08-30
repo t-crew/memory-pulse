@@ -187,7 +187,7 @@ async function dispatch(msg) {
     return ok(id, {
       protocolVersion: SUPPORTED.includes(wanted) ? wanted : SUPPORTED[0],
       capabilities: { tools: {} },
-      serverInfo: { name: "memory-pulse", version: "0.1.1" },
+      serverInfo: { name: "memory-pulse", version: "0.1.2" },
     });
   }
   if (method === "notifications/initialized" || method === "initialized") return;
