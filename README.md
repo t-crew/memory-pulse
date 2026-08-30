@@ -1,5 +1,9 @@
 # memory-pulse
 
+[![npm](https://img.shields.io/npm/v/memory-pulse)](https://www.npmjs.com/package/memory-pulse)
+[![license](https://img.shields.io/badge/license-MIT-6366f1)](LICENSE)
+[![MCP](https://img.shields.io/badge/MCP-server-a855f7)](https://github.com/t-crew/memory-pulse)
+
 Causal project memory for coding agents — built for the thing MCP memory
 servers usually get wrong: **the cost of having it installed.**
 
