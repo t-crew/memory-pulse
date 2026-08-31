@@ -258,3 +258,9 @@ test("uploads past 4 KB go up gzipped; the engine's view of the payload is uncha
   assert.equal(last.headers["content-encoding"], "gzip");
   assert.ok(last.body.events.length >= 60, "events arrived intact through gzip");
 });
+
+test("footer: quarantine is not repeated as drift (the brief prints it on its own line)", async () => {
+  const { telemetryFooter } = await import("../server.mjs");
+  const foot = telemetryFooter({ counters: { calls: 2, pulse: 2, correctionsSurfaced: 0, tokensSavedEst: 10 }, drift: { reasons: ["7 note(s) quarantined for instruction-like content"] } });
+  assert.ok(!/drift/.test(foot), foot);
+});

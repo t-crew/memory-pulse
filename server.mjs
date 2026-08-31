@@ -129,7 +129,10 @@ const fmtK = (n) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 10
 export function telemetryFooter(c) {
   const k = c?.counters;
   if (!k || !k.calls) return "";
-  const drift = c.drift?.reasons?.length ? ` · ⚠ drift: ${c.drift.reasons.join("; ")}` : "";
+  // Quarantine is printed on its own line by the brief; the footer carries
+  // the drift reasons that are actually about the ledger changing.
+  const reasons = (c.drift?.reasons ?? []).filter((r) => !/quarantined/.test(r));
+  const drift = reasons.length ? ` · ⚠ drift: ${reasons.join("; ")}` : "";
   return `— memory-pulse · ${k.pulse} re-entries · ${k.correctionsSurfaced} corrections surfaced · ~${fmtK(k.tokensSavedEst)} tokens saved (est., signed)${drift}`;
 }
 
