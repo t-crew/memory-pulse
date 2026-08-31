@@ -32,7 +32,7 @@ Two design decisions do the heavy lifting:
 The failure this prevents: your agent confidently quotes the benchmark number
 you withdrew three sessions ago.
 
-**Silence beats a wrong answer.** Recall is gated by a measured noise floor.
+**Silence beats a wrong answer.** When recall isn't confident enough, it returns nothing rather than guessing.
 When the answer isn't there, you get nothing — not a plausible guess.
 
 ## Install

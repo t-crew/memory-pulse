@@ -140,8 +140,8 @@ export const TOOLS = [
     name: "recall",
     description:
       "Query the causal graph: what an event caused (effects), what caused it (causes), a multi-hop " +
-      "wavefront (pulse), or when an edge was strongest (when). Returns nothing rather than guessing " +
-      "when the answer is below the noise floor.",
+      "chain (pulse), or when a link was strongest (when). Returns nothing rather than guessing " +
+      "when the answer is not confident enough.",
     inputSchema: {
       type: "object",
       properties: {
@@ -216,7 +216,7 @@ async function dispatch(msg) {
     return ok(id, {
       protocolVersion: SUPPORTED.includes(wanted) ? wanted : SUPPORTED[0],
       capabilities: { tools: {} },
-      serverInfo: { name: "memory-pulse", version: "0.1.4" },
+      serverInfo: { name: "memory-pulse", version: "0.1.5" },
     });
   }
   if (method === "notifications/initialized" || method === "initialized") return;
