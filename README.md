@@ -166,3 +166,14 @@ roadmap.)
 **License?** Client: MIT. Engine: proprietary, hosted.
 
 MIT © Travis Crew
+
+## Releasing
+
+```bash
+npm version patch && git push --follow-tags
+```
+
+The tag triggers `.github/workflows/release.yml`, which runs the tests and
+publishes to npm and the MCP registry using GitHub's OIDC identity — no
+tokens in the repo, no one-time passwords. npm attaches provenance
+automatically, so anyone can verify the package was built from this repo.

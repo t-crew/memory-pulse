@@ -1,0 +1,40 @@
+# Release: push a tag (npm version patch && git push --follow-tags) and this
+# workflow publishes to npm and to the MCP registry with NO tokens and NO
+# 2FA prompts — both use GitHub's OIDC identity ("trusted publishing").
+#
+# One-time setup on npmjs.com (package memory-pulse -> Settings -> Trusted
+# Publisher -> GitHub Actions): Organization or user "t-crew", Repository
+# "memory-pulse", Workflow filename "release.yml", Allowed actions "npm publish".
+# After that, npm verifies this workflow's identity and attaches provenance
+# automatically (docs.npmjs.com/trusted-publishers, read 2026-08-31).
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  id-token: write   # OIDC for npm and the MCP registry
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest   # trusted publishing requires GitHub-hosted runners
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: npm >= 11.5.1 (trusted publishing)
+        run: npm install -g npm@latest && npm --version
+      - name: tag must match package.json
+        run: |
+          v="$(node -p 'require("./package.json").version')"
+          [ "${GITHUB_REF_NAME}" = "v${v}" ] || { echo "tag ${GITHUB_REF_NAME} != package version v${v}"; exit 1; }
+      - run: npm test
+      - name: publish to npm (OIDC, provenance automatic)
+        run: npm publish --access public
+      - name: publish to the MCP registry (OIDC)
+        run: |
+          curl -sSL -o mp.tgz https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz
+          tar xzf mp.tgz mcp-publisher
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish
