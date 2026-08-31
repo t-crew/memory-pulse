@@ -20,11 +20,13 @@
  *   MEMORY_PULSE_LEDGER  override the ledger path (default: ./.memory-pulse/events.jsonl)
  */
 import readline from "node:readline";
+import http from "node:http";
+import https from "node:https";
 import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const API = (process.env.MEMORY_PULSE_API ?? "https://memory-pulse.strategic-innovations.workers.dev").replace(/\/$/, "");
+const API = (process.env.MEMORY_PULSE_API ?? "https://pulse.strategic-innovations.ai").replace(/\/$/, "");
 const KEY = process.env.MEMORY_PULSE_KEY ?? null;
 
 // ---------------------------------------------------------------- ledger ----
@@ -99,19 +101,40 @@ function telemetryFooter(c) {
 }
 
 // ------------------------------------------------------------------- api ----
+// Transport: Node's own http(s) on a FRESH HTTP/1.1 connection per call.
+// The global fetch pools an HTTP/2 session that the edge retires after a
+// few large requests, and undici then throws ERR_HTTP2_INVALID_SESSION on
+// reuse instead of reconnecting — `bench` on an 822-event ledger lost 11 of
+// 12 sequential calls to it, and a retry reused the same dead session. No
+// pooling, no session, no dependency.
+function postJson(url, headers, payload) {
+  const u = new URL(url);
+  const mod = u.protocol === "http:" ? http : https;
+  return new Promise((resolve, reject) => {
+    const req = mod.request(u, {
+      method: "POST", agent: false,
+      headers: { ...headers, "content-length": Buffer.byteLength(payload), connection: "close" },
+    }, (res) => {
+      let data = "";
+      res.setEncoding("utf8");
+      res.on("data", (c) => { data += c; });
+      res.on("end", () => resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, json: async () => JSON.parse(data) }));
+    });
+    req.on("error", reject);
+    req.end(payload);
+  });
+}
+
 async function callApi(route, body) {
   const prior = readTelemetry();
   body = { ...body, project: projectName(), ...(prior ? { telemetry: prior } : {}) };
   let res;
   try {
-    res = await fetch(`${API}${route}`, {
-      method: "POST",
-      headers: { "content-type": "application/json", ...(KEY ? { "x-mp-key": KEY } : {}) },
-      body: JSON.stringify(body),
-    });
-  } catch {
+    res = await postJson(`${API}${route}`, { "content-type": "application/json", ...(KEY ? { "x-mp-key": KEY } : {}) }, JSON.stringify(body));
+  } catch (err) {
+    const why = err?.cause?.code || err?.code || err?.message || String(err);
     throw new Error(
-      "memory-pulse API unreachable. `remember` still works (it writes locally); " +
+      `memory-pulse API unreachable (${why}). \`remember\` still works (it writes locally); ` +
       "pulse/recall/execute need the network. Check connectivity or MEMORY_PULSE_API.",
     );
   }
@@ -223,7 +246,7 @@ async function dispatch(msg) {
     return ok(id, {
       protocolVersion: SUPPORTED.includes(wanted) ? wanted : SUPPORTED[0],
       capabilities: { tools: {} },
-      serverInfo: { name: "memory-pulse", version: "0.1.6" },
+      serverInfo: { name: "memory-pulse", version: "0.1.7" },
     });
   }
   if (method === "notifications/initialized" || method === "initialized") return;
@@ -274,7 +297,7 @@ async function cliStats() {
   console.log(`  tokens saved (est.)     ~${k.tokensSavedEst.toLocaleString()}`);
   if (c.reset) console.log(`  note: ${c.reset}`);
   try {
-    const res = await fetch(`${API}/v1/verify-telemetry`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telemetry: c }) });
+    const res = await postJson(`${API}/v1/verify-telemetry`, { "content-type": "application/json" }, JSON.stringify({ telemetry: c }));
     const v = await res.json();
     console.log(v.valid ? "  signature               ✓ verified by the engine (keyless check anyone can repeat)" : `  signature               ✗ ${v.reason ?? "invalid"}`);
   } catch { console.log("  signature               ? engine unreachable"); }
@@ -357,22 +380,28 @@ async function cliBench() {
   console.log(`memory-pulse bench — ${events.length} events, ${corrections.length} corrections`);
   if (pulse.error) { console.log(`  brief: unavailable (${pulse.error})`); }
   else {
-    const first = pulse.text.split("\n").findIndex((l) => l.startsWith("CORRECTIONS"));
-    const surfaced = corrections.filter((c) => pulse.text.includes(`${c.cause} -> ${c.effect}`)).length;
+    const lines = pulse.text.split("\n");
+    const first = lines.findIndex((l) => l.startsWith("CORRECTIONS"));
+    const headerN = Number((lines[first] ?? "").match(/CORRECTIONS \((\d+)\)/)?.[1] ?? 0);
+    const listed = corrections.filter((c) => pulse.text.includes(`${c.cause} -> ${c.effect}`)).length;
     console.log(`  re-entry brief: ${pulse.chars.toLocaleString()} chars vs ${dump.toLocaleString()} char dump (${pulse.savedVsFullDump ?? "no saving on a ledger this small"})`);
-    console.log(`  corrections surfaced first: ${surfaced}/${corrections.length}${first === 0 ? " (block is first)" : first > 0 ? ` (block at line ${first + 1})` : ""}`);
+    console.log(`  corrections: ${headerN}/${corrections.length} counted in the block${first === 0 ? " (block is first)" : first > 0 ? ` (block at line ${first + 1})` : " (NO BLOCK — check this)"}, ${listed} listed at this tier${headerN > listed ? ` (${headerN - listed} elided — a bigger tier lists them all)` : ""}`);
   }
   const enforceable = corrections.filter((c) => c.withdrawn?.length);
   const guardHits = enforceable.filter((c) => findViolations(events, c.withdrawn.join(" ")).length > 0).length;
   console.log(`  guard: ${guardHits}/${enforceable.length} withdrawn-term sets would be blocked if rewritten${corrections.length > enforceable.length ? ` (${corrections.length - enforceable.length} corrections lack withdrawn terms)` : ""}`);
   const sample = events.filter((e) => e.kind !== "correction").slice(-12);
-  let ok = 0, tried = 0;
+  let ok = 0, tried = 0, errors = 0, lastErr = "";
   for (const e of sample) {
     tried++;
-    const r = await callApi("/v1/recall", { events, op: "effects", subject: e.cause, topk: 3 }).catch(() => null);
+    // An API error is NOT a miss. Counting failures as misses would let a
+    // broken network read as a broken memory — report them separately.
+    let r;
+    try { r = await callApi("/v1/recall", { events, op: "effects", subject: e.cause, topk: 3 }); }
+    catch (err) { errors++; lastErr = String(err?.message ?? err); continue; }
     if (r?.result?.hits?.some((h) => h.entity === e.effect)) ok++;
   }
-  if (tried) console.log(`  recall self-consistency: ${ok}/${tried} recent links recovered (effects of cause include the recorded effect)`);
+  if (tried) console.log(`  recall self-consistency: ${ok}/${tried - errors} recent links recovered (top-5 effects of the cause include the recorded effect)${errors ? ` — ${errors} call(s) errored: ${lastErr.slice(0, 80)}` : ""}`);
   console.log(`  telemetry: ${readTelemetry()?.counters ? "signed capsule present — run `stats`" : "none yet"}`);
 }
 
