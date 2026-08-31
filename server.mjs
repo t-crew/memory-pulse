@@ -22,6 +22,7 @@
 import readline from "node:readline";
 import http from "node:http";
 import https from "node:https";
+import { gzipSync } from "node:zlib";
 import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -168,10 +169,14 @@ function writeMemoryKey(k) {
 function postJson(url, headers, payload) {
   const u = new URL(url);
   const mod = u.protocol === "http:" ? http : https;
+  // Ledgers compress 5-10x (notes are prose); anything past 4 KB goes up
+  // gzipped. The engine inflates it; a small body is not worth the header.
+  const gz = Buffer.byteLength(payload) >= 4096;
+  const body = gz ? gzipSync(payload) : Buffer.from(payload);
   return new Promise((resolve, reject) => {
     const req = mod.request(u, {
       method: "POST", agent: false,
-      headers: { ...headers, "content-length": Buffer.byteLength(payload), connection: "close" },
+      headers: { ...headers, ...(gz ? { "content-encoding": "gzip" } : {}), "content-length": body.length, connection: "close" },
     }, (res) => {
       let data = "";
       res.setEncoding("utf8");
@@ -179,7 +184,7 @@ function postJson(url, headers, payload) {
       res.on("end", () => resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, json: async () => JSON.parse(data) }));
     });
     req.on("error", reject);
-    req.end(payload);
+    req.end(body);
   });
 }
 

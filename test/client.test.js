@@ -13,14 +13,18 @@ const SERVER = join(fileURLToPath(new URL(".", import.meta.url)), "..", "server.
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
+import { gunzipSync } from "node:zlib";
 
 // A fake engine so tests never touch the network.
 const seen = [];
 let respond = (route) => ({ status: 200, body: { ok: true, route } });
 const fake = createServer((req, res) => {
-  let data = "";
-  req.on("data", (c) => (data += c));
+  const chunks = [];
+  req.on("data", (c) => chunks.push(c));
   req.on("end", () => {
+    let data = Buffer.concat(chunks);
+    if (req.headers["content-encoding"] === "gzip") data = gunzipSync(data);
+    data = data.toString("utf8");
     const body = data ? JSON.parse(data) : null;
     seen.push({ route: req.url, headers: req.headers, body });
     const r = respond(req.url, body);
@@ -245,4 +249,12 @@ test("memory key: the engine's key is kept beside the ledger, never returned to 
   assert.equal(seen.at(-1).body.wantKey, undefined);
   assert.equal(again.keyStatus.status, "resumed");
   respond = (route) => ({ status: 200, body: { ok: true, route } });
+});
+
+test("uploads past 4 KB go up gzipped; the engine's view of the payload is unchanged", async () => {
+  for (let i = 0; i < 60; i++) await handleCall("remember", { cause: "gz" + i, effect: "gz" + (i + 1), note: "a prose note that repeats itself to be compressible ".repeat(3) });
+  await handleCall("pulse", { tier: "brief" });
+  const last = seen.at(-1);
+  assert.equal(last.headers["content-encoding"], "gzip");
+  assert.ok(last.body.events.length >= 60, "events arrived intact through gzip");
 });
