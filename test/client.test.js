@@ -6,7 +6,10 @@
  */
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+const SERVER = join(fileURLToPath(new URL(".", import.meta.url)), "..", "server.mjs");
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
@@ -104,4 +107,31 @@ test("the transport starts when invoked through a bin-style symlink, like npm do
     encoding: "utf8", timeout: 10000, cwd: dir,
   });
   assert.match(out.stdout, /"id":1/, `expected a ping reply through the symlink, got stdout=${JSON.stringify(out.stdout)} stderr=${JSON.stringify(out.stderr?.slice(0, 200))}`);
+});
+
+test("remember echoes the canonical stored event back", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mp-echo-"));
+  process.env.MEMORY_PULSE_LEDGER = join(dir, "events.jsonl");
+  const r = await handleCall("remember", { cause: "a", effect: "b", note: "the exact note" });
+  assert.equal(r.written, true);
+  assert.equal(r.stored.note, "the exact note");
+  assert.equal(r.stored.t, 1);
+  delete process.env.MEMORY_PULSE_LEDGER;
+});
+
+test("install-hook is idempotent and merges instead of clobbering", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mp-hook-"));
+  writeFileSync(join(dir, "settings.json"), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: "echo existing" }] }] }, model: "keep-me" }));
+  const run = () => execFileSync(process.execPath, [SERVER, "install-hook"], { env: { ...process.env, MEMORY_PULSE_SETTINGS_DIR: dir }, encoding: "utf8" });
+  run(); const second = run();
+  assert.match(second, /already installed/);
+  const s = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8"));
+  assert.equal(s.model, "keep-me", "unrelated settings must survive");
+  assert.equal(s.hooks.SessionStart.length, 2, "existing hook must survive, ours added once");
+});
+
+test("brief with no ledger is a silent no-op (hook must not spam non-users)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mp-brief-"));
+  const out = execFileSync(process.execPath, [SERVER, "brief"], { cwd: dir, encoding: "utf8" });
+  assert.equal(out, "");
 });

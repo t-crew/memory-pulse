@@ -63,7 +63,10 @@ function appendEvent({ cause, effect, note, kind, tags, pinned }) {
   if (Array.isArray(tags) && tags.length) event.tags = tags;
   if (pinned) event.pinned = true;
   appendFileSync(path, JSON.stringify(event) + "\n");
-  return { written: true, t, ledger: path };
+  // Echo the canonical stored event back. A shell-quoting accident once ate a
+  // word from a note SILENTLY; the caller must be able to see what the ledger
+  // actually holds without re-reading the file.
+  return { written: true, t, ledger: path, stored: event };
 }
 
 // ------------------------------------------------------------------- api ----
@@ -187,7 +190,7 @@ async function dispatch(msg) {
     return ok(id, {
       protocolVersion: SUPPORTED.includes(wanted) ? wanted : SUPPORTED[0],
       capabilities: { tools: {} },
-      serverInfo: { name: "memory-pulse", version: "0.1.2" },
+      serverInfo: { name: "memory-pulse", version: "0.1.3" },
     });
   }
   if (method === "notifications/initialized" || method === "initialized") return;
@@ -205,6 +208,45 @@ async function dispatch(msg) {
   if (id !== undefined) fail(id, -32601, `method not found: ${method}`);
 }
 
+// ------------------------------------------------------------------ cli ----
+// `npx memory-pulse brief` — print the re-entry brief and exit. Built for
+// SessionStart hooks: SILENT no-op (exit 0) when the project has no ledger,
+// so installing the hook never adds noise to projects that don't use this.
+async function cliBrief() {
+  const { events } = readEvents();
+  if (!events.length) return;
+  try {
+    const out = await callApi("/v1/pulse", { events, tier: process.env.MEMORY_PULSE_BRIEF_TIER || "brief" });
+    if (out.text) process.stdout.write(out.text + "\n");
+  } catch (e) {
+    // A dead network must not break session start — say so in one line.
+    process.stdout.write(`memory-pulse: brief unavailable (${String(e?.message ?? e).split(".")[0]})\n`);
+  }
+}
+
+// `npx memory-pulse install-hook` — make re-entry automatic: a Claude Code
+// SessionStart hook that runs the brief. Idempotent; merges, never clobbers.
+function cliInstallHook() {
+  const home = process.env.MEMORY_PULSE_SETTINGS_DIR || join(process.env.HOME || "", ".claude");
+  const file = join(home, "settings.json");
+  let settings = {};
+  if (existsSync(file)) {
+    try { settings = JSON.parse(readFileSync(file, "utf8")); }
+    catch { console.error(`refusing to touch ${file}: it is not valid JSON`); process.exit(1); }
+  }
+  const CMD = "npx -y memory-pulse brief";
+  settings.hooks = settings.hooks || {};
+  const list = (settings.hooks.SessionStart = settings.hooks.SessionStart || []);
+  const present = JSON.stringify(list).includes(CMD);
+  if (present) { console.log("hook already installed — nothing to do"); return; }
+  list.push({ hooks: [{ type: "command", command: CMD }] });
+  mkdirSync(home, { recursive: true });
+  writeFileSync(file, JSON.stringify(settings, null, 2) + "\n");
+  console.log(`installed SessionStart hook in ${file}`);
+  console.log("Every Claude Code session now re-enters through the ledger automatically.");
+  console.log("Remove it any time by deleting the memory-pulse entry from hooks.SessionStart.");
+}
+
 // Importable for tests; the transport runs only when this file is the entry
 // point. Compared by REALPATH, not by name: npm invokes the bin through a
 // .bin/memory-pulse symlink, and a basename comparison silently failed there —
@@ -215,6 +257,10 @@ try {
   isMain = Boolean(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
 } catch { /* argv[1] missing or unreadable — we are being imported */ }
 if (isMain) {
+  const sub = process.argv[2];
+  if (sub === "brief") { await cliBrief(); process.exit(0); }
+  if (sub === "install-hook") { cliInstallHook(); process.exit(0); }
+  if (sub && sub !== "serve") { console.error(`unknown command: ${sub} (try: brief, install-hook)`); process.exit(1); }
   process.stderr.write(`memory-pulse: ledger ${ledgerPath()} — api ${API}\n`);
   const rl = readline.createInterface({ input: process.stdin, terminal: false });
   // In-flight calls are drained before exit. Exiting the moment stdin closes
