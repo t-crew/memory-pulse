@@ -51,7 +51,7 @@ function readEvents() {
   return { path, events };
 }
 
-function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn }) {
+function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn, replacement }) {
   const { path, events } = readEvents();
   const dup = events.find((e) => e.cause === cause && e.effect === effect && (e.note ?? "") === (note ?? ""));
   if (dup) return { written: false, reason: "duplicate", t: dup.t, ledger: path };
@@ -69,6 +69,13 @@ function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn }) {
   if (Array.isArray(withdrawn)) {
     const terms = withdrawn.map((w) => String(w).trim()).filter((w) => w.length >= 2);
     if (terms.length) event.withdrawn = terms;
+  }
+  // Replacement terms let the guard tell a REINTRODUCTION ("price is $49")
+  // apart from a DISAVOWAL or comparison ("was $49, now $29"): an edit that
+  // carries a replacement alongside the withdrawn term is allowed.
+  if (Array.isArray(replacement)) {
+    const terms = replacement.map((w) => String(w).trim()).filter((w) => w.length >= 1);
+    if (terms.length) event.replacement = terms;
   }
   appendFileSync(path, JSON.stringify(event) + "\n");
   // Echo the canonical stored event back. A shell-quoting accident once ate a
@@ -207,7 +214,8 @@ export const TOOLS = [
         effect: { type: "string" },
         note: { type: "string", description: "What was measured, and how." },
         kind: { type: "string", enum: ["event", "correction"], description: "Default event." },
-        withdrawn: { type: "array", items: { type: "string" }, description: "For corrections: the exact strings that were withdrawn (a number, a name, a claim). The guard hook blocks any edit that writes them back." },
+        withdrawn: { type: "array", items: { type: "string" }, description: "For corrections: the exact strings that were withdrawn (a number, a name, a claim). The guard hook blocks an edit that writes them back." },
+        replacement: { type: "array", items: { type: "string" }, description: "For corrections: the corrected value(s). An edit containing both a withdrawn term and a replacement (a comparison or disavowal) is allowed through the guard." },
         tags: { type: "array", items: { type: "string" } },
         pinned: { type: "boolean", description: "Never decays out of the brief." },
       },
@@ -258,7 +266,7 @@ async function dispatch(msg) {
     return ok(id, {
       protocolVersion: SUPPORTED.includes(wanted) ? wanted : SUPPORTED[0],
       capabilities: { tools: {} },
-      serverInfo: { name: "memory-pulse", version: "0.1.7" },
+      serverInfo: { name: "memory-pulse", version: "0.1.8" },
     });
   }
   if (method === "notifications/initialized" || method === "initialized") return;
@@ -338,12 +346,20 @@ function textOfToolInput(input) {
   if (Array.isArray(input.edits)) for (const e of input.edits) if (typeof e?.new_string === "string") parts.push(e.new_string);
   return parts.join("\n");
 }
-export function findViolations(events, text) {
+export function findViolations(events, text, filePath = "") {
   const hits = [];
   if (!text) return hits;
+  // The ledger and its sidecars are where corrections are RECORDED; guarding
+  // them would block the act of correcting.
+  if (/(^|[\\/])\.memory-pulse([\\/]|$)/.test(filePath)) return hits;
   for (const e of events) {
     if (e.kind !== "correction" || !Array.isArray(e.withdrawn)) continue;
-    for (const term of e.withdrawn) if (term && text.includes(term)) hits.push({ term, t: e.t, cause: e.cause, effect: e.effect, note: e.note ?? "" });
+    // A comparison or disavowal names the old value next to the new one;
+    // only a bare reintroduction is blocked. (Adversarial review, 2026-08-31:
+    // a guard that fires on "the $49 figure is withdrawn" livelocks the agent.)
+    const disavowed = Array.isArray(e.replacement) && e.replacement.some((r) => r && text.includes(r));
+    if (disavowed) continue;
+    for (const term of e.withdrawn) if (term && text.includes(term)) hits.push({ term, t: e.t, cause: e.cause, effect: e.effect, note: e.note ?? "", replacement: e.replacement ?? [] });
   }
   return hits;
 }
@@ -353,12 +369,12 @@ async function cliGuard() {
   let payload; try { payload = JSON.parse(raw); } catch { return; } // not a hook call: allow
   const text = textOfToolInput(payload.tool_input);
   const { events } = readEvents();
-  const hits = findViolations(events, text);
-  if (!hits.length) return;
   const file = payload.tool_input?.file_path ?? "";
+  const hits = findViolations(events, text, file);
+  if (!hits.length) return;
   try { appendFileSync(violationsPath(), JSON.stringify({ at: new Date().toISOString(), file, hits: hits.map((h) => ({ term: h.term, t: h.t })) }) + "\n"); } catch { /* reporting is best effort */ }
-  const lines = hits.map((h) => `  • "${h.term}" was withdrawn at ledger t${h.t} (${h.cause} -> ${h.effect})${h.note ? `: ${h.note}` : ""}`);
-  process.stderr.write(`memory-pulse guard: this edit reintroduces a withdrawn value.\n${lines.join("\n")}\nUse the corrected value, or record a new correction if the old one is wrong.\n`);
+  const lines = hits.map((h) => `  • "${h.term}" was withdrawn at ledger t${h.t} (${h.cause} -> ${h.effect})${h.note ? `: ${h.note}` : ""}${h.replacement?.length ? ` — use ${h.replacement.join(" / ")}` : ""}`);
+  process.stderr.write(`memory-pulse guard: this edit reintroduces a withdrawn value.\n${lines.join("\n")}\nUse the corrected value (mentioning both old and new in a comparison is fine), or record a new correction if the old one is wrong.\n`);
   process.exit(2);
 }
 
@@ -420,7 +436,11 @@ async function cliBench() {
 // `npx memory-pulse install-hook` — make re-entry automatic: a Claude Code
 // SessionStart hook that runs the brief. Idempotent; merges, never clobbers.
 function cliInstallHook() {
-  const home = process.env.MEMORY_PULSE_SETTINGS_DIR || join(process.env.HOME || "", ".claude");
+  // --project writes to <repo>/.claude/settings.json so the hooks TRAVEL WITH
+  // THE REPO: a teammate who clones is guarded without installing anything.
+  // (Adversarial review, 2026-08-31: a user-scope hook does not spread.)
+  const project = process.argv.includes("--project");
+  const home = process.env.MEMORY_PULSE_SETTINGS_DIR || (project ? join(process.cwd(), ".claude") : join(process.env.HOME || "", ".claude"));
   const file = join(home, "settings.json");
   let settings = {};
   if (existsSync(file)) {
@@ -441,6 +461,7 @@ function cliInstallHook() {
   console.log(`installed ${changed} hook(s) in ${file}`);
   console.log("SessionStart: every session re-enters through the ledger automatically.");
   console.log("PreToolUse (Edit/Write): an edit that writes back a withdrawn value is blocked and explained.");
+  console.log(project ? "Project-scoped: commit .claude/settings.json and every clone is guarded." : "Tip: `install-hook --project` writes the hooks into this repo so teammates inherit them.");
   console.log("Remove either by deleting the memory-pulse entries from hooks.");
 }
 

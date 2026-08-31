@@ -42,13 +42,20 @@ remember({
   effect: "price-corrected-to-29",
   kind: "correction",
   note: "$49 came from a comp analysis; measured willingness to pay is $29",
-  withdrawn: ["$49", "49/seat"]
+  withdrawn: ["$49", "49/seat"],
+  replacement: ["$29"]
 })
 ```
 
 A correction without `withdrawn` terms still surfaces first, but cannot be
 enforced by the guard. Prefer exact tokens (`"1480 rps"`, `"n=14"`) over
-prose.
+prose. Always give the `replacement` too: the guard allows an edit that
+names both the old and the new value (a comparison or a disavowal) and
+blocks only a bare reintroduction.
+
+For a team, run `npx memory-pulse install-hook --project` once and commit
+`.claude/settings.json`: every clone is then re-entered and guarded without
+anyone installing anything.
 
 ## 4. Respect the guard
 

@@ -69,11 +69,13 @@ every brief size, in every session.
 correction is measurably not enough — agents re-violate corrections they were
 just shown. `install-hook` also installs a PreToolUse guard: an Edit or Write
 that writes back a withdrawn value is **blocked**, and the agent is told which
-ledger line retired it and when. Record corrections with the exact terms:
+ledger line retired it and when. A comparison that names the replacement
+("was $49, now $29") passes; only a bare reintroduction is blocked. Record
+corrections with the exact terms:
 
 ```
 remember({ cause: "pricing-shipped", effect: "price-corrected", kind: "correction",
-           note: "measured willingness to pay is $29", withdrawn: ["$49"] })
+           note: "measured willingness to pay is $29", withdrawn: ["$49"], replacement: ["$29"] })
 ```
 
 ### Commands
@@ -85,7 +87,7 @@ npx memory-pulse report         # correction re-violation scoreboard, computed l
 npx memory-pulse bench          # instant measured metrics on YOUR ledger
 npx memory-pulse stats          # your telemetry capsule, signature verified by the engine
 npx memory-pulse badge          # README badge markdown from your own signed numbers
-npx memory-pulse install-hook   # installs both hooks (idempotent)
+npx memory-pulse install-hook   # installs both hooks (idempotent); --project commits them to the repo
 ```
 
 The plugin also ships a **skill** (`skills/memory-pulse/SKILL.md`) that teaches

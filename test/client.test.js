@@ -198,3 +198,18 @@ test("install-hook installs both hooks and stays idempotent", () => {
   const s = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8"));
   assert.equal(s.hooks.PreToolUse[0].matcher, "Edit|Write|MultiEdit");
 });
+
+test("guard: a comparison or disavowal that names the replacement is allowed; a bare reintroduction is not", async () => {
+  const { findViolations } = await import("../server.mjs");
+  const events = [{ t: 3, cause: "a", effect: "b", kind: "correction", withdrawn: ["$49"], replacement: ["$29"] }];
+  assert.equal(findViolations(events, "pricing was $49, corrected to $29").length, 0, "disavowal allowed");
+  assert.equal(findViolations(events, "the $49 plan is our best seller").length, 1, "bare reintroduction blocked");
+  assert.equal(findViolations(events, "$49", ".memory-pulse/events.jsonl").length, 0, "the ledger itself is never guarded");
+});
+
+test("install-hook --project writes into the repo so hooks travel with a clone", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mp-proj-"));
+  const out = execFileSync(process.execPath, [SERVER, "install-hook", "--project"], { cwd: dir, env: { ...process.env, MEMORY_PULSE_SETTINGS_DIR: "" }, encoding: "utf8" });
+  assert.match(out, /Project-scoped/);
+  assert.ok(existsSync(join(dir, ".claude", "settings.json")));
+});
