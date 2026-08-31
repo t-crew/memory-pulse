@@ -4,8 +4,11 @@
 [![license](https://img.shields.io/badge/license-MIT-6366f1)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-server-a855f7)](https://github.com/t-crew/memory-pulse)
 
-Causal project memory for coding agents — built for the thing MCP memory
-servers usually get wrong: **the cost of having it installed.**
+**Error correction for agents.** Agent memory is probabilistic; memory-pulse
+detects the error without reading the state, corrects toward the recorded
+truth, and keeps an exact layer for what must never drift. Causal project
+memory for coding agents — built for the thing MCP memory servers usually
+get wrong: **the cost of having it installed.**
 
 All four tools together cost **~2.5 KB (≈670 tokens) of definitions**
 (cert_c71bba29493a). A test in this repo fails if they ever exceed 4 KB. Compare that to what a typical
