@@ -49,7 +49,7 @@ function readEvents() {
   return { path, events };
 }
 
-function appendEvent({ cause, effect, note, kind, tags, pinned }) {
+function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn }) {
   const { path, events } = readEvents();
   const dup = events.find((e) => e.cause === cause && e.effect === effect && (e.note ?? "") === (note ?? ""));
   if (dup) return { written: false, reason: "duplicate", t: dup.t, ledger: path };
@@ -62,6 +62,12 @@ function appendEvent({ cause, effect, note, kind, tags, pinned }) {
   if (note) event.note = note;
   if (Array.isArray(tags) && tags.length) event.tags = tags;
   if (pinned) event.pinned = true;
+  // Withdrawn terms are what the guard enforces: exact strings that must not
+  // be written again. Only explicit terms count — the guard never guesses.
+  if (Array.isArray(withdrawn)) {
+    const terms = withdrawn.map((w) => String(w).trim()).filter((w) => w.length >= 2);
+    if (terms.length) event.withdrawn = terms;
+  }
   appendFileSync(path, JSON.stringify(event) + "\n");
   // Echo the canonical stored event back. A shell-quoting accident once ate a
   // word from a note SILENTLY; the caller must be able to see what the ledger
@@ -166,6 +172,7 @@ export const TOOLS = [
         effect: { type: "string" },
         note: { type: "string", description: "What was measured, and how." },
         kind: { type: "string", enum: ["event", "correction"], description: "Default event." },
+        withdrawn: { type: "array", items: { type: "string" }, description: "For corrections: the exact strings that were withdrawn (a number, a name, a claim). The guard hook blocks any edit that writes them back." },
         tags: { type: "array", items: { type: "string" } },
         pinned: { type: "boolean", description: "Never decays out of the brief." },
       },
@@ -216,7 +223,7 @@ async function dispatch(msg) {
     return ok(id, {
       protocolVersion: SUPPORTED.includes(wanted) ? wanted : SUPPORTED[0],
       capabilities: { tools: {} },
-      serverInfo: { name: "memory-pulse", version: "0.1.5" },
+      serverInfo: { name: "memory-pulse", version: "0.1.6" },
     });
   }
   if (method === "notifications/initialized" || method === "initialized") return;
@@ -281,6 +288,94 @@ function cliBadge() {
   console.log(`[![memory-pulse](https://img.shields.io/badge/memory--pulse-${label}-6366f1)](https://pulse.strategic-innovations.ai)`);
 }
 
+// ---------------------------------------------------------------- guard ----
+// `npx memory-pulse guard` — a Claude Code PreToolUse hook for Edit/Write.
+// Surfacing a correction is not enough (agents re-violate corrections they
+// were just shown); this ENFORCES it: an edit that writes back a withdrawn
+// term is blocked (exit 2) and the agent is told which ledger line retired
+// it and when. Deterministic, offline, only explicit `withdrawn` terms count.
+const violationsPath = () => join(dirname(ledgerPath()), "violations.jsonl");
+function textOfToolInput(input) {
+  if (!input || typeof input !== "object") return "";
+  const parts = [];
+  if (typeof input.new_string === "string") parts.push(input.new_string);
+  if (typeof input.content === "string") parts.push(input.content);
+  if (Array.isArray(input.edits)) for (const e of input.edits) if (typeof e?.new_string === "string") parts.push(e.new_string);
+  return parts.join("\n");
+}
+export function findViolations(events, text) {
+  const hits = [];
+  if (!text) return hits;
+  for (const e of events) {
+    if (e.kind !== "correction" || !Array.isArray(e.withdrawn)) continue;
+    for (const term of e.withdrawn) if (term && text.includes(term)) hits.push({ term, t: e.t, cause: e.cause, effect: e.effect, note: e.note ?? "" });
+  }
+  return hits;
+}
+async function cliGuard() {
+  let raw = "";
+  for await (const chunk of process.stdin) raw += chunk;
+  let payload; try { payload = JSON.parse(raw); } catch { return; } // not a hook call: allow
+  const text = textOfToolInput(payload.tool_input);
+  const { events } = readEvents();
+  const hits = findViolations(events, text);
+  if (!hits.length) return;
+  const file = payload.tool_input?.file_path ?? "";
+  try { appendFileSync(violationsPath(), JSON.stringify({ at: new Date().toISOString(), file, hits: hits.map((h) => ({ term: h.term, t: h.t })) }) + "\n"); } catch { /* reporting is best effort */ }
+  const lines = hits.map((h) => `  • "${h.term}" was withdrawn at ledger t${h.t} (${h.cause} -> ${h.effect})${h.note ? `: ${h.note}` : ""}`);
+  process.stderr.write(`memory-pulse guard: this edit reintroduces a withdrawn value.\n${lines.join("\n")}\nUse the corrected value, or record a new correction if the old one is wrong.\n`);
+  process.exit(2);
+}
+
+// `npx memory-pulse report` — correction re-violation scoreboard, computed
+// on your machine from files you own. Nothing is sent anywhere.
+function cliReport() {
+  const { events } = readEvents();
+  const corrections = events.filter((e) => e.kind === "correction");
+  let blocks = [];
+  try { blocks = readFileSync(violationsPath(), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)); } catch { /* none yet */ }
+  const byT = new Map();
+  for (const b of blocks) for (const h of b.hits) byT.set(h.t, (byT.get(h.t) ?? 0) + 1);
+  console.log(`memory-pulse report — ${corrections.length} corrections recorded, ${corrections.filter((c) => c.withdrawn?.length).length} with enforceable withdrawn terms`);
+  console.log(`  edits blocked by the guard: ${blocks.reduce((n, b) => n + b.hits.length, 0)}${blocks.length ? ` (last: ${blocks[blocks.length - 1].at.slice(0, 10)})` : ""}`);
+  const top = [...byT.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+  for (const [t, n] of top) { const c = corrections.find((x) => x.t === t); console.log(`  ${n}× t${t} ${c ? `${c.cause} -> ${c.effect}` : ""} — withdrawn: ${c?.withdrawn?.join(", ")}`); }
+  const unenforced = corrections.filter((c) => !c.withdrawn?.length);
+  if (unenforced.length) console.log(`  ${unenforced.length} correction(s) have no withdrawn terms and cannot be enforced — add them with remember(withdrawn: [...])`);
+}
+
+// `npx memory-pulse bench` — instant measured metrics on YOUR ledger: how much
+// re-entry saves, whether every correction surfaces first, whether the guard
+// would block each withdrawn term, and recall self-consistency on your own
+// causal links. Numbers, not adjectives.
+async function cliBench() {
+  const { events } = readEvents();
+  if (!events.length) { console.log("no ledger — nothing to measure yet"); return; }
+  const corrections = events.filter((e) => e.kind === "correction");
+  const dump = JSON.stringify(events).length;
+  const pulse = await callApi("/v1/pulse", { events, tier: "brief" }).catch((e) => ({ error: e.message }));
+  console.log(`memory-pulse bench — ${events.length} events, ${corrections.length} corrections`);
+  if (pulse.error) { console.log(`  brief: unavailable (${pulse.error})`); }
+  else {
+    const first = pulse.text.split("\n").findIndex((l) => l.startsWith("CORRECTIONS"));
+    const surfaced = corrections.filter((c) => pulse.text.includes(`${c.cause} -> ${c.effect}`)).length;
+    console.log(`  re-entry brief: ${pulse.chars.toLocaleString()} chars vs ${dump.toLocaleString()} char dump (${pulse.savedVsFullDump ?? "no saving on a ledger this small"})`);
+    console.log(`  corrections surfaced first: ${surfaced}/${corrections.length}${first === 0 ? " (block is first)" : first > 0 ? ` (block at line ${first + 1})` : ""}`);
+  }
+  const enforceable = corrections.filter((c) => c.withdrawn?.length);
+  const guardHits = enforceable.filter((c) => findViolations(events, c.withdrawn.join(" ")).length > 0).length;
+  console.log(`  guard: ${guardHits}/${enforceable.length} withdrawn-term sets would be blocked if rewritten${corrections.length > enforceable.length ? ` (${corrections.length - enforceable.length} corrections lack withdrawn terms)` : ""}`);
+  const sample = events.filter((e) => e.kind !== "correction").slice(-12);
+  let ok = 0, tried = 0;
+  for (const e of sample) {
+    tried++;
+    const r = await callApi("/v1/recall", { events, op: "effects", subject: e.cause, topk: 3 }).catch(() => null);
+    if (r?.result?.hits?.some((h) => h.entity === e.effect)) ok++;
+  }
+  if (tried) console.log(`  recall self-consistency: ${ok}/${tried} recent links recovered (effects of cause include the recorded effect)`);
+  console.log(`  telemetry: ${readTelemetry()?.counters ? "signed capsule present — run `stats`" : "none yet"}`);
+}
+
 // `npx memory-pulse install-hook` — make re-entry automatic: a Claude Code
 // SessionStart hook that runs the brief. Idempotent; merges, never clobbers.
 function cliInstallHook() {
@@ -291,17 +386,21 @@ function cliInstallHook() {
     try { settings = JSON.parse(readFileSync(file, "utf8")); }
     catch { console.error(`refusing to touch ${file}: it is not valid JSON`); process.exit(1); }
   }
-  const CMD = "npx -y memory-pulse brief";
   settings.hooks = settings.hooks || {};
-  const list = (settings.hooks.SessionStart = settings.hooks.SessionStart || []);
-  const present = JSON.stringify(list).includes(CMD);
-  if (present) { console.log("hook already installed — nothing to do"); return; }
-  list.push({ hooks: [{ type: "command", command: CMD }] });
+  let changed = 0;
+  const BRIEF = "npx -y memory-pulse brief";
+  const start = (settings.hooks.SessionStart = settings.hooks.SessionStart || []);
+  if (!JSON.stringify(start).includes(BRIEF)) { start.push({ hooks: [{ type: "command", command: BRIEF }] }); changed++; }
+  const GUARD = "npx -y memory-pulse guard";
+  const pre = (settings.hooks.PreToolUse = settings.hooks.PreToolUse || []);
+  if (!JSON.stringify(pre).includes(GUARD)) { pre.push({ matcher: "Edit|Write|MultiEdit", hooks: [{ type: "command", command: GUARD }] }); changed++; }
+  if (!changed) { console.log("hooks already installed — nothing to do"); return; }
   mkdirSync(home, { recursive: true });
   writeFileSync(file, JSON.stringify(settings, null, 2) + "\n");
-  console.log(`installed SessionStart hook in ${file}`);
-  console.log("Every Claude Code session now re-enters through the ledger automatically.");
-  console.log("Remove it any time by deleting the memory-pulse entry from hooks.SessionStart.");
+  console.log(`installed ${changed} hook(s) in ${file}`);
+  console.log("SessionStart: every session re-enters through the ledger automatically.");
+  console.log("PreToolUse (Edit/Write): an edit that writes back a withdrawn value is blocked and explained.");
+  console.log("Remove either by deleting the memory-pulse entries from hooks.");
 }
 
 // Importable for tests; the transport runs only when this file is the entry
@@ -317,9 +416,12 @@ if (isMain) {
   const sub = process.argv[2];
   if (sub === "brief") { await cliBrief(); process.exit(0); }
   if (sub === "install-hook") { cliInstallHook(); process.exit(0); }
+  if (sub === "guard") { await cliGuard(); process.exit(0); }
+  if (sub === "report") { cliReport(); process.exit(0); }
+  if (sub === "bench") { await cliBench(); process.exit(0); }
   if (sub === "stats") { await cliStats(); process.exit(0); }
   if (sub === "badge") { cliBadge(); process.exit(0); }
-  if (sub && sub !== "serve") { console.error(`unknown command: ${sub} (try: brief, stats, badge, install-hook)`); process.exit(1); }
+  if (sub && sub !== "serve") { console.error(`unknown command: ${sub} (try: brief, guard, report, bench, stats, badge, install-hook)`); process.exit(1); }
   process.stderr.write(`memory-pulse: ledger ${ledgerPath()} — api ${API}\n`);
   const rl = readline.createInterface({ input: process.stdin, terminal: false });
   // In-flight calls are drained before exit. Exiting the moment stdin closes

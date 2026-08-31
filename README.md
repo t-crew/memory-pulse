@@ -65,14 +65,32 @@ Then tell your agent to remember things. Record a withdrawn number with
 `kind: "correction"` and it will outrank the history that contained it — at
 every brief size, in every session.
 
+**Enforce corrections, don't just surface them.** Showing an agent a
+correction is measurably not enough — agents re-violate corrections they were
+just shown. `install-hook` also installs a PreToolUse guard: an Edit or Write
+that writes back a withdrawn value is **blocked**, and the agent is told which
+ledger line retired it and when. Record corrections with the exact terms:
+
+```
+remember({ cause: "pricing-shipped", effect: "price-corrected", kind: "correction",
+           note: "measured willingness to pay is $29", withdrawn: ["$49"] })
+```
+
 ### Commands
 
 ```
-npx memory-pulse brief          # the re-entry brief (what the hook prints)
+npx memory-pulse brief          # the re-entry brief (what the SessionStart hook prints)
+npx memory-pulse guard          # PreToolUse hook: blocks edits that reintroduce withdrawn terms
+npx memory-pulse report         # correction re-violation scoreboard, computed locally
+npx memory-pulse bench          # instant measured metrics on YOUR ledger
 npx memory-pulse stats          # your telemetry capsule, signature verified by the engine
 npx memory-pulse badge          # README badge markdown from your own signed numbers
-npx memory-pulse install-hook   # Claude Code SessionStart hook
+npx memory-pulse install-hook   # installs both hooks (idempotent)
 ```
+
+The plugin also ships a **skill** (`skills/memory-pulse/SKILL.md`) that teaches
+the agent when to pulse, how to record corrections with withdrawn terms, and
+to respect the guard.
 
 ## What runs where (the privacy contract)
 
@@ -87,7 +105,7 @@ npx memory-pulse install-hook   # Claude Code SessionStart hook
   (`.memory-pulse/telemetry.rain`): the engine advances it on each read call
   and hands it back — it never stores it. `stats` verifies the signature;
   `badge` turns it into a README badge. Delete the file and it restarts.
-- This client is the entire client, zero dependencies, read it in one sitting.
+- This client is the entire client: one file, zero dependencies, readable in one sitting.
 
 ## Pricing
 

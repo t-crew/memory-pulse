@@ -153,3 +153,48 @@ test("telemetry capsule is persisted beside the ledger and sent back on the next
   assert.ok(second.body.project, "project name travels with the request");
   delete process.env.MEMORY_PULSE_LEDGER;
 });
+
+test("guard: an edit that writes back a withdrawn term is blocked (exit 2) and explained", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mp-guard-"));
+  const ledger = join(dir, ".memory-pulse", "events.jsonl");
+  process.env.MEMORY_PULSE_LEDGER = ledger;
+  await handleCall("remember", { cause: "bench", effect: "throughput-withdrawn", kind: "correction", note: "warm cache", withdrawn: ["1480 rps"] });
+  delete process.env.MEMORY_PULSE_LEDGER;
+  const payload = JSON.stringify({ tool_name: "Edit", tool_input: { file_path: "docs/perf.md", old_string: "x", new_string: "we sustain 1480 rps in prod" } });
+  let code = 0, stderr = "";
+  try { execFileSync(process.execPath, [SERVER, "guard"], { input: payload, env: { ...process.env, MEMORY_PULSE_LEDGER: ledger }, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }); }
+  catch (e) { code = e.status; stderr = String(e.stderr); }
+  assert.equal(code, 2, "blocked");
+  assert.match(stderr, /1480 rps/);
+  assert.match(stderr, /withdrawn at ledger t1/);
+  assert.ok(existsSync(join(dir, ".memory-pulse", "violations.jsonl")), "violation recorded for the report");
+  const clean = JSON.stringify({ tool_name: "Edit", tool_input: { file_path: "docs/perf.md", new_string: "we sustain 610 rps cold" } });
+  const out = execFileSync(process.execPath, [SERVER, "guard"], { input: clean, env: { ...process.env, MEMORY_PULSE_LEDGER: ledger }, encoding: "utf8" });
+  assert.equal(out, "", "clean edit passes silently");
+});
+
+test("guard allows everything when the input is not a hook payload or no terms are enforceable", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mp-guard2-"));
+  const out = execFileSync(process.execPath, [SERVER, "guard"], { input: "not json", cwd: dir, encoding: "utf8" });
+  assert.equal(out, "");
+});
+
+test("findViolations only matches explicit withdrawn terms on corrections", async () => {
+  const { findViolations } = await import("../server.mjs");
+  const events = [
+    { t: 1, cause: "a", effect: "b", kind: "event", note: "$49 everywhere" },
+    { t: 2, cause: "b", effect: "c", kind: "correction", withdrawn: ["$49"] },
+  ];
+  assert.equal(findViolations(events, "price is $49").length, 1);
+  assert.equal(findViolations(events, "price is $29").length, 0);
+  assert.equal(findViolations([events[0]], "$49").length, 0, "plain events never enforce");
+});
+
+test("install-hook installs both hooks and stays idempotent", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mp-hook2-"));
+  const run = () => execFileSync(process.execPath, [SERVER, "install-hook"], { env: { ...process.env, MEMORY_PULSE_SETTINGS_DIR: dir }, encoding: "utf8" });
+  assert.match(run(), /installed 2 hook/);
+  assert.match(run(), /already installed/);
+  const s = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8"));
+  assert.equal(s.hooks.PreToolUse[0].matcher, "Edit|Write|MultiEdit");
+});
