@@ -37,31 +37,42 @@ When the answer isn't there, you get nothing — not a plausible guess.
 
 ## Install
 
-**Claude Code** (plugin — no npm needed, installs straight from this repo):
+**Any MCP client, one line** (Claude Code shown):
+
+```
+claude mcp add memory-pulse -- npx -y memory-pulse
+```
+
+**Make re-entry automatic** — a Claude Code SessionStart hook that runs the
+brief before your first prompt (idempotent; merges into your settings, never
+clobbers them; silent in projects that have no ledger):
+
+```
+npx memory-pulse install-hook
+```
+
+**Claude Code plugin** (installs straight from this repo, hook included):
 
 ```
 /plugin marketplace add t-crew/memory-pulse
 /plugin install memory-pulse@memory-pulse
 ```
 
-**Codex CLI / Cursor / any MCP client** — clone this repo and point at it
-(zero dependencies, nothing to build):
+**Codex CLI / Cursor / other clients** — stdio server, command
+`npx -y memory-pulse` (or clone this repo and run `node /path/to/server.mjs`).
+
+Then tell your agent to remember things. Record a withdrawn number with
+`kind: "correction"` and it will outrank the history that contained it — at
+every brief size, in every session.
+
+### Commands
 
 ```
-git clone https://github.com/t-crew/memory-pulse
+npx memory-pulse brief          # the re-entry brief (what the hook prints)
+npx memory-pulse stats          # your telemetry capsule, signature verified by the engine
+npx memory-pulse badge          # README badge markdown from your own signed numbers
+npx memory-pulse install-hook   # Claude Code SessionStart hook
 ```
-
-```toml
-# Codex: ~/.codex/config.toml
-[mcp_servers.memory-pulse]
-command = "node"
-args = ["/path/to/memory-pulse/server.mjs"]
-```
-
-For other clients: stdio server, command `node /path/to/memory-pulse/server.mjs`.
-
-Then just tell your agent to remember things, and start sessions with "pulse
-the memory". It figures the rest out from the tool descriptions.
 
 ## What runs where (the privacy contract)
 
@@ -72,8 +83,11 @@ the memory". It figures the rest out from the tool descriptions.
   which computes the answer and forgets the request. **The service keeps no
   database of your memory** — state arrives in the request and leaves in the
   response.
-- This client is the entire client: ~300 lines, zero dependencies, read it in
-  one sitting.
+- Telemetry is a **signed capsule beside your ledger**
+  (`.memory-pulse/telemetry.rain`): the engine advances it on each read call
+  and hands it back — it never stores it. `stats` verifies the signature;
+  `badge` turns it into a README badge. Delete the file and it restarts.
+- This client is the entire client, zero dependencies, read it in one sitting.
 
 ## Pricing
 
