@@ -51,7 +51,31 @@ function readEvents() {
   return { path, events };
 }
 
+// The engine's injection-through-memory list, mirrored so a refusal happens
+// before the write. Keep in step with the engine; the engine is authoritative.
+const INSTRUCTION_PATTERNS = [
+  ["override", /\b(ignore|disregard|forget)\b[^.\n]{0,40}\b(previous|prior|above|all|earlier)\b[^.\n]{0,20}\b(instructions?|rules?|prompts?)\b/i],
+  ["persona", /\byou are now\b|\bfrom now on,? you\b|\bact as (an?|the) (system|admin|developer)\b/i],
+  ["fake-role-tag", /<\/?\s*(system|assistant|tool|user|human|developer)\s*>|\[(system|assistant|tool)\s*:?\s*\]/i],
+  ["system-prompt", /\b(reveal|print|show|dump)\b[^.\n]{0,30}\b(system prompt|hidden prompt|your instructions)\b/i],
+  ["command-exec", /\b(run|execute|paste)\b[^.\n]{0,25}\b(this|the following)\b[^.\n]{0,15}\b(command|script|shell|code)\b/i],
+  ["shell-pipe", /\b(curl|wget)\b[^\n]{0,120}\|\s*(sudo\s+)?(sh|bash|zsh)\b/i],
+  ["destructive", /\b(rm\s+-rf\s+[\/~]|drop\s+table|truncate\s+table|format\s+c:)/i],
+  ["secret-exfil", /\b(send|post|upload|exfiltrat\w*|leak)\b[^.\n]{0,40}\b(api[\s_-]?keys?|secrets?|tokens?|passwords?|credentials?)\b/i],
+  ["hide-from-user", /\b(do not|don't|never)\b[^.\n]{0,20}\b(tell|show|mention|reveal)\b[^.\n]{0,20}\b(the )?(user|human|operator)\b/i],
+];
+export function instructionLike(text) {
+  if (typeof text !== "string" || !text) return [];
+  return INSTRUCTION_PATTERNS.filter(([, re]) => re.test(text)).map(([id]) => id);
+}
+
 function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn, replacement }) {
+  // Instruction-like notes are refused at the write. The engine quarantines
+  // them at read time too (and reports it), but a note that would be rendered
+  // into every future session as an instruction should never reach the ledger.
+  // Same deterministic list as the engine; no model in the loop.
+  const hits = instructionLike(note);
+  if (hits.length) return { written: false, reason: "instruction-like note refused", patterns: hits, hint: "Record what happened, not what to do. Rephrase as a finding." };
   const { path, events } = readEvents();
   const dup = events.find((e) => e.cause === cause && e.effect === effect && (e.note ?? "") === (note ?? ""));
   if (dup) return { written: false, reason: "duplicate", t: dup.t, ledger: path };
@@ -101,10 +125,11 @@ function writeTelemetry(capsule) {
 }
 const projectName = () => process.env.MEMORY_PULSE_PROJECT || process.cwd().split(/[\\/]/).filter(Boolean).pop() || "project";
 const fmtK = (n) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
-function telemetryFooter(c) {
+export function telemetryFooter(c) {
   const k = c?.counters;
   if (!k || !k.calls) return "";
-  return `— memory-pulse · ${k.pulse} re-entries · ${k.correctionsSurfaced} corrections surfaced · ~${fmtK(k.tokensSavedEst)} tokens saved (est., signed)`;
+  const drift = c.drift?.reasons?.length ? ` · ⚠ drift: ${c.drift.reasons.join("; ")}` : "";
+  return `— memory-pulse · ${k.pulse} re-entries · ${k.correctionsSurfaced} corrections surfaced · ~${fmtK(k.tokensSavedEst)} tokens saved (est., signed)${drift}`;
 }
 
 // ------------------------------------------------------------------- api ----
@@ -188,8 +213,8 @@ export const TOOLS = [
     name: "recall",
     description:
       "Query the causal graph: what an event caused (effects), what caused it (causes), a multi-hop " +
-      "chain (pulse), or when a link was strongest (when). Returns nothing rather than guessing " +
-      "when the answer is not confident enough.",
+      "chain (pulse), or when a link was strongest (when). Hits carry a confidence; `exact` lists the " +
+      "recorded links verbatim, so a weak read never hides a correction. Returns nothing rather than guessing.",
     inputSchema: {
       type: "object",
       properties: {
@@ -266,7 +291,7 @@ async function dispatch(msg) {
     return ok(id, {
       protocolVersion: SUPPORTED.includes(wanted) ? wanted : SUPPORTED[0],
       capabilities: { tools: {} },
-      serverInfo: { name: "memory-pulse", version: "0.1.8" },
+      serverInfo: { name: "memory-pulse", version: "0.1.9" },
     });
   }
   if (method === "notifications/initialized" || method === "initialized") return;
@@ -294,6 +319,9 @@ async function cliBrief() {
   try {
     const out = await callApi("/v1/pulse", { events, tier: process.env.MEMORY_PULSE_BRIEF_TIER || "brief" });
     if (out.text) process.stdout.write(out.text + "\n");
+    if (Array.isArray(out.quarantined) && out.quarantined.length) {
+      process.stdout.write(`⚠ ${out.quarantined.length} note(s) quarantined — instruction-like content was not rendered (t=${out.quarantined.map((q) => q.t).join(", ")})\n`);
+    }
     const foot = telemetryFooter(out.telemetry);
     if (foot) process.stdout.write(foot + "\n");
   } catch (e) {

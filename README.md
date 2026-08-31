@@ -107,6 +107,13 @@ to respect the guard.
   (`.memory-pulse/telemetry.rain`): the engine advances it on each read call
   and hands it back — it never stores it. `stats` verifies the signature;
   `badge` turns it into a README badge. Delete the file and it restarts.
+- **Memory integrity.** A note that reads like an instruction ("ignore previous
+  instructions", "run this command", a fake system tag) is refused by
+  `remember` and, if one is already in a ledger, quarantined at read time and
+  reported — memory is never rendered into your agent's context as an
+  instruction. The signed capsule also raises a **drift alert** when a ledger
+  loses corrections, shrinks, or its usage shape jumps; the brief footer
+  shows it. Both checks are deterministic lists you can read, not a model.
 - This client is the entire client: one file, zero dependencies, readable in one sitting.
 
 ## Pricing
