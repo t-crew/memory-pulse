@@ -154,8 +154,10 @@ function writeMemoryKey(k) {
     writeFileSync(memoryKeyPath(), JSON.stringify(k));
     // The ledger is the source of truth; the key is a rebuildable cache and
     // has no business in version control.
+    // Only in the default layout: a custom ledger directory is the user's to
+    // manage, and this client does not leave files in it uninvited.
     const gi = join(dir, ".gitignore");
-    if (!existsSync(gi)) writeFileSync(gi, "memory.rain\n");
+    if (dir.endsWith(".memory-pulse") && !existsSync(gi)) writeFileSync(gi, "memory.rain\n");
   } catch { /* a read-only checkout must not break a read call */ }
 }
 
