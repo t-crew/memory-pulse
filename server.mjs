@@ -69,8 +69,33 @@ function appendEvent({ cause, effect, note, kind, tags, pinned }) {
   return { written: true, t, ledger: path, stored: event };
 }
 
+// ------------------------------------------------------------- telemetry ----
+// The engine keeps no database, so telemetry lives HERE, beside your ledger,
+// as a signed capsule the engine advances on every read call and hands back.
+// You own it; delete the file and it restarts from zero.
+const telemetryPath = () => join(dirname(ledgerPath()), "telemetry.rain");
+function readTelemetry() {
+  try { return JSON.parse(readFileSync(telemetryPath(), "utf8")); } catch { return null; }
+}
+function writeTelemetry(capsule) {
+  if (!capsule || typeof capsule !== "object") return;
+  try {
+    mkdirSync(dirname(telemetryPath()), { recursive: true });
+    writeFileSync(telemetryPath(), JSON.stringify(capsule, null, 2) + "\n");
+  } catch { /* telemetry is a convenience; a read-only checkout must not break a read call */ }
+}
+const projectName = () => process.env.MEMORY_PULSE_PROJECT || process.cwd().split(/[\\/]/).filter(Boolean).pop() || "project";
+const fmtK = (n) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
+function telemetryFooter(c) {
+  const k = c?.counters;
+  if (!k || !k.calls) return "";
+  return `— memory-pulse · ${k.pulse} re-entries · ${k.correctionsSurfaced} corrections surfaced · ~${fmtK(k.tokensSavedEst)} tokens saved (est., signed)`;
+}
+
 // ------------------------------------------------------------------- api ----
 async function callApi(route, body) {
+  const prior = readTelemetry();
+  body = { ...body, project: projectName(), ...(prior ? { telemetry: prior } : {}) };
   let res;
   try {
     res = await fetch(`${API}${route}`, {
@@ -85,6 +110,7 @@ async function callApi(route, body) {
     );
   }
   const out = await res.json().catch(() => ({}));
+  if (res.ok && out.telemetry) { writeTelemetry(out.telemetry); }
   if (!res.ok) {
     let msg = out.error ?? `API error ${res.status}`;
     if (out.upgrade) msg += ` — upgrade: ${out.upgrade}`;
@@ -190,7 +216,7 @@ async function dispatch(msg) {
     return ok(id, {
       protocolVersion: SUPPORTED.includes(wanted) ? wanted : SUPPORTED[0],
       capabilities: { tools: {} },
-      serverInfo: { name: "memory-pulse", version: "0.1.3" },
+      serverInfo: { name: "memory-pulse", version: "0.1.4" },
     });
   }
   if (method === "notifications/initialized" || method === "initialized") return;
@@ -218,10 +244,41 @@ async function cliBrief() {
   try {
     const out = await callApi("/v1/pulse", { events, tier: process.env.MEMORY_PULSE_BRIEF_TIER || "brief" });
     if (out.text) process.stdout.write(out.text + "\n");
+    const foot = telemetryFooter(out.telemetry);
+    if (foot) process.stdout.write(foot + "\n");
   } catch (e) {
     // A dead network must not break session start — say so in one line.
     process.stdout.write(`memory-pulse: brief unavailable (${String(e?.message ?? e).split(".")[0]})\n`);
   }
+}
+
+// `npx memory-pulse stats` — the signed telemetry capsule, verified keylessly
+// against the engine so the numbers you share are numbers we signed.
+async function cliStats() {
+  const c = readTelemetry();
+  if (!c) { console.log("no telemetry yet — run a pulse first"); return; }
+  const k = c.counters;
+  console.log(`memory-pulse telemetry for "${c.project}" (${c.since.slice(0, 10)} → ${c.updated.slice(0, 10)})`);
+  console.log(`  re-entries (pulse)      ${k.pulse}`);
+  console.log(`  recall / execute        ${k.recall} / ${k.execute}`);
+  console.log(`  corrections recorded    ${k.correctionsRecorded}`);
+  console.log(`  corrections surfaced    ${k.correctionsSurfaced}`);
+  console.log(`  largest ledger seen     ${k.maxEvents} events`);
+  console.log(`  tokens saved (est.)     ~${k.tokensSavedEst.toLocaleString()}`);
+  if (c.reset) console.log(`  note: ${c.reset}`);
+  try {
+    const res = await fetch(`${API}/v1/verify-telemetry`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telemetry: c }) });
+    const v = await res.json();
+    console.log(v.valid ? "  signature               ✓ verified by the engine (keyless check anyone can repeat)" : `  signature               ✗ ${v.reason ?? "invalid"}`);
+  } catch { console.log("  signature               ? engine unreachable"); }
+}
+
+// `npx memory-pulse badge` — a README badge from your own signed numbers.
+function cliBadge() {
+  const c = readTelemetry();
+  const n = c?.counters?.tokensSavedEst ?? 0;
+  const label = `${fmtK(n)}_tokens_saved`.replace(/-/g, "--");
+  console.log(`[![memory-pulse](https://img.shields.io/badge/memory--pulse-${label}-6366f1)](https://pulse.strategic-innovations.ai)`);
 }
 
 // `npx memory-pulse install-hook` — make re-entry automatic: a Claude Code
@@ -260,7 +317,9 @@ if (isMain) {
   const sub = process.argv[2];
   if (sub === "brief") { await cliBrief(); process.exit(0); }
   if (sub === "install-hook") { cliInstallHook(); process.exit(0); }
-  if (sub && sub !== "serve") { console.error(`unknown command: ${sub} (try: brief, install-hook)`); process.exit(1); }
+  if (sub === "stats") { await cliStats(); process.exit(0); }
+  if (sub === "badge") { cliBadge(); process.exit(0); }
+  if (sub && sub !== "serve") { console.error(`unknown command: ${sub} (try: brief, stats, badge, install-hook)`); process.exit(1); }
   process.stderr.write(`memory-pulse: ledger ${ledgerPath()} — api ${API}\n`);
   const rl = readline.createInterface({ input: process.stdin, terminal: false });
   // In-flight calls are drained before exit. Exiting the moment stdin closes

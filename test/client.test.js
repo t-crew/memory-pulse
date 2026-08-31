@@ -135,3 +135,21 @@ test("brief with no ledger is a silent no-op (hook must not spam non-users)", ()
   const out = execFileSync(process.execPath, [SERVER, "brief"], { cwd: dir, encoding: "utf8" });
   assert.equal(out, "");
 });
+
+test("telemetry capsule is persisted beside the ledger and sent back on the next call", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mp-tel-"));
+  process.env.MEMORY_PULSE_LEDGER = join(dir, ".memory-pulse", "events.jsonl");
+  await handleCall("remember", { cause: "a", effect: "b" });
+  seen.length = 0;
+  respond = (route, body) => ({ status: 200, body: { text: "brief", telemetry: { schema: "catalyst.rain.telemetry.v1", project: body.project, counters: { calls: (body.telemetry?.counters?.calls ?? 0) + 1, pulse: 1, correctionsSurfaced: 0, tokensSavedEst: 12 }, sig: "x" } } });
+  await handleCall("pulse", {});
+  const capsulePath = join(dir, ".memory-pulse", "telemetry.rain");
+  assert.ok(existsSync(capsulePath), "capsule written beside the ledger");
+  const stored = JSON.parse(readFileSync(capsulePath, "utf8"));
+  assert.equal(stored.schema, "catalyst.rain.telemetry.v1");
+  await handleCall("pulse", {});
+  const second = seen[seen.length - 1];
+  assert.equal(second.body.telemetry.schema, "catalyst.rain.telemetry.v1", "prior capsule rides in the next request");
+  assert.ok(second.body.project, "project name travels with the request");
+  delete process.env.MEMORY_PULSE_LEDGER;
+});
