@@ -125,12 +125,24 @@ function postJson(url, headers, payload) {
   });
 }
 
+// Transient transport failures on a fresh connection (a TLS record hiccup, a
+// reset) get exactly one retry — a new connection each time, so the retry
+// means something. Anything else surfaces immediately with its real cause.
+const TRANSIENT = /ERR_SSL|ECONNRESET|EPIPE|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN/;
+async function postJsonRetry(url, headers, payload) {
+  try { return await postJson(url, headers, payload); }
+  catch (first) {
+    if (!TRANSIENT.test(String(first?.code || first?.message || ""))) throw first;
+    return postJson(url, headers, payload);
+  }
+}
+
 async function callApi(route, body) {
   const prior = readTelemetry();
   body = { ...body, project: projectName(), ...(prior ? { telemetry: prior } : {}) };
   let res;
   try {
-    res = await postJson(`${API}${route}`, { "content-type": "application/json", ...(KEY ? { "x-mp-key": KEY } : {}) }, JSON.stringify(body));
+    res = await postJsonRetry(`${API}${route}`, { "content-type": "application/json", ...(KEY ? { "x-mp-key": KEY } : {}) }, JSON.stringify(body));
   } catch (err) {
     const why = err?.cause?.code || err?.code || err?.message || String(err);
     throw new Error(
