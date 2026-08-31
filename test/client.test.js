@@ -229,3 +229,20 @@ test("brief footer carries a signed drift reason when the capsule has one", asyn
   assert.match(foot, /drift: ledger lost 1 correction/);
   assert.match(telemetryFooter({ counters: { calls: 1, pulse: 1, correctionsSurfaced: 0, tokensSavedEst: 0 } }), /memory-pulse/);
 });
+
+test("memory key: the engine's key is kept beside the ledger, never returned to the agent, and presented on the next read", async () => {
+  const { existsSync: ex, readFileSync: rf } = await import("node:fs");
+  const { dirname: dn, join: jn } = await import("node:path");
+  const dir = process.env.MEMORY_PULSE_LEDGER ? dn(process.env.MEMORY_PULSE_LEDGER) : jn(process.cwd(), ".memory-pulse");
+  respond = (route) => ({ status: 200, body: { ok: true, route, key: { schema: "catalyst.rain.memory-key.v1", width: 16384, events: 2, state: "AAAA", tag: "t" } } });
+  const out = await handleCall("pulse", { tier: "brief" });
+  assert.equal(out.key, undefined, "a 1 MB key must never land in the agent's context");
+  assert.ok(ex(jn(dir, "memory.rain")), "key persisted beside the ledger");
+  assert.equal(rf(jn(dir, ".gitignore"), "utf8").trim(), "memory.rain", "the cache is kept out of version control");
+  respond = (route) => ({ status: 200, body: { ok: true, route, keyStatus: { status: "resumed", newEvents: 0 } } });
+  const again = await handleCall("pulse", { tier: "brief" });
+  assert.equal(seen.at(-1).body.key.schema, "catalyst.rain.memory-key.v1", "the stored key rides on the next read");
+  assert.equal(seen.at(-1).body.wantKey, undefined);
+  assert.equal(again.keyStatus.status, "resumed");
+  respond = (route) => ({ status: 200, body: { ok: true, route } });
+});

@@ -107,6 +107,13 @@ to respect the guard.
   (`.memory-pulse/telemetry.rain`): the engine advances it on each read call
   and hands it back — it never stores it. `stats` verifies the signature;
   `badge` turns it into a README badge. Delete the file and it restarts.
+- **State persistence, no database.** After a read the engine hands back a
+  signed **memory key** (`.memory-pulse/memory.rain`, git-ignored). The next
+  read presents it and the engine resumes from it, ingesting only the events
+  recorded since — the answer is byte-identical to a full rebuild, and any
+  mismatch (edited history, a stepped ledger size, a bad signature) falls back
+  to a rebuild and says why. Lose the file and you lose nothing but one
+  rebuild. `MEMORY_PULSE_MEMORY_KEY=off` disables it.
 - **Memory integrity.** A note that reads like an instruction ("ignore previous
   instructions", "run this command", a fake system tag) is refused by
   `remember` and, if one is already in a ledger, quarantined at read time and

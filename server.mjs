@@ -132,6 +132,32 @@ export function telemetryFooter(c) {
   return `— memory-pulse · ${k.pulse} re-entries · ${k.correctionsSurfaced} corrections surfaced · ~${fmtK(k.tokensSavedEst)} tokens saved (est., signed)${drift}`;
 }
 
+// ------------------------------------------------------------ memory key ----
+// State persistence without a database. After a read the engine hands back a
+// signed memory key; presenting it on the next read resumes the memory and
+// ingests only the events recorded since (measured: a full re-entry on an
+// 825-event ledger went from 4.5 s to 1.5 s). It lives beside your ledger as
+// memory.rain, it is yours, and a lost or stale key costs one rebuild — never
+// data. It never enters the agent's context. MEMORY_PULSE_MEMORY_KEY=off disables it.
+const memoryKeyPath = () => join(dirname(ledgerPath()), "memory.rain");
+const memoryKeyOn = () => (process.env.MEMORY_PULSE_MEMORY_KEY || "on") !== "off";
+function readMemoryKey() {
+  if (!memoryKeyOn()) return null;
+  try { return JSON.parse(readFileSync(memoryKeyPath(), "utf8")); } catch { return null; }
+}
+function writeMemoryKey(k) {
+  if (!memoryKeyOn() || !k || typeof k !== "object") return;
+  try {
+    const dir = dirname(memoryKeyPath());
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(memoryKeyPath(), JSON.stringify(k));
+    // The ledger is the source of truth; the key is a rebuildable cache and
+    // has no business in version control.
+    const gi = join(dir, ".gitignore");
+    if (!existsSync(gi)) writeFileSync(gi, "memory.rain\n");
+  } catch { /* a read-only checkout must not break a read call */ }
+}
+
 // ------------------------------------------------------------------- api ----
 // Transport: Node's own http(s) on a FRESH HTTP/1.1 connection per call.
 // The global fetch pools an HTTP/2 session that the edge retires after a
@@ -171,7 +197,9 @@ async function postJsonRetry(url, headers, payload) {
 
 async function callApi(route, body) {
   const prior = readTelemetry();
-  body = { ...body, project: projectName(), ...(prior ? { telemetry: prior } : {}) };
+  const mk = readMemoryKey();
+  const wantKey = !mk && memoryKeyOn() && Array.isArray(body.events) && body.events.length >= 500;
+  body = { ...body, project: projectName(), ...(prior ? { telemetry: prior } : {}), ...(mk ? { key: mk } : wantKey ? { wantKey: true } : {}) };
   let res;
   try {
     res = await postJsonRetry(`${API}${route}`, { "content-type": "application/json", ...(KEY ? { "x-mp-key": KEY } : {}) }, JSON.stringify(body));
@@ -184,6 +212,7 @@ async function callApi(route, body) {
   }
   const out = await res.json().catch(() => ({}));
   if (res.ok && out.telemetry) { writeTelemetry(out.telemetry); }
+  if (res.ok && out.key) { writeMemoryKey(out.key); delete out.key; }
   if (!res.ok) {
     let msg = out.error ?? `API error ${res.status}`;
     if (out.upgrade) msg += ` — upgrade: ${out.upgrade}`;
@@ -291,7 +320,7 @@ async function dispatch(msg) {
     return ok(id, {
       protocolVersion: SUPPORTED.includes(wanted) ? wanted : SUPPORTED[0],
       capabilities: { tools: {} },
-      serverInfo: { name: "memory-pulse", version: "0.1.9" },
+      serverInfo: { name: "memory-pulse", version: "0.2.0" },
     });
   }
   if (method === "notifications/initialized" || method === "initialized") return;
