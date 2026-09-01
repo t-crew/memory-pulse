@@ -49,6 +49,13 @@ jobs:
           done
           [ "$(node -p 'require("./server.json").packages[0].version')" = "$v" ] || { echo "server.json packages[0].version != $v"; exit 1; }
       - run: npm test
+      - name: OIDC diagnostic — the identity this job presents, and the registry's answer (never prints a token)
+        run: |
+          idt="$(curl -sS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" -H "Accept: application/json" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=npm:registry.npmjs.org" | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).value || ""')"
+          [ -n "$idt" ] || { echo "no id_token from GitHub — is permissions.id-token: write set?"; exit 0; }
+          printf '%s' "$idt" | node -e 'const t=require("fs").readFileSync(0,"utf8").split(".")[1]; const c=JSON.parse(Buffer.from(t,"base64url").toString()); console.log("claims npm matches on:", JSON.stringify({repository:c.repository, repository_owner:c.repository_owner, workflow_ref:c.workflow_ref, job_workflow_ref:c.job_workflow_ref, environment:c.environment??null, ref:c.ref, aud:c.aud}))'
+          code="$(curl -sS -o "$RUNNER_TEMP/xchg.json" -w '%{http_code}' -X POST -H "Authorization: Bearer ${idt}" -H "Content-Type: application/json" https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/memory-pulse)"
+          if [ "$code" = "200" ] || [ "$code" = "201" ]; then echo "registry exchange OK (${code}) — this workflow identity is a trusted publisher for memory-pulse"; else echo "registry exchange ${code}:"; cat "$RUNNER_TEMP/xchg.json"; echo; fi
       # Both publish steps are idempotent so a re-run (say, after the Trusted
       # Publisher setting was added late) cannot fail on "version already
       # exists" at npm and then never reach the registry.
