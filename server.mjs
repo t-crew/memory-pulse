@@ -70,7 +70,8 @@ export function instructionLike(text) {
   return INSTRUCTION_PATTERNS.filter(([, re]) => re.test(text)).map(([id]) => id);
 }
 
-function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn, replacement }) {
+const t_next = (events) => events.reduce((m, e) => Math.max(m, e.t ?? 0), 0) + 1;
+function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn, replacement, supersedes }) {
   // Instruction-like notes are refused at the write. The engine quarantines
   // them at read time too (and reports it), but a note that would be rendered
   // into every future session as an instruction should never reach the ledger.
@@ -101,6 +102,17 @@ function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn, repla
   if (Array.isArray(replacement)) {
     const terms = replacement.map((w) => String(w).trim()).filter((w) => w.length >= 1);
     if (terms.length) event.replacement = terms;
+  }
+  // A correction of a correction: the earlier event's withdrawn terms stop
+  // binding (only the latest binds). The ledger is append-only, so this is
+  // the only way to narrow a term that turned out too broad — the first
+  // estate correction withdrew a bare "$79", which is also our own price.
+  if (Array.isArray(supersedes)) {
+    const ts = [...new Set(supersedes.map(Number).filter((t) => Number.isInteger(t) && t >= 1 && t < t_next(events)))].sort((a, b) => a - b);
+    if (ts.length) {
+      if ((kind || "event") !== "correction") return { written: false, reason: "supersedes belongs on a correction", hint: "Set kind='correction' when retiring an earlier correction's withdrawn terms." };
+      event.supersedes = ts;
+    }
   }
   appendFileSync(path, JSON.stringify(event) + "\n");
   // Echo the canonical stored event back. A shell-quoting accident once ate a
@@ -280,6 +292,7 @@ export const TOOLS = [
         kind: { type: "string", enum: ["event", "correction"], description: "Default event." },
         withdrawn: { type: "array", items: { type: "string" }, description: "For corrections: the exact strings that were withdrawn (a number, a name, a claim). The guard hook blocks an edit that writes them back." },
         replacement: { type: "array", items: { type: "string" }, description: "For corrections: the corrected value(s). An edit containing both a withdrawn term and a replacement (a comparison or disavowal) is allowed through the guard." },
+        supersedes: { type: "array", items: { type: "number" }, description: "For corrections: ledger t values of earlier corrections whose withdrawn terms no longer bind." },
         tags: { type: "array", items: { type: "string" } },
         pinned: { type: "boolean", description: "Never decays out of the brief." },
       },
@@ -413,14 +426,22 @@ function textOfToolInput(input) {
   if (Array.isArray(input.edits)) for (const e of input.edits) if (typeof e?.new_string === "string") parts.push(e.new_string);
   return parts.join("\n");
 }
+// Ledger t values whose withdrawn terms a later correction retired.
+export function supersededSet(events) {
+  const retired = new Set();
+  for (const e of events) if (e.kind === "correction" && Array.isArray(e.supersedes)) for (const t of e.supersedes) retired.add(t);
+  return retired;
+}
 export function findViolations(events, text, filePath = "") {
   const hits = [];
   if (!text) return hits;
   // The ledger and its sidecars are where corrections are RECORDED; guarding
   // them would block the act of correcting.
   if (/(^|[\\/])\.memory-pulse([\\/]|$)/.test(filePath)) return hits;
+  const retired = supersededSet(events);
   for (const e of events) {
     if (e.kind !== "correction" || !Array.isArray(e.withdrawn)) continue;
+    if (retired.has(e.t)) continue; // a later correction narrowed or replaced it
     // A comparison or disavowal names the old value next to the new one;
     // only a bare reintroduction is blocked. (Adversarial review, 2026-08-31:
     // a guard that fires on "the $49 figure is withdrawn" livelocks the agent.)
@@ -482,7 +503,8 @@ async function cliBench() {
     console.log(`  re-entry brief: ${pulse.chars.toLocaleString()} chars vs ${dump.toLocaleString()} char dump (${pulse.savedVsFullDump ?? "no saving on a ledger this small"})`);
     console.log(`  corrections: ${headerN}/${corrections.length} counted in the block${first === 0 ? " (block is first)" : first > 0 ? ` (block at line ${first + 1})` : " (NO BLOCK — check this)"}, ${listed} listed at this tier${headerN > listed ? ` (${headerN - listed} elided — a bigger tier lists them all)` : ""}`);
   }
-  const enforceable = corrections.filter((c) => c.withdrawn?.length);
+  const retiredSet = supersededSet(events);
+  const enforceable = corrections.filter((c) => c.withdrawn?.length && !retiredSet.has(c.t));
   const guardHits = enforceable.filter((c) => findViolations(events, c.withdrawn.join(" ")).length > 0).length;
   console.log(`  guard: ${guardHits}/${enforceable.length} withdrawn-term sets would be blocked if rewritten${corrections.length > enforceable.length ? ` (${corrections.length - enforceable.length} corrections lack withdrawn terms)` : ""}`);
   const sample = events.filter((e) => e.kind !== "correction").slice(-12);

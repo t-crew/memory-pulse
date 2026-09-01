@@ -86,6 +86,7 @@ remember({ cause: "pricing-shipped", effect: "price-corrected", kind: "correctio
 ```
 npx memory-pulse brief          # the re-entry brief (what the SessionStart hook prints)
 npx memory-pulse guard          # PreToolUse hook: blocks edits that reintroduce withdrawn terms
+                                # (a later correction can `supersedes: [t]` an earlier one — only the latest binds)
 npx memory-pulse report         # correction re-violation scoreboard, computed locally
 npx memory-pulse bench          # instant measured metrics on YOUR ledger
 npx memory-pulse stats          # your telemetry capsule, signature verified by the engine
