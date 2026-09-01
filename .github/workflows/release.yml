@@ -41,10 +41,17 @@ jobs:
           done
           [ "$(node -p 'require("./server.json").packages[0].version')" = "$v" ] || { echo "server.json packages[0].version != $v"; exit 1; }
       - run: npm test
-      - name: publish to npm (OIDC, provenance automatic)
-        run: npm publish --access public
-      - name: publish to the MCP registry (OIDC)
+      # Both publish steps are idempotent so a re-run (say, after the Trusted
+      # Publisher setting was added late) cannot fail on "version already
+      # exists" at npm and then never reach the registry.
+      - name: publish to npm (OIDC, provenance automatic; skipped if this version is already live)
         run: |
+          v="$(node -p 'require("./package.json").version')"
+          if npm view "memory-pulse@${v}" version >/dev/null 2>&1; then echo "npm already has ${v} — skipping"; else npm publish --access public; fi
+      - name: publish to the MCP registry (OIDC; skipped if this version is already listed)
+        run: |
+          v="$(node -p 'require("./package.json").version')"
+          if curl -sf "https://registry.modelcontextprotocol.io/v0/servers?search=io.github.t-crew/memory-pulse" | grep -q "\"version\":\"${v}\""; then echo "registry already has ${v} — skipping"; exit 0; fi
           curl -sSL -o mp.tgz https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz
           tar xzf mp.tgz mcp-publisher
           ./mcp-publisher login github-oidc
