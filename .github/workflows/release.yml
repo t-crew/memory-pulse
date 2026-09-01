@@ -21,10 +21,16 @@ jobs:
     runs-on: ubuntu-latest   # trusted publishing requires GitHub-hosted runners
     steps:
       - uses: actions/checkout@v5
+      # No `registry-url:` here on purpose. With it, setup-node writes an
+      # .npmrc line `_authToken=${NODE_AUTH_TOKEN}` and exports the placeholder
+      # NODE_AUTH_TOKEN=XXXXX-XXXXX-XXXXX-XXXXX; npm then publishes with that
+      # bogus token and never exchanges the GitHub OIDC identity — the registry
+      # answers E404 "not found or no permission". Measured on run 33493544779
+      # (three attempts, 2026-09-01). With no token configured, npm >= 11.5.1
+      # uses the runner's id-token and the Trusted Publisher.
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
-          registry-url: https://registry.npmjs.org
+          node-version: 24
       - name: npm >= 11.5.1 (trusted publishing)
         run: npm install -g npm@latest && npm --version
       - name: tag must match package.json, and every manifest must match package.json
