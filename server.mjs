@@ -73,7 +73,7 @@ export function loadedLine(led, events, opts = {}) {
   if (led.malformed?.length) parts.push(`⚠ ${led.malformed.length} malformed line${led.malformed.length === 1 ? "" : "s"} skipped: ${led.malformed.slice(0, 5).join(", ")}${led.malformed.length > 5 ? "…" : ""}`);
   if (opts.keyStatus?.status === "resumed") parts.push(`memory key resumed (+${opts.keyStatus.newEvents ?? 0} new)`);
   else if (opts.keyStatus?.status === "rebuilt") parts.push(`memory key rebuilt${opts.keyStatus.reason ? ` (${opts.keyStatus.reason})` : ""}`);
-  if (opts.tier) parts.push(`tier ${opts.tier}${opts.chars ? `, ${opts.chars.toLocaleString()} chars` : ""}`);
+  if (opts.tier) parts.push(`tier ${opts.tier}${opts.chars ? `, ${opts.chars.toLocaleString()} chars` : ""}${opts.budget ? ` (budget ${opts.budget} tokens)` : ""}`);
   return `memory-pulse: ${parts.join(" · ")}`;
 }
 const relPath = (p) => { const cwd = process.cwd(); return p.startsWith(cwd + "/") ? p.slice(cwd.length + 1) : p; };
@@ -284,7 +284,8 @@ export const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        tier: { type: "string", enum: TIERS, description: "index (smallest) → full. Default brief." },
+        tier: { type: "string", enum: TIERS, description: "index (smallest) → full. Default brief; omit it with `budget` to get the richest tier that fits." },
+        budget: { type: "number", description: "Tokens you can spare for the brief. The brief is sized to fit; corrections always come first and whole." },
         root: { type: "string", description: "Entity to centre the causal front on." },
       },
     },
@@ -352,7 +353,7 @@ export async function handleCall(name, args = {}) {
   const { path, events } = readEvents();
   if (!events.length) return { empty: true, ledger: path, hint: "Nothing recorded yet — use `remember` to start." };
 
-  if (name === "pulse") return callApi("/v1/pulse", { events, tier: args.tier, root: args.root });
+  if (name === "pulse") return callApi("/v1/pulse", { events, ...(args.tier ? { tier: args.tier } : args.budget ? {} : { tier: undefined }), root: args.root, ...(Number.isFinite(args.budget) && args.budget >= 1 ? { budget: args.budget } : {}) });
   if (name === "recall") return callApi("/v1/recall", { events, op: args.op, subject: args.subject, object: args.object, topk: args.topk });
   if (name === "execute") return callApi("/v1/execute", { events, program: args.program });
   throw new Error(`unknown tool: ${name}`);
@@ -398,10 +399,13 @@ async function cliBrief() {
   const led = readEvents();
   const { events } = led;
   if (!events.length) return;
-  const tier = process.env.MEMORY_PULSE_BRIEF_TIER || "brief";
+  const bi = process.argv.indexOf("--budget");
+  const budget = bi >= 0 ? Number(process.argv[bi + 1]) : (process.env.MEMORY_PULSE_BRIEF_BUDGET ? Number(process.env.MEMORY_PULSE_BRIEF_BUDGET) : undefined);
+  if (budget !== undefined && !(Number.isFinite(budget) && budget >= 1)) { console.error("brief --budget takes a positive number of tokens"); process.exit(1); }
+  const tier = process.env.MEMORY_PULSE_BRIEF_TIER || (budget ? undefined : "brief");
   try {
-    const out = await callApi("/v1/pulse", { events, tier });
-    process.stdout.write(loadedLine(led, events, { keyStatus: out.keyStatus, tier, chars: out.text?.length }) + "\n");
+    const out = await callApi("/v1/pulse", { events, ...(tier ? { tier } : {}), ...(budget ? { budget } : {}) });
+    process.stdout.write(loadedLine(led, events, { keyStatus: out.keyStatus, tier: out.tier ?? tier, chars: out.text?.length, budget }) + "\n");
     if (out.text) process.stdout.write(out.text + "\n");
     if (Array.isArray(out.quarantined) && out.quarantined.length) {
       process.stdout.write(`⚠ ${out.quarantined.length} note(s) quarantined — instruction-like content was not rendered (t=${out.quarantined.map((q) => q.t).join(", ")})\n`);

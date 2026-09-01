@@ -111,6 +111,7 @@ remember({ cause: "pricing-shipped", effect: "price-corrected", kind: "correctio
 
 ```
 npx memory-pulse brief          # the re-entry brief (what the SessionStart hook prints)
+npx memory-pulse brief --budget 1500   # size it to the tokens you can spare; the richest tier that fits, corrections first and whole
 npx memory-pulse guard          # PreToolUse hook: blocks edits that reintroduce withdrawn terms
                                 # (a later correction can `supersedes: [t]` an earlier one — only the latest binds)
 npx memory-pulse check --ci     # Memory CI: one of three verdicts for a change, from files you own

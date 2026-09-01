@@ -523,3 +523,23 @@ test("lint: a governance file that still states a withdrawn value is BLOCKED wit
   const e = (() => { try { execFileSync(process.execPath, [SERVER, "lint", "--ci"], { cwd: empty, env: { ...process.env, MEMORY_PULSE_LEDGER: ledger }, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }); return 0; } catch (x) { return x.status; } })();
   assert.equal(e, 1, "--ci with no governance files is exit 1, not green");
 });
+
+test("pulse budget: the tool forwards `budget` (tokens) and drops the tier so the engine picks the richest fit; brief --budget does the same and says so", async () => {
+  seen.length = 0;
+  respond = (route) => ({ status: 200, body: { text: "CORRECTIONS (0)", tier: "notes", budget: 4000 } });
+  await handleCall("pulse", { budget: 4000 });
+  const call = seen.find((s) => s.route === "/v1/pulse");
+  assert.equal(call.body.budget, 4000);
+  const dir = mkdtempSync(join(tmpdir(), "mp-budget-"));
+  const ledger = join(dir, ".memory-pulse", "events.jsonl");
+  mkdirSync(dirname(ledger), { recursive: true });
+  writeFileSync(ledger, JSON.stringify({ t: 1, cause: "a", effect: "b" }) + "\n");
+  const { execFile } = await import("node:child_process");
+  seen.length = 0;
+  const out = await new Promise((ok, no) => execFile(process.execPath, [SERVER, "brief", "--budget", "4000"], { env: { ...process.env, MEMORY_PULSE_LEDGER: ledger }, encoding: "utf8", timeout: 20000 }, (e, so, se) => e ? no(new Error(String(se) || e.message)) : ok(so)));
+  const c = seen.find((s) => s.route === "/v1/pulse");
+  assert.equal(c.body.budget, 4000); assert.equal(c.body.tier, undefined, "no tier when a budget is given — the engine picks");
+  assert.match(out.split("\n")[0], /tier notes, \d+ chars \(budget 4000 tokens\)/);
+  const bad = await new Promise((ok) => execFile(process.execPath, [SERVER, "brief", "--budget", "-5"], { env: { ...process.env, MEMORY_PULSE_LEDGER: ledger }, encoding: "utf8" }, (e, so, se) => ok({ code: e?.code, se })));
+  assert.equal(bad.code, 1); assert.match(bad.se, /positive number of tokens/);
+});
