@@ -90,3 +90,28 @@ test("e2e: a PR that reintroduces a withdrawn value fails the action with the ci
   assert.match(ne.out, /memory-pulse: no evidence/);
   assert.match(readFileSync(summary, "utf8"), /not as a pass/);
 });
+
+test("e2e lint: a governance file that still states a withdrawn value fails the action even when the diff is benign; the summary names the file; lint off leaves the verdict to the diff", () => {
+  const ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "..");
+  const dir = mkdtempSync(join(tmpdir(), "mp-action-lint-"));
+  const git = (...a) => execFileSync("git", a, { cwd: dir, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@x", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@x" } });
+  git("init", "-q", "-b", "main");
+  mkdirSync(join(dir, ".memory-pulse"), { recursive: true });
+  writeFileSync(join(dir, ".memory-pulse", "events.jsonl"), JSON.stringify({ t: 1, cause: "pricing-shipped", effect: "price-corrected", kind: "correction", withdrawn: ["$49"], replacement: ["$29"] }) + "\n");
+  writeFileSync(join(dir, "CLAUDE.md"), "Always quote the price as $49.\n");
+  writeFileSync(join(dir, "README.md"), "hello\n");
+  git("add", "."); git("commit", "-q", "-m", "base");
+  git("checkout", "-q", "-b", "feature");
+  writeFileSync(join(dir, "README.md"), "hello\nnothing the ledger knows\n");
+  git("commit", "-q", "-am", "benign");
+  const summary = join(dir, "summary.md");
+  const run = (lint) => { writeFileSync(summary, ""); try { return { code: 0, out: execFileSync(process.execPath, [join(ROOT, "action", "run.mjs")], { cwd: dir, encoding: "utf8", env: { ...process.env, GITHUB_BASE_REF: "main", GITHUB_STEP_SUMMARY: summary, MEMORY_PULSE_LEDGER: join(dir, ".memory-pulse", "events.jsonl"), GITHUB_TOKEN: "", GITHUB_REPOSITORY: "", MP_ACTION_LINT: lint } }) }; } catch (e) { return { code: e.status, out: String(e.stdout) + String(e.stderr) }; } };
+  const off = run("false");
+  assert.equal(off.code, 0, "benign diff, lint off → not blocked");
+  const on = run("true");
+  assert.equal(on.code, 2, "lint on → the stale CLAUDE.md blocks the PR");
+  const s = readFileSync(summary, "utf8");
+  assert.match(s, /CLAUDE\.md/, "the summary names the governance file");
+  assert.match(s, /"\$49" was withdrawn at ledger t1/, "and cites the ledger line");
+  assert.match(on.out, /governance/i);
+});

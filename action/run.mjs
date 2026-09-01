@@ -58,6 +58,12 @@ export function renderComment(result, { receiptId = null, sha = null } = {}) {
   const foot = [];
   if (sha) foot.push(`commit \`${String(sha).slice(0, 12)}\``);
   if (receiptId) foot.push(`receipt \`${receiptId}\` (verify keyless at /v1/verify)`);
+  if (result.lint) {
+    const L = result.lint;
+    lines.push("", `**Governance files** (lint): ${L.summary.files} checked — ${L.summary.blocked} blocked, ${L.summary.verified} verified, ${L.summary.noEvidence} no evidence`);
+    for (const row of L.rows) if (row.verdict === "blocked") { lines.push(`- \`${row.file}\` — BLOCKED`); for (const reason of row.reasons) lines.push(`  - ${reason}`); }
+    if (L.ledger?.unenforceableCorrections) lines.push(`- ${L.ledger.unenforceableCorrections} correction(s) carry no withdrawn terms and cannot be enforced`);
+  }
   if (foot.length) lines.push("", `<sub>${foot.join(" · ")}</sub>`);
   return lines.join("\n");
 }
@@ -99,6 +105,19 @@ export async function main() {
   } catch (e) {
     // check exits non-zero on blocked / no_evidence; the JSON is still on stdout.
     try { result = JSON.parse(String(e.stdout)); } catch { console.error(String(e.stderr || e.message)); process.exit(1); }
+  }
+  // Lint: the governance files a session will load, checked the same way.
+  // A rule that still states a retired value is loaded into every session
+  // with full confidence — that is worse than a stale line in the diff.
+  let lint = null;
+  if (String(process.env.MP_ACTION_LINT ?? "true") !== "false") {
+    try { lint = JSON.parse(execFileSync(process.execPath, [cli, "lint", "--json"], { encoding: "utf8", env: { ...process.env } })); }
+    catch (e) { try { lint = JSON.parse(String(e.stdout)); } catch { console.error(`lint failed: ${String(e.stderr || e.message).slice(0, 200)}`); } }
+    if (lint?.summary?.blocked) {
+      result.verdict = "blocked";
+      for (const row of lint.rows.filter((x) => x.verdict === "blocked")) for (const reason of row.reasons) result.reasons = [...(result.reasons ?? []), `governance file ${row.file}: ${reason}`];
+    }
+    result.lint = lint;
   }
   const conclusion = conclusionFor(result.verdict);
   const title = titleFor(result);

@@ -31,6 +31,10 @@ inputs:
     description: MEMORY_PULSE_KEY for signed, keyless-verifiable check receipts (Pro/Enterprise). Optional.
     required: false
     default: ""
+  lint:
+    description: Also lint the governance files a session loads (CLAUDE.md, AGENTS.md, .claude/rules, .cursorrules, …) against the ledger; a file that still states a withdrawn value blocks the PR. true | false.
+    required: false
+    default: "true"
 outputs:
   verdict:
     description: blocked | verified | no_evidence
@@ -50,6 +54,7 @@ runs:
         MEMORY_PULSE_KEY: ${{ inputs.api-key }}
         MP_ACTION_BASE: ${{ inputs.base }}
         MP_ACTION_CLI: ${{ github.action_path }}/server.mjs
+        MP_ACTION_LINT: ${{ inputs.lint }}
       run: |
         # The runner exits 2 on blocked (fails the job); 0 otherwise. The
         # check run carries the neutral/success distinction.
