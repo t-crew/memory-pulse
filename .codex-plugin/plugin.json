@@ -1,6 +1,6 @@
 {
   "name": "memory-pulse",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Causal project memory that costs ~670 tokens of tool definitions, not your context window. Corrections surface first and are enforced: a PreToolUse guard blocks an edit that writes a withdrawn value back and cites the ledger line that retired it. The ledger is a local file you own.",
   "author": {
     "name": "Travis Crew",
@@ -23,7 +23,7 @@
   "hooks": "./hooks/hooks.json",
   "interface": {
     "displayName": "Memory Pulse",
-    "shortDescription": "Project memory whose corrections surface first — and are enforced.",
+    "shortDescription": "Project memory whose corrections surface first \u2014 and are enforced.",
     "longDescription": "Re-enter a project through its causal ledger at session start, recall what caused what, record decisions and corrections with withdrawn terms, and let the guard block any edit that reintroduces a withdrawn value. Reads cost ~670 tokens of tool definitions; the ledger is a local file in your repo and writes work offline.",
     "developerName": "Travis Crew",
     "category": "Developer Tools",

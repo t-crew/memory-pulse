@@ -20,10 +20,11 @@
  *   MEMORY_PULSE_LEDGER  override the ledger path (default: ./.memory-pulse/events.jsonl)
  */
 import readline from "node:readline";
+import { createHash } from "node:crypto";
 import http from "node:http";
 import https from "node:https";
 import { gzipSync } from "node:zlib";
-import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync, realpathSync, readdirSync, statSync} from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -37,20 +38,45 @@ function ledgerPath() {
   return join(process.cwd(), ".memory-pulse", "events.jsonl");
 }
 
+// Loads the ledger and says what loaded: a session must be able to tell
+// whether its memory arrived whole (anthropics/claude-code #82056 — "loaded
+// whole, truncated, or not at all"). `malformed` lists 1-based line numbers
+// that were skipped; `digest` is the sha256 of the bytes read; `bytes` the size.
 function readEvents() {
   const path = ledgerPath();
-  if (!existsSync(path)) return { path, events: [] };
-  const events = [];
-  for (const line of readFileSync(path, "utf8").split("\n")) {
+  if (!existsSync(path)) return { path, events: [], malformed: [], bytes: 0, digest: null, lines: 0 };
+  const raw = readFileSync(path, "utf8");
+  const events = [], malformed = [];
+  const lines = raw.split("\n");
+  lines.forEach((line, i) => {
     const s = line.trim();
-    if (!s) continue;
+    if (!s) return;
     try {
       const e = JSON.parse(s);
-      if (typeof e.cause === "string" && typeof e.effect === "string") events.push(e);
-    } catch { /* a torn line does not take the ledger down */ }
-  }
-  return { path, events };
+      if (typeof e.cause === "string" && typeof e.effect === "string") events.push(e); else malformed.push(i + 1);
+    } catch { malformed.push(i + 1); /* a torn line does not take the ledger down — but it is reported */ }
+  });
+  return { path, events, malformed, bytes: Buffer.byteLength(raw), digest: createHash("sha256").update(raw).digest("hex").slice(0, 12), lines: lines.filter((l) => l.trim()).length };
 }
+
+// One line of provenance for the brief: what loaded, from where, what binds.
+export function loadedLine(led, events, opts = {}) {
+  const retired = supersededSet(events);
+  const binding = events.filter((e) => e.kind === "correction" && Array.isArray(e.withdrawn) && e.withdrawn.length && !retired.has(e.t));
+  const terms = new Set(binding.flatMap((e) => e.withdrawn));
+  const unenforceable = events.filter((e) => e.kind === "correction" && !(Array.isArray(e.withdrawn) && e.withdrawn.length)).length;
+  const parts = [`loaded ${events.length} events from ${relPath(led.path)}`];
+  if (led.digest) parts.push(`sha256 ${led.digest}`);
+  parts.push(`${binding.length} binding correction${binding.length === 1 ? "" : "s"} (${terms.size} withdrawn term${terms.size === 1 ? "" : "s"})`);
+  if (unenforceable) parts.push(`${unenforceable} correction${unenforceable === 1 ? "" : "s"} without withdrawn terms (surfaced, not enforced)`);
+  if (retired.size) parts.push(`${retired.size} superseded`);
+  if (led.malformed?.length) parts.push(`⚠ ${led.malformed.length} malformed line${led.malformed.length === 1 ? "" : "s"} skipped: ${led.malformed.slice(0, 5).join(", ")}${led.malformed.length > 5 ? "…" : ""}`);
+  if (opts.keyStatus?.status === "resumed") parts.push(`memory key resumed (+${opts.keyStatus.newEvents ?? 0} new)`);
+  else if (opts.keyStatus?.status === "rebuilt") parts.push(`memory key rebuilt${opts.keyStatus.reason ? ` (${opts.keyStatus.reason})` : ""}`);
+  if (opts.tier) parts.push(`tier ${opts.tier}${opts.chars ? `, ${opts.chars.toLocaleString()} chars` : ""}`);
+  return `memory-pulse: ${parts.join(" · ")}`;
+}
+const relPath = (p) => { const cwd = process.cwd(); return p.startsWith(cwd + "/") ? p.slice(cwd.length + 1) : p; };
 
 // The engine's memory-safety checks, mirrored so a refusal happens
 // before the write. Keep in step with the engine; the engine is authoritative.
@@ -369,10 +395,13 @@ async function dispatch(msg) {
 // SessionStart hooks: SILENT no-op (exit 0) when the project has no ledger,
 // so installing the hook never adds noise to projects that don't use this.
 async function cliBrief() {
-  const { events } = readEvents();
+  const led = readEvents();
+  const { events } = led;
   if (!events.length) return;
+  const tier = process.env.MEMORY_PULSE_BRIEF_TIER || "brief";
   try {
-    const out = await callApi("/v1/pulse", { events, tier: process.env.MEMORY_PULSE_BRIEF_TIER || "brief" });
+    const out = await callApi("/v1/pulse", { events, tier });
+    process.stdout.write(loadedLine(led, events, { keyStatus: out.keyStatus, tier, chars: out.text?.length }) + "\n");
     if (out.text) process.stdout.write(out.text + "\n");
     if (Array.isArray(out.quarantined) && out.quarantined.length) {
       process.stdout.write(`⚠ ${out.quarantined.length} note(s) quarantined — instruction-like content was not rendered (t=${out.quarantined.map((q) => q.t).join(", ")})\n`);
@@ -738,6 +767,67 @@ function cliInstallHook() {
   console.log("Remove either by deleting the memory-pulse entries from hooks.");
 }
 
+
+// `memory-pulse lint [--ci] [--json] [paths…]` — the dry run for the rules a
+// session will load. Governance files (CLAUDE.md, AGENTS.md, .claude/rules,
+// .cursorrules, …) are checked against the ledger the way the guard checks an
+// edit: a rule that still states a withdrawn value is BLOCKED and cites the
+// ledger line that retired it; a rule the ledger agrees with is VERIFIED; a
+// file the ledger knows nothing about is NO EVIDENCE — never a pass. Asked
+// for as "a hook dry-run mode and a lint-style consistency check" across
+// "4+ governance layers with no declared precedence" (claude-code #90350).
+const LINT_DEFAULTS = ["CLAUDE.md", "AGENTS.md", ".claude/CLAUDE.md", ".claude/rules", ".cursorrules", ".cursor/rules", ".github/copilot-instructions.md", ".codex/AGENTS.md", ".memory-pulse/invariants.jsonl"];
+function lintTargets(args) {
+  const out = [];
+  const add = (p) => {
+    if (!existsSync(p)) return;
+    const st = statSync(p);
+    if (st.isDirectory()) { for (const f of readdirSync(p, { recursive: true })) { const fp = join(p, String(f)); if (statSync(fp).isFile() && /\.(md|mdc|txt|jsonl)$/i.test(fp)) out.push(fp); } }
+    else out.push(p);
+  };
+  for (const p of args.length ? args : LINT_DEFAULTS) add(p);
+  return [...new Set(out)];
+}
+async function cliLint() {
+  const argv = process.argv.slice(3);
+  const ci = argv.includes("--ci"), asJson = argv.includes("--json");
+  const paths = argv.filter((a) => !a.startsWith("--"));
+  const led = readEvents();
+  const { events } = led;
+  const invariants = readInvariants();
+  const files = lintTargets(paths).filter((f) => !/(^|[\\/])\.memory-pulse[\\/]events\.jsonl$/.test(f));
+  const rows = [];
+  for (const f of files) {
+    let text = ""; try { text = readFileSync(f, "utf8"); } catch { continue; }
+    const v = localCheck(events, { kind: "lint", text, path: f }, invariants);
+    rows.push({ file: f, verdict: v.verdict, reasons: v.reasons.filter((r) => !/^\d+ recorded event/.test(r)), corrections: v.corrections.map((h) => ({ term: h.term, t: h.t })), invariants: v.invariants.map((i) => i.id) });
+  }
+  const retired = supersededSet(events);
+  const ledger = {
+    events: events.length, malformed: led.malformed, digest: led.digest,
+    bindingCorrections: events.filter((e) => e.kind === "correction" && Array.isArray(e.withdrawn) && e.withdrawn.length && !retired.has(e.t)).length,
+    unenforceableCorrections: events.filter((e) => e.kind === "correction" && !(Array.isArray(e.withdrawn) && e.withdrawn.length)).length,
+    superseded: retired.size,
+  };
+  const blocked = rows.filter((r) => r.verdict === "blocked");
+  const summary = { files: rows.length, blocked: blocked.length, verified: rows.filter((r) => r.verdict === "verified").length, noEvidence: rows.filter((r) => r.verdict === "no_evidence").length };
+  if (asJson) { console.log(JSON.stringify({ ledger, rows, summary }, null, 2)); }
+  else {
+    console.log(loadedLine(led, events));
+    if (!rows.length) console.log("lint: no governance files found (looked for " + LINT_DEFAULTS.join(", ") + ") — pass paths to lint something else");
+    for (const r of rows) {
+      const tag = r.verdict === "blocked" ? "BLOCKED    " : r.verdict === "verified" ? "verified   " : "no evidence";
+      console.log(`  ${tag} ${r.file}`);
+      for (const reason of r.reasons) if (r.verdict !== "no_evidence") console.log(`             • ${reason}`);
+    }
+    if (ledger.unenforceableCorrections) console.log(`  note: ${ledger.unenforceableCorrections} correction(s) carry no withdrawn terms — they surface in the brief but nothing can enforce them; add withdrawn: [...] to make them bind`);
+    console.log(`lint: ${summary.files} file(s) — ${summary.blocked} blocked, ${summary.verified} verified, ${summary.noEvidence} no evidence${summary.blocked ? " — a rule your ledger retired is still being loaded into sessions" : ""}`);
+  }
+  if (blocked.length) process.exit(2);
+  if (ci && !rows.length) process.exit(1);
+  process.exit(0);
+}
+
 // Importable for tests; the transport runs only when this file is the entry
 // point. Compared by REALPATH, not by name: npm invokes the bin through a
 // .bin/memory-pulse symlink, and a basename comparison silently failed there —
@@ -753,11 +843,12 @@ if (isMain) {
   if (sub === "install-hook") { cliInstallHook(); process.exit(0); }
   if (sub === "guard") { await cliGuard(); process.exit(0); }
   if (sub === "check") { await cliCheck(); process.exit(0); }
+  if (sub === "lint") { await cliLint(); process.exit(0); }
   if (sub === "report") { cliReport(); process.exit(0); }
   if (sub === "bench") { await cliBench(); process.exit(0); }
   if (sub === "stats") { await cliStats(); process.exit(0); }
   if (sub === "badge") { cliBadge(); process.exit(0); }
-  if (sub && sub !== "serve") { console.error(`unknown command: ${sub} (try: brief, check, guard, report, bench, stats, badge, install-hook [--codex] [--project])`); process.exit(1); }
+  if (sub && sub !== "serve") { console.error(`unknown command: ${sub} (try: brief, check, lint, guard, report, bench, stats, badge, install-hook [--codex] [--project])`); process.exit(1); }
   process.stderr.write(`memory-pulse: ledger ${ledgerPath()} — api ${API}\n`);
   const rl = readline.createInterface({ input: process.stdin, terminal: false });
   // In-flight calls are drained before exit. Exiting the moment stdin closes

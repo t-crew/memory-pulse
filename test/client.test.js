@@ -460,3 +460,66 @@ test("guard on the real Codex apply_patch wire shape: tool_input.command carries
   try { execFileSync(process.execPath, [SERVER, "guard"], { env: { ...process.env, MEMORY_PULSE_LEDGER: ledger }, input: JSON.stringify(input), encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }); assert.fail("should block"); }
   catch (e) { assert.equal(e.status, 2); assert.match(String(e.stderr), /pricing\.md:[\s\S]*withdrawn at ledger t1/); }
 });
+
+test("brief opens with a loaded line: what loaded, from where, what binds, and any malformed lines — never silently partial", async () => {
+  const { loadedLine } = await import("../server.mjs");
+  const dir = mkdtempSync(join(tmpdir(), "mp-loaded-"));
+  const ledger = join(dir, ".memory-pulse", "events.jsonl");
+  mkdirSync(dirname(ledger), { recursive: true });
+  writeFileSync(ledger, [
+    JSON.stringify({ t: 1, cause: "a", effect: "b" }),
+    "{ this line is torn",
+    JSON.stringify({ t: 2, cause: "b", effect: "c", kind: "correction", withdrawn: ["$49"], replacement: ["$29"] }),
+    JSON.stringify({ t: 3, cause: "c", effect: "d", kind: "correction", note: "no terms — cannot bind" }),
+    JSON.stringify({ t: 4, cause: "b", effect: "e", kind: "correction", withdrawn: ["$29"], replacement: ["$25"], supersedes: [2] }),
+  ].join("\n") + "\n");
+  respond = (route) => route === "/v1/pulse" ? { status: 200, body: { text: "CORRECTIONS (1) — read before quoting any number:\n  ! b -> e (t4) — x", keyStatus: { status: "rebuilt", reason: "no key presented" } } } : { status: 200, body: {} };
+  // The child talks to the fake engine served by THIS process, so it must be
+  // spawned asynchronously: execFileSync would block the event loop that has
+  // to answer it (a deadlock found the hard way, 2026-09-01).
+  const { execFile } = await import("node:child_process");
+  const out = await new Promise((ok, no) => execFile(process.execPath, [SERVER, "brief"], { env: { ...process.env, MEMORY_PULSE_LEDGER: ledger }, encoding: "utf8", timeout: 20000 }, (err, stdout, stderr) => err ? no(new Error(String(stderr) || err.message)) : ok(stdout)));
+  const first = out.split("\n")[0];
+  assert.match(first, /^memory-pulse: loaded 4 events from /, "first line says what loaded");
+  assert.match(first, /sha256 [0-9a-f]{12}/, "digest of the bytes read");
+  assert.match(first, /1 binding correction \(1 withdrawn term\)/, "t2 is superseded by t4; only t4 binds");
+  assert.match(first, /1 correction without withdrawn terms \(surfaced, not enforced\)/);
+  assert.match(first, /1 superseded/);
+  assert.match(first, /⚠ 1 malformed line skipped: 2/, "the torn line is named by number");
+  assert.match(first, /memory key rebuilt \(no key presented\)/);
+  assert.match(first, /tier brief, \d+ chars/);
+  assert.match(out.split("\n")[1], /^CORRECTIONS/, "the brief itself follows the loaded line");
+  // pure function, no key status / tier: the parts are simply absent
+  assert.doesNotMatch(loadedLine({ path: "/x/.memory-pulse/events.jsonl", digest: "abc", malformed: [] }, [{ t: 1, cause: "a", effect: "b" }]), /memory key|tier/);
+});
+
+test("lint: a governance file that still states a withdrawn value is BLOCKED with the ledger line; a comparison passes; unknown files are no evidence, never a pass", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mp-lint-"));
+  const ledger = join(dir, ".memory-pulse", "events.jsonl");
+  mkdirSync(dirname(ledger), { recursive: true });
+  mkdirSync(join(dir, ".claude", "rules"), { recursive: true });
+  writeFileSync(ledger, [
+    JSON.stringify({ t: 1, cause: "pricing-shipped", effect: "price-49-launched" }),
+    JSON.stringify({ t: 2, cause: "price-49-launched", effect: "price-corrected-to-29", kind: "correction", withdrawn: ["$49"], replacement: ["$29"] }),
+  ].join("\n") + "\n");
+  writeFileSync(join(dir, "CLAUDE.md"), "# Rules\nAlways quote the price as $49.\n");
+  writeFileSync(join(dir, "AGENTS.md"), "# Agents\nThe price was $49; it is now $29.\n");
+  writeFileSync(join(dir, ".claude", "rules", "style.md"), "Use tabs.\n");
+  const run = (...a) => { try { return { code: 0, out: execFileSync(process.execPath, [SERVER, "lint", ...a], { cwd: dir, env: { ...process.env, MEMORY_PULSE_LEDGER: ledger }, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }) }; } catch (e) { return { code: e.status, out: String(e.stdout), err: String(e.stderr) }; } };
+  const r = run();
+  assert.equal(r.code, 2, "a blocked rule fails lint");
+  assert.match(r.out, /^memory-pulse: loaded 2 events/m, "lint opens with the loaded line");
+  assert.match(r.out, /BLOCKED\s+CLAUDE\.md/);
+  assert.match(r.out, /"\$49" was withdrawn at ledger t2/);
+  assert.match(r.out, /verified\s+AGENTS\.md/, "names both old and new: a comparison, allowed");
+  assert.match(r.out, /no evidence\s+\.claude[\\/]rules[\\/]style\.md/);
+  assert.match(r.out, /lint: 3 file\(s\) — 1 blocked, 1 verified, 1 no evidence/);
+  const j = JSON.parse(run("--json").out);
+  assert.equal(j.summary.blocked, 1); assert.equal(j.ledger.bindingCorrections, 1);
+  assert.deepEqual(j.rows.find((x) => x.file === "CLAUDE.md").corrections, [{ term: "$49", t: 2 }]);
+  // explicit paths; --ci fails closed when nothing was checked
+  assert.equal(run("AGENTS.md").code, 0);
+  const empty = mkdtempSync(join(tmpdir(), "mp-lint-empty-"));
+  const e = (() => { try { execFileSync(process.execPath, [SERVER, "lint", "--ci"], { cwd: empty, env: { ...process.env, MEMORY_PULSE_LEDGER: ledger }, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }); return 0; } catch (x) { return x.status; } })();
+  assert.equal(e, 1, "--ci with no governance files is exit 1, not green");
+});

@@ -114,6 +114,7 @@ npx memory-pulse brief          # the re-entry brief (what the SessionStart hook
 npx memory-pulse guard          # PreToolUse hook: blocks edits that reintroduce withdrawn terms
                                 # (a later correction can `supersedes: [t]` an earlier one — only the latest binds)
 npx memory-pulse check --ci     # Memory CI: one of three verdicts for a change, from files you own
+npx memory-pulse lint [--ci]    # dry run: do CLAUDE.md / AGENTS.md / .claude/rules still state a value the ledger retired?
 npx memory-pulse guard allow "<term>" --path <prefix> "<reason>"   # record a false block as an override
 npx memory-pulse report         # correction re-violation scoreboard, computed locally
 npx memory-pulse bench          # instant measured metrics on YOUR ledger
@@ -125,6 +126,43 @@ npx memory-pulse install-hook   # installs both hooks (idempotent); --codex targ
 The plugin also ships a **skill** (`skills/memory-pulse/SKILL.md`) that teaches
 the agent when to pulse, how to record corrections with withdrawn terms, and
 to respect the guard.
+
+## What the brief tells you before it tells you anything
+
+Every brief opens with one line of provenance, because a session must be
+able to tell whether its memory loaded whole, truncated, or not at all:
+
+```
+memory-pulse: loaded 852 events from .memory-pulse/events.jsonl · sha256 1a2b3c4d5e6f · 2 binding corrections (10 withdrawn terms) · 1 superseded · ⚠ 1 malformed line skipped: 544 · memory key resumed (+3 new) · tier brief, 5,153 chars
+```
+
+Every CORRECTIONS line cites its ledger record (`… -> effect (t824) — note`),
+so a correction is evidence the agent can point at, not an assertion it has
+to trust. `recall` and the guard name the same `t`.
+
+## Lint: the rules a session loads, checked against the ledger
+
+Governance files drift. A `CLAUDE.md` written in June still says the price
+is $49 after the ledger retired it in August, and every new session loads the
+stale rule with full confidence. `lint` runs the guard's check over the files
+a session will read — `CLAUDE.md`, `AGENTS.md`, `.claude/rules/`,
+`.cursorrules`, `.cursor/rules/`, `.github/copilot-instructions.md`,
+`.codex/AGENTS.md`, or paths you pass — and gives each the three verdicts:
+
+```
+$ npx memory-pulse lint
+memory-pulse: loaded 2 events from .memory-pulse/events.jsonl · sha256 8e401a39f323 · 1 binding correction (1 withdrawn term)
+  BLOCKED     CLAUDE.md
+             • "$49" was withdrawn at ledger t2: price-49-launched -> price-corrected-to-29 — use $29
+  verified    AGENTS.md
+  no evidence .claude/rules/style.md
+lint: 3 file(s) — 1 blocked, 1 verified, 1 no evidence — a rule your ledger retired is still being loaded into sessions
+```
+
+Exit 2 on any blocked file; `--ci` also exits 1 when it found nothing to
+check (never green on nothing); `--json` for machines. It also tells you
+which corrections carry no `withdrawn` terms — those surface in the brief but
+nothing can enforce them.
 
 ## What runs where (the privacy contract)
 
