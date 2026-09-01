@@ -1,6 +1,6 @@
 {
   "name": "memory-pulse",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Causal memory for coding agents that costs ~670 tokens, not your context window. Four MCP tools: re-enter a project, recall what caused what, record findings, run code against memory.",
   "type": "module",
   "bin": {
