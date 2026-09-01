@@ -1,0 +1,46 @@
+{
+  "name": "memory-pulse",
+  "version": "0.2.2",
+  "description": "Causal project memory that costs ~670 tokens of tool definitions, not your context window. Corrections surface first and are enforced: a PreToolUse guard blocks an edit that writes a withdrawn value back and cites the ledger line that retired it. The ledger is a local file you own.",
+  "author": {
+    "name": "Travis Crew",
+    "url": "https://github.com/t-crew"
+  },
+  "homepage": "https://github.com/t-crew/memory-pulse",
+  "repository": "https://github.com/t-crew/memory-pulse",
+  "license": "MIT",
+  "keywords": [
+    "memory",
+    "mcp",
+    "context",
+    "token-savings",
+    "corrections",
+    "codex",
+    "claude-code"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "Memory Pulse",
+    "shortDescription": "Project memory whose corrections surface first — and are enforced.",
+    "longDescription": "Re-enter a project through its causal ledger at session start, recall what caused what, record decisions and corrections with withdrawn terms, and let the guard block any edit that reintroduces a withdrawn value. Reads cost ~670 tokens of tool definitions; the ledger is a local file in your repo and writes work offline.",
+    "developerName": "Travis Crew",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Session re-entry brief",
+      "Causal recall",
+      "Corrections with withdrawn terms",
+      "Edit guard (PreToolUse)",
+      "Memory CI verdicts",
+      "Signed telemetry"
+    ],
+    "websiteURL": "https://memory-pulse-site.strategic-innovations.workers.dev",
+    "defaultPrompt": [
+      "Pulse this project's memory before we start.",
+      "Record a correction: the price was $49, it is now $29.",
+      "What caused the last outage according to the ledger?"
+    ],
+    "brandColor": "#0EA5E9"
+  }
+}

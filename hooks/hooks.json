@@ -1,22 +1,23 @@
 {
+  "description": "memory-pulse: re-enter through the ledger at session start; block edits that write a withdrawn value back. Both run the plugin's own server.mjs, so the hooks are exactly the plugin's version — no npx fetch, no skew against npm.",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "npx -y memory-pulse brief"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/server.mjs\" brief"
           }
         ]
       }
     ],
     "PreToolUse": [
       {
-        "matcher": "Edit|Write|MultiEdit",
+        "matcher": "Edit|Write|MultiEdit|apply_patch",
         "hooks": [
           {
             "type": "command",
-            "command": "npx -y memory-pulse guard"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/server.mjs\" guard"
           }
         ]
       }

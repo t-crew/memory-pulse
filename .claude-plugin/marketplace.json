@@ -1,15 +1,26 @@
 {
   "name": "memory-pulse",
-  "owner": { "name": "Travis Crew", "url": "https://github.com/t-crew" },
+  "owner": {
+    "name": "Travis Crew",
+    "url": "https://github.com/t-crew"
+  },
+  "description": "memory-pulse: causal project memory whose corrections surface first and are enforced by a guard hook. One plugin: MCP tools + SessionStart re-entry + PreToolUse guard + skill.",
   "plugins": [
     {
       "name": "memory-pulse",
       "source": "./",
       "description": "Causal project memory that costs ~670 tokens of tool definitions, not your context window. Corrections always surface first.",
-      "author": { "name": "Travis Crew" },
+      "author": {
+        "name": "Travis Crew"
+      },
       "homepage": "https://github.com/t-crew/memory-pulse",
       "license": "MIT",
-      "keywords": ["memory", "mcp", "context", "token-savings"]
+      "keywords": [
+        "memory",
+        "mcp",
+        "context",
+        "token-savings"
+      ]
     }
   ]
 }

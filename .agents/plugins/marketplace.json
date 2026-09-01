@@ -1,0 +1,20 @@
+{
+  "name": "memory-pulse",
+  "interface": {
+    "displayName": "Memory Pulse"
+  },
+  "plugins": [
+    {
+      "name": "memory-pulse",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

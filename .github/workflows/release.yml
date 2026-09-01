@@ -25,10 +25,21 @@ jobs:
           registry-url: https://registry.npmjs.org
       - name: npm >= 11.5.1 (trusted publishing)
         run: npm install -g npm@latest && npm --version
-      - name: tag must match package.json
+      - name: tag must match package.json, and every manifest must match package.json
+        # server.json (MCP registry), .claude-plugin/plugin.json (Claude Code)
+        # and .codex-plugin/plugin.json (Codex) each carry their own version.
+        # v0.2.2 was once tagged while two of them still said 0.2.1 — that
+        # would have shipped a fresh npm release under stale registry metadata.
+        # Refuse to publish anything until they agree (test/manifests.test.js
+        # checks the same thing locally).
         run: |
           v="$(node -p 'require("./package.json").version')"
           [ "${GITHUB_REF_NAME}" = "v${v}" ] || { echo "tag ${GITHUB_REF_NAME} != package version v${v}"; exit 1; }
+          for f in server.json .claude-plugin/plugin.json .codex-plugin/plugin.json; do
+            m="$(node -p "require('./$f').version")"
+            [ "$m" = "$v" ] || { echo "$f says $m, package.json says $v"; exit 1; }
+          done
+          [ "$(node -p 'require("./server.json").packages[0].version')" = "$v" ] || { echo "server.json packages[0].version != $v"; exit 1; }
       - run: npm test
       - name: publish to npm (OIDC, provenance automatic)
         run: npm publish --access public

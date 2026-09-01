@@ -94,3 +94,16 @@ recorded links verbatim. If a hit you expected is missing but present in
 - Do not record secrets, credentials, or personal data in notes.
 - Do not invent slugs for entities that already exist — recall first.
 - Do not quote a number from history if the CORRECTIONS block withdrew it.
+
+## 6. Host notes
+
+- **Claude Code**: the guard sees `Edit` and `Write`. Blocked calls return the
+  ledger line that retired the term; use the replacement or record a new
+  correction — never paraphrase around the withdrawn term.
+- **Codex**: file edits arrive as one `apply_patch` call that may touch
+  several files; each file is checked under its own path, and the block names
+  the file. Codex runs no hook it has not been shown: if the guard never
+  fires, the user has not yet trusted the plugin's hooks via `/hooks` — say so
+  rather than assuming the ledger is empty.
+- A shell heredoc is not an edit tool on either host and is not guarded.
+  Do not use one to get around a block; `check --ci` catches it on the PR.

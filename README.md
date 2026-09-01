@@ -40,29 +40,52 @@ When the answer isn't there, you get nothing — not a plausible guess.
 
 ## Install
 
-**Any MCP client, one line** (Claude Code shown):
+One repo, two plugin hosts, any MCP client. Pick the row for your agent.
 
-```
-claude mcp add memory-pulse -- npx -y memory-pulse
-```
-
-**Make re-entry automatic** — a Claude Code SessionStart hook that runs the
-brief before your first prompt (idempotent; merges into your settings, never
-clobbers them; silent in projects that have no ledger):
-
-```
-npx memory-pulse install-hook
-```
-
-**Claude Code plugin** (installs straight from this repo, hook included):
+**Claude Code — plugin** (skill + MCP tools + the two hooks, from this repo):
 
 ```
 /plugin marketplace add t-crew/memory-pulse
 /plugin install memory-pulse@memory-pulse
 ```
 
-**Codex CLI / Cursor / other clients** — stdio server, command
-`npx -y memory-pulse` (or clone this repo and run `node /path/to/server.mjs`).
+`claude plugin details memory-pulse` shows what you pay: ~120 tokens always-on
+(the skill's description), the four tool schemas resolved at runtime, hooks
+free. The hooks run the plugin's own `server.mjs`, so what enforces your
+corrections is exactly the version you installed.
+
+**Codex CLI — plugin** (same files; Codex reads `.codex-plugin/plugin.json`):
+
+```
+codex plugin marketplace add t-crew/memory-pulse
+codex plugin add memory-pulse@memory-pulse
+```
+
+Then, inside Codex, run `/hooks` and trust the two `memory-pulse` entries.
+Codex runs no hook it has not shown you, and installing a plugin does not
+trust its hooks — that is Codex's rule and a good one.
+
+**Any MCP client, one line** (Claude Code and Codex shown; Cursor and the rest
+take the same stdio command):
+
+```
+claude mcp add memory-pulse -- npx -y memory-pulse
+codex  mcp add memory-pulse -- npx -y memory-pulse
+```
+
+**Make re-entry automatic without the plugin** — a SessionStart hook that runs
+the brief before your first prompt and a PreToolUse guard on edits
+(idempotent; merges into the file, never clobbers it; silent in projects
+that have no ledger):
+
+```
+npx memory-pulse install-hook            # Claude Code: ~/.claude/settings.json
+npx memory-pulse install-hook --codex    # Codex:       ~/.codex/hooks.json (then /hooks to trust)
+```
+
+Add `--project` to either and the hooks are written into the repo
+(`.claude/settings.json` / `.codex/hooks.json`) — commit that and every clone
+is re-entered and guarded without anyone installing anything.
 
 Then tell your agent to remember things. Record a withdrawn number with
 `kind: "correction"` and it will outrank the history that contained it — at
@@ -70,10 +93,13 @@ every brief size, in every session.
 
 **Enforce corrections, don't just surface them.** Showing an agent a
 correction is measurably not enough — agents re-violate corrections they were
-just shown. `install-hook` also installs a PreToolUse guard: an Edit or Write
-that writes back a withdrawn value is **blocked**, and the agent is told which
-ledger line retired it and when. A comparison that names the replacement
-("was $49, now $29") passes; only a bare reintroduction is blocked. Record
+just shown. The PreToolUse guard sees every `Edit`/`Write` (Claude Code) and
+every `apply_patch` (Codex — one patch may touch several files; each is
+checked under its own path): an edit that writes back a withdrawn value is
+**blocked**, and the agent is told which ledger line retired it and when. A
+comparison that names the replacement ("was $49, now $29") passes; only a bare
+reintroduction is blocked. A shell heredoc is not an edit tool and is not
+guarded — `check --ci` on the PR is the layer that catches it. Record
 corrections with the exact terms:
 
 ```
@@ -93,7 +119,7 @@ npx memory-pulse report         # correction re-violation scoreboard, computed l
 npx memory-pulse bench          # instant measured metrics on YOUR ledger
 npx memory-pulse stats          # your telemetry capsule, signature verified by the engine
 npx memory-pulse badge          # README badge markdown from your own signed numbers
-npx memory-pulse install-hook   # installs both hooks (idempotent); --project commits them to the repo
+npx memory-pulse install-hook   # installs both hooks (idempotent); --codex targets Codex; --project commits them to the repo
 ```
 
 The plugin also ships a **skill** (`skills/memory-pulse/SKILL.md`) that teaches
@@ -246,3 +272,9 @@ The tag triggers `.github/workflows/release.yml`, which runs the tests and
 publishes to npm and the MCP registry using GitHub's OIDC identity — no
 tokens in the repo, no one-time passwords. npm attaches provenance
 automatically, so anyone can verify the package was built from this repo.
+
+One version, four readers: `package.json` (npm), `server.json` (MCP registry),
+`.claude-plugin/plugin.json` (Claude Code) and `.codex-plugin/plugin.json`
+(Codex) must all say the same thing. `npm version` bumps only the first;
+`test/manifests.test.js` fails until the other three follow, and the release
+workflow refuses to publish anything while they disagree.

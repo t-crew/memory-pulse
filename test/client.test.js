@@ -35,7 +35,9 @@ const fake = createServer((req, res) => {
 
 let TOOLS, handleCall;
 before(async () => {
-  await new Promise((ok) => fake.listen(0, ok));
+  // A listen error must FAIL the suite, not hang it: under a sandbox that
+  // forbids binding 127.0.0.1 the old form waited forever with no output.
+  await new Promise((ok, no) => { fake.once("error", no); fake.listen(0, "127.0.0.1", ok); });
   process.env.MEMORY_PULSE_API = `http://127.0.0.1:${fake.address().port}`;
   process.env.MEMORY_PULSE_KEY = "mp_live_testkey";
   const cwd = mkdtempSync(join(tmpdir(), "mp-client-"));
@@ -386,4 +388,75 @@ test("check --ci: no_evidence exits 1 (loud), blocked 2, verified 0; --json is m
   assert.equal(j.evidence[0].t, 2);
   const stdin = run(["--ci"], "price is $49 again");
   assert.equal(stdin.code, 2, "stdin is the default text source");
+});
+
+test("patchSections: a Codex apply_patch is split per file with only its ADDED lines, found by content not field name", async () => {
+  const { patchSections } = await import("../server.mjs");
+  const patch = [
+    "*** Begin Patch",
+    "*** Update File: docs/pricing.md",
+    "@@",
+    "-price is $29",
+    "+price is $49",
+    " unchanged line",
+    "*** Add File: notes/new.md",
+    "+brand new",
+    "*** Delete File: old.md",
+    "*** End Patch",
+  ].join("\n");
+  const viaInput = patchSections({ input: patch });
+  assert.deepEqual(viaInput, [{ path: "docs/pricing.md", text: "price is $49" }, { path: "notes/new.md", text: "brand new" }]);
+  assert.deepEqual(patchSections({ patch }), viaInput, "the field name does not matter");
+  assert.deepEqual(patchSections({ file_path: "/x", new_string: "no patch here" }), [], "Claude Code shapes are not patches");
+  assert.deepEqual(patchSections({ input: "*** Begin Patch\n*** Delete File: gone.md\n*** End Patch" }), [], "a deletion introduces nothing");
+});
+
+test("guard hook on a Codex apply_patch: blocked per file with the file named; overrides stay path-scoped; a clean patch is silent", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mp-guard-patch-"));
+  const ledger = join(dir, ".memory-pulse", "events.jsonl");
+  const env = { ...process.env, MEMORY_PULSE_LEDGER: ledger };
+  mkdirSync(dirname(ledger), { recursive: true });
+  writeFileSync(ledger, [
+    JSON.stringify({ t: 1, cause: "a", effect: "smoke-green" }),
+    JSON.stringify({ t: 2, cause: "b", effect: "c", kind: "correction", withdrawn: ["$49"], replacement: ["$29"] }),
+    JSON.stringify({ t: 3, cause: "guard-allow", effect: "override:$49", kind: "override", override: { term: "$49", path: "history/", reason: "historical table" } }),
+  ].join("\n") + "\n");
+  const run = (input) => { try { return { code: 0, out: execFileSync(process.execPath, [SERVER, "guard"], { env, input: JSON.stringify(input), encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }) }; } catch (e) { return { code: e.status, err: String(e.stderr) }; } };
+  const patch = (files) => "*** Begin Patch\n" + files.map(([p, t]) => `*** Update File: ${p}\n@@\n+${t}`).join("\n") + "\n*** End Patch";
+  const blocked = run({ tool_name: "apply_patch", tool_input: { input: patch([["docs/pricing.md", "price is $49"], ["README.md", "smoke-green"]]) } });
+  assert.equal(blocked.code, 2);
+  assert.match(blocked.err, /docs\/pricing\.md:/, "the offending file is named");
+  assert.doesNotMatch(blocked.err, /README\.md:/, "the clean file is not");
+  assert.match(blocked.err, /withdrawn at ledger t2/);
+  assert.equal(run({ tool_name: "apply_patch", tool_input: { input: patch([["history/2025.md", "price was $49"]]) } }).code, 0, "override under its path");
+  assert.equal(run({ tool_name: "apply_patch", tool_input: { input: patch([["docs/x.md", "price was $49, corrected to $29"]]) } }).code, 0, "comparison allowed");
+  assert.equal(run({ tool_name: "apply_patch", tool_input: { input: patch([["docs/x.md", "nothing the ledger knows"]]) } }).code, 0, "no_evidence is silent");
+});
+
+test("install-hook --codex writes Codex's hooks.json (user or --project), same events, apply_patch matcher, and says the trust step out loud", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mp-codex-hook-"));
+  const run = (...a) => execFileSync(process.execPath, [SERVER, "install-hook", "--codex", ...a], { env: { ...process.env, MEMORY_PULSE_SETTINGS_DIR: dir }, encoding: "utf8" });
+  const first = run();
+  assert.match(first, /installed 2 hook\(s\) in .*hooks\.json/);
+  assert.match(first, /run \/hooks, and trust/, "Codex will not run an untrusted hook; the user has to be told");
+  assert.match(run(), /already installed/);
+  const h = JSON.parse(readFileSync(join(dir, "hooks.json"), "utf8")).hooks;
+  assert.equal(h.SessionStart[0].hooks[0].command, "npx -y memory-pulse brief");
+  assert.equal(h.PreToolUse[0].matcher, "Edit|Write|apply_patch");
+  assert.equal(h.PreToolUse[0].hooks[0].command, "npx -y memory-pulse guard");
+  // --project lands in <repo>/.codex/hooks.json so a clone inherits it.
+  const repo = mkdtempSync(join(tmpdir(), "mp-codex-proj-"));
+  const out = execFileSync(process.execPath, [SERVER, "install-hook", "--codex", "--project"], { cwd: repo, env: { ...process.env, MEMORY_PULSE_SETTINGS_DIR: "" }, encoding: "utf8" });
+  assert.match(out, /commit \.codex\/hooks\.json/);
+  assert.ok(existsSync(join(repo, ".codex", "hooks.json")));
+});
+
+test("guard on the real Codex apply_patch wire shape: tool_input.command carries the whole patch", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mp-guard-codex-"));
+  const ledger = join(dir, ".memory-pulse", "events.jsonl");
+  mkdirSync(dirname(ledger), { recursive: true });
+  writeFileSync(ledger, JSON.stringify({ t: 1, cause: "b", effect: "c", kind: "correction", withdrawn: ["$49"], replacement: ["$29"] }) + "\n");
+  const input = { session_id: "s", hook_event_name: "PreToolUse", tool_name: "apply_patch", tool_input: { command: "*** Begin Patch\n*** Add File: pricing.md\n+price is $49\n*** End Patch" } };
+  try { execFileSync(process.execPath, [SERVER, "guard"], { env: { ...process.env, MEMORY_PULSE_LEDGER: ledger }, input: JSON.stringify(input), encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }); assert.fail("should block"); }
+  catch (e) { assert.equal(e.status, 2); assert.match(String(e.stderr), /pricing\.md:[\s\S]*withdrawn at ledger t1/); }
 });

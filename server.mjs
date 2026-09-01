@@ -429,6 +429,26 @@ function textOfToolInput(input) {
   if (Array.isArray(input.edits)) for (const e of input.edits) if (typeof e?.new_string === "string") parts.push(e.new_string);
   return parts.join("\n");
 }
+// Codex edits files through `apply_patch`, whose argument is one patch that
+// can touch several files. The guard checks what a change INTRODUCES, per
+// file — an override or invariant scoped to a path must see that file's path,
+// not the patch as a blob. The patch is located by its content, not by a
+// field name, so the adapter does not depend on which key a host puts it in.
+export function patchSections(input) {
+  if (!input || typeof input !== "object") return [];
+  const patch = Object.values(input).find((v) => typeof v === "string" && v.includes("*** Begin Patch"));
+  if (!patch) return [];
+  const out = [];
+  let cur = null;
+  for (const line of patch.split("\n")) {
+    const m = /^\*\*\* (Add|Update|Delete) File: (.+)$/.exec(line);
+    if (m) { cur = { path: m[2].trim(), added: [] }; if (m[1] !== "Delete") out.push(cur); else cur = null; continue; }
+    if (/^\*\*\* (Begin|End) Patch/.test(line)) { if (line.startsWith("*** End")) cur = null; continue; }
+    if (!cur) continue;
+    if (line.startsWith("+")) cur.added.push(line.slice(1));
+  }
+  return out.map((s) => ({ path: s.path, text: s.added.join("\n") }));
+}
 // Ledger t values whose withdrawn terms a later correction retired.
 export function supersededSet(events) {
   const retired = new Set();
@@ -553,16 +573,27 @@ async function cliGuard() {
   let raw = "";
   for await (const chunk of process.stdin) raw += chunk;
   let payload; try { payload = JSON.parse(raw); } catch { return; } // not a hook call: allow
-  const text = textOfToolInput(payload.tool_input);
+  // Claude Code sends one file per Edit/Write; Codex sends one apply_patch
+  // that may touch several. Either way: one check per file, its own path.
+  const sections = patchSections(payload.tool_input);
+  const actions = sections.length ? sections : [{ path: payload.tool_input?.file_path ?? "", text: textOfToolInput(payload.tool_input) }];
   const { events } = readEvents();
-  const file = payload.tool_input?.file_path ?? "";
-  const v = localCheck(events, { kind: "edit", text, path: file }, readInvariants());
-  // no_evidence and verified pass SILENTLY here: a hook that warns on every
-  // edit the ledger has nothing to say about livelocks the agent. The loud
-  // form of no_evidence is `check --ci`.
-  if (v.verdict !== "blocked") return;
-  try { appendFileSync(violationsPath(), JSON.stringify({ at: new Date().toISOString(), file, hits: v.corrections.map((h) => ({ term: h.term, t: h.t })), invariants: v.invariants.map((i) => i.id) }) + "\n"); } catch { /* reporting is best effort */ }
-  const lines = v.reasons.filter((r) => !/^\d+ recorded event/.test(r)).map((r) => `  • ${r}`);
+  const invariants = readInvariants();
+  const blocked = [];
+  for (const a of actions) {
+    const v = localCheck(events, { kind: "edit", text: a.text, path: a.path }, invariants);
+    // no_evidence and verified pass SILENTLY here: a hook that warns on every
+    // edit the ledger has nothing to say about livelocks the agent. The loud
+    // form of no_evidence is `check --ci`.
+    if (v.verdict === "blocked") blocked.push({ file: a.path, v });
+  }
+  if (!blocked.length) return;
+  const lines = [];
+  for (const { file, v } of blocked) {
+    try { appendFileSync(violationsPath(), JSON.stringify({ at: new Date().toISOString(), file, hits: v.corrections.map((h) => ({ term: h.term, t: h.t })), invariants: v.invariants.map((i) => i.id) }) + "\n"); } catch { /* reporting is best effort */ }
+    if (blocked.length > 1 || sections.length) lines.push(`  ${file || "(no path)"}:`);
+    for (const r of v.reasons) if (!/^\d+ recorded event/.test(r)) lines.push(`  • ${r}`);
+  }
   process.stderr.write(`memory-pulse guard: blocked.\n${lines.join("\n")}\nUse the corrected value (mentioning both old and new in a comparison is fine), record a new correction if the old one is wrong, or \`memory-pulse guard allow "<term>" --path <prefix> "<reason>"\` if this is a false block.\n`);
   process.exit(2);
 }
@@ -672,9 +703,17 @@ function cliInstallHook() {
   // --project writes to <repo>/.claude/settings.json so the hooks TRAVEL WITH
   // THE REPO: a teammate who clones is guarded without installing anything.
   // (Adversarial review, 2026-08-31: a user-scope hook does not spread.)
+  // --codex targets Codex CLI instead: ~/.codex/hooks.json, or with --project
+  // <repo>/.codex/hooks.json. Same hook JSON, same events (Codex's hooks are
+  // Claude-Code-compatible; learn.chatgpt.com/docs/hooks, read 2026-09-01).
+  // Two differences that matter: a file edit arrives as tool `apply_patch`
+  // (matchers may also say Edit/Write), and Codex will not RUN a hook until
+  // the user reviews and trusts its exact definition via /hooks.
   const project = process.argv.includes("--project");
-  const home = process.env.MEMORY_PULSE_SETTINGS_DIR || (project ? join(process.cwd(), ".claude") : join(process.env.HOME || "", ".claude"));
-  const file = join(home, "settings.json");
+  const codex = process.argv.includes("--codex");
+  const dirName = codex ? ".codex" : ".claude";
+  const home = process.env.MEMORY_PULSE_SETTINGS_DIR || (project ? join(process.cwd(), dirName) : join(process.env.HOME || "", dirName));
+  const file = join(home, codex ? "hooks.json" : "settings.json");
   let settings = {};
   if (existsSync(file)) {
     try { settings = JSON.parse(readFileSync(file, "utf8")); }
@@ -687,14 +726,15 @@ function cliInstallHook() {
   if (!JSON.stringify(start).includes(BRIEF)) { start.push({ hooks: [{ type: "command", command: BRIEF }] }); changed++; }
   const GUARD = "npx -y memory-pulse guard";
   const pre = (settings.hooks.PreToolUse = settings.hooks.PreToolUse || []);
-  if (!JSON.stringify(pre).includes(GUARD)) { pre.push({ matcher: "Edit|Write|MultiEdit", hooks: [{ type: "command", command: GUARD }] }); changed++; }
+  if (!JSON.stringify(pre).includes(GUARD)) { pre.push({ matcher: codex ? "Edit|Write|apply_patch" : "Edit|Write|MultiEdit", hooks: [{ type: "command", command: GUARD }] }); changed++; }
   if (!changed) { console.log("hooks already installed — nothing to do"); return; }
   mkdirSync(home, { recursive: true });
   writeFileSync(file, JSON.stringify(settings, null, 2) + "\n");
   console.log(`installed ${changed} hook(s) in ${file}`);
   console.log("SessionStart: every session re-enters through the ledger automatically.");
-  console.log("PreToolUse (Edit/Write): an edit that writes back a withdrawn value is blocked and explained.");
-  console.log(project ? "Project-scoped: commit .claude/settings.json and every clone is guarded." : "Tip: `install-hook --project` writes the hooks into this repo so teammates inherit them.");
+  console.log(`PreToolUse (${codex ? "apply_patch" : "Edit/Write"}): an edit that writes back a withdrawn value is blocked and explained.`);
+  if (codex) console.log("Codex runs no hook it has not been shown: open Codex, run /hooks, and trust the two memory-pulse entries (once per definition).");
+  console.log(project ? `Project-scoped: commit ${dirName}/${codex ? "hooks.json" : "settings.json"} and every clone is guarded.` : "Tip: `install-hook --project` writes the hooks into this repo so teammates inherit them.");
   console.log("Remove either by deleting the memory-pulse entries from hooks.");
 }
 
@@ -717,7 +757,7 @@ if (isMain) {
   if (sub === "bench") { await cliBench(); process.exit(0); }
   if (sub === "stats") { await cliStats(); process.exit(0); }
   if (sub === "badge") { cliBadge(); process.exit(0); }
-  if (sub && sub !== "serve") { console.error(`unknown command: ${sub} (try: brief, check, guard, report, bench, stats, badge, install-hook)`); process.exit(1); }
+  if (sub && sub !== "serve") { console.error(`unknown command: ${sub} (try: brief, check, guard, report, bench, stats, badge, install-hook [--codex] [--project])`); process.exit(1); }
   process.stderr.write(`memory-pulse: ledger ${ledgerPath()} — api ${API}\n`);
   const rl = readline.createInterface({ input: process.stdin, terminal: false });
   // In-flight calls are drained before exit. Exiting the moment stdin closes
