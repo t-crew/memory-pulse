@@ -6,12 +6,12 @@
  */
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, existsSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 const SERVER = join(fileURLToPath(new URL(".", import.meta.url)), "..", "server.mjs");
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { createServer } from "node:http";
 import { gunzipSync } from "node:zlib";
 
@@ -300,4 +300,90 @@ test("remember stores supersedes on a correction and refuses it on a plain event
   assert.deepEqual(later.stored.supersedes, [first.t], "deduped; unknown and non-positive t values dropped");
   const rows = readFileSync(process.env.MEMORY_PULSE_LEDGER, "utf8").trim().split("\n").map((l) => JSON.parse(l));
   assert.deepEqual(rows.at(-1).supersedes, [first.t]);
+});
+
+// ------------------------------------------------------------ memory CI ----
+test("localCheck: three verdicts, in order, from files you own", async () => {
+  const { localCheck, exitCodeFor } = await import("../server.mjs");
+  const L = [
+    { t: 1, cause: "pricing-survey", effect: "wtp-measured", note: "$49" },
+    { t: 2, cause: "wtp-measured", effect: "price-corrected", kind: "correction", withdrawn: ["$49"], replacement: ["$29"] },
+    { t: 3, cause: "deploy", effect: "smoke-green" },
+  ];
+  assert.equal(localCheck([], { text: "price is $29" }).verdict, "no_evidence", "empty ledger is never verified");
+  const b = localCheck(L, { text: "price is $49", path: "docs/p.md" });
+  assert.equal(b.verdict, "blocked");
+  assert.match(b.reasons[0], /"\$49" was withdrawn at ledger t2/);
+  assert.equal(localCheck(L, { text: "was $49, now $29" }).verdict, "verified", "comparison passes and the correction is evidence");
+  assert.equal(localCheck(L, { text: "the deploy is smoke-green" }).verdict, "verified");
+  assert.equal(localCheck(L, { text: "unrelated" }).verdict, "no_evidence");
+  const inv = [{ id: "no-proof", statement: "say tamper-evident", patterns: ["/\\bproof\\b/i"] }, { id: "style", patterns: ["basically"], severity: "warn" }];
+  const i = localCheck(L, { text: "cryptographic proof" }, inv);
+  assert.equal(i.verdict, "blocked");
+  assert.equal(i.invariants[0].id, "no-proof");
+  assert.equal(localCheck(L, { text: "smoke-green, basically" }, inv).verdict, "verified", "warn severity reports, never blocks");
+  const scoped = [{ id: "receipt-wording", patterns: ["/\\bproof\\b/i"], paths: ["/repo/site/", "/repo/docs/LAUNCH.md"] }];
+  assert.equal(localCheck(L, { text: "a proof", path: "/repo/site/index.js" }, scoped).verdict, "blocked");
+  assert.notEqual(localCheck(L, { text: "a proof of smoke-green", path: "/repo/corpus/H2P_PROOFS.md" }, scoped).verdict, "blocked", "path-scoped invariant does not fire elsewhere");
+  assert.equal(localCheck(L, { text: "$49", path: ".memory-pulse/events.jsonl" }).verdict, "no_evidence", "sidecar exempt");
+  const withOverride = [...L, { t: 4, cause: "guard-allow", effect: "override:$49", kind: "override", override: { term: "$49", path: "docs/history" } }];
+  assert.notEqual(localCheck(withOverride, { text: "2025: $49", path: "docs/history/prices.md" }).verdict, "blocked");
+  assert.equal(localCheck(withOverride, { text: "2025: $49", path: "site/index.js" }).verdict, "blocked", "override is path-scoped");
+  assert.equal(exitCodeFor("no_evidence", { ci: true }), 1);
+  assert.equal(exitCodeFor("no_evidence"), 0);
+  assert.equal(exitCodeFor("blocked", { ci: true }), 2);
+});
+
+test("guard hook (scripted PreToolUse stdin): blocked exits 2 with the citation; verified and no_evidence exit 0 silently", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mp-guard-"));
+  const ledger = join(dir, ".memory-pulse", "events.jsonl");
+  const env = { ...process.env, MEMORY_PULSE_LEDGER: ledger };
+  mkdirSync(dirname(ledger), { recursive: true });
+  writeFileSync(ledger, [
+    JSON.stringify({ t: 1, cause: "a", effect: "smoke-green" }),
+    JSON.stringify({ t: 2, cause: "b", effect: "c", kind: "correction", withdrawn: ["$49"], replacement: ["$29"] }),
+  ].join("\n") + "\n");
+  const run = (input) => { try { return { code: 0, out: execFileSync(process.execPath, [SERVER, "guard"], { env, input: JSON.stringify(input), encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }) }; } catch (e) { return { code: e.status, err: String(e.stderr) }; } };
+  const blocked = run({ tool_name: "Edit", tool_input: { file_path: "/x/docs.md", new_string: "price is $49" } });
+  assert.equal(blocked.code, 2);
+  assert.match(blocked.err, /memory-pulse guard: blocked/);
+  assert.match(blocked.err, /withdrawn at ledger t2/);
+  assert.match(blocked.err, /guard allow/);
+  assert.equal(run({ tool_name: "Edit", tool_input: { file_path: "/x/docs.md", new_string: "smoke-green" } }).code, 0);
+  assert.equal(run({ tool_name: "Write", tool_input: { file_path: "/x/new.md", content: "nothing the ledger knows" } }).code, 0, "no_evidence is silent in the hook");
+  assert.equal(run({ tool_name: "Edit", tool_input: { file_path: "/x/.memory-pulse/events.jsonl", new_string: "$49" } }).code, 0, "sidecar exempt");
+  // Invariants file beside the ledger is honoured by the hook.
+  writeFileSync(join(dir, ".memory-pulse", "invariants.jsonl"), JSON.stringify({ id: "no-proof", statement: "say tamper-evident", patterns: ["/\\bproof\\b/i"] }) + "\n");
+  const inv = run({ tool_name: "Edit", tool_input: { file_path: "/x/site.js", new_string: "cryptographic proof" } });
+  assert.equal(inv.code, 2);
+  assert.match(inv.err, /invariant no-proof: say tamper-evident/);
+  // `guard allow` records an override and the same edit passes under that path.
+  const allow = execFileSync(process.execPath, [SERVER, "guard", "allow", "$49", "--path", "/x/history", "historical table"], { env, encoding: "utf8" });
+  assert.match(allow, /override recorded at t3/);
+  assert.equal(run({ tool_name: "Edit", tool_input: { file_path: "/x/history/2025.md", new_string: "price was $49" } }).code, 0);
+  assert.equal(run({ tool_name: "Edit", tool_input: { file_path: "/x/docs.md", new_string: "price is $49" } }).code, 2, "override does not leak outside its path");
+  const rows = readFileSync(ledger, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.deepEqual(rows.at(-1).override, { term: "$49", path: "/x/history", reason: "historical table" });
+});
+
+test("check --ci: no_evidence exits 1 (loud), blocked 2, verified 0; --json is machine-readable", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mp-check-"));
+  const ledger = join(dir, "events.jsonl");
+  const env = { ...process.env, MEMORY_PULSE_LEDGER: ledger };
+  writeFileSync(ledger, JSON.stringify({ t: 1, cause: "b", effect: "c", kind: "correction", withdrawn: ["$49"], replacement: ["$29"] }) + "\n" + JSON.stringify({ t: 2, cause: "deploy", effect: "smoke-green" }) + "\n");
+  const run = (args, input) => { try { return { code: 0, out: execFileSync(process.execPath, [SERVER, "check", ...args], { env, input, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }) }; } catch (e) { return { code: e.status, out: String(e.stdout) }; } };
+  const ne = run(["--ci", "--text", "nothing known"]);
+  assert.equal(ne.code, 1);
+  assert.match(ne.out, /NO_EVIDENCE \(not a pass/);
+  assert.equal(run(["--text", "nothing known"]).code, 0, "outside CI, no_evidence does not fail");
+  const bl = run(["--ci", "--text", "price is $49"]);
+  assert.equal(bl.code, 2);
+  assert.match(bl.out, /BLOCKED/);
+  const ok = run(["--ci", "--json", "--text", "deploy is smoke-green"]);
+  assert.equal(ok.code, 0);
+  const j = JSON.parse(ok.out);
+  assert.equal(j.verdict, "verified");
+  assert.equal(j.evidence[0].t, 2);
+  const stdin = run(["--ci"], "price is $49 again");
+  assert.equal(stdin.code, 2, "stdin is the default text source");
 });

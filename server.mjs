@@ -71,7 +71,7 @@ export function instructionLike(text) {
 }
 
 const t_next = (events) => events.reduce((m, e) => Math.max(m, e.t ?? 0), 0) + 1;
-function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn, replacement, supersedes }) {
+function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn, replacement, supersedes, override }) {
   // Instruction-like notes are refused at the write. The engine quarantines
   // them at read time too (and reports it), but a note that would be rendered
   // into every future session as an instruction should never reach the ledger.
@@ -107,6 +107,9 @@ function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn, repla
   // binding (only the latest binds). The ledger is append-only, so this is
   // the only way to narrow a term that turned out too broad — the first
   // estate correction withdrew a bare "$79", which is also our own price.
+  if (kind === "override" && override && typeof override.term === "string" && override.term.trim()) {
+    event.override = { term: override.term.trim(), ...(override.path ? { path: String(override.path) } : {}), ...(override.reason ? { reason: String(override.reason).slice(0, 200) } : {}) };
+  }
   if (Array.isArray(supersedes)) {
     const ts = [...new Set(supersedes.map(Number).filter((t) => Number.isInteger(t) && t >= 1 && t < t_next(events)))].sort((a, b) => a - b);
     if (ts.length) {
@@ -432,6 +435,83 @@ export function supersededSet(events) {
   for (const e of events) if (e.kind === "correction" && Array.isArray(e.supersedes)) for (const t of e.supersedes) retired.add(t);
   return retired;
 }
+const invariantsPath = () => join(dirname(ledgerPath()), "invariants.jsonl");
+/** Declared invariants: .memory-pulse/invariants.jsonl, one {id, statement, patterns[], severity?} per line. Never inferred. */
+export function readInvariants(path = invariantsPath()) {
+  if (!existsSync(path)) return [];
+  const out = [];
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    const l = line.trim(); if (!l) continue;
+    try { const inv = JSON.parse(l); if (inv && typeof inv.id === "string" && Array.isArray(inv.patterns)) out.push(inv); } catch { /* a torn line is reported by check, not fatal here */ }
+  }
+  return out;
+}
+const compilePattern = (p) => {
+  const m = typeof p === "string" ? p.match(/^\/(.+)\/([a-z]*)$/s) : null;
+  if (m) { try { const re = new RegExp(m[1], m[2].replace(/g/g, "")); return { src: p, test: (t) => re.test(t) }; } catch { return null; } }
+  return typeof p === "string" && p ? { src: p, test: (t) => t.includes(p) } : null;
+};
+/**
+ * The three-verdict check, computed locally (no network) from files you own.
+ * Mirrors the engine's src/check.js rule for rule; the engine is authoritative
+ * and adds integrity + the signed receipt via `check --receipt`.
+ *   blocked      withdrawn term without its replacement; invariant hit
+ *   verified     recorded events bear on the text and none is contradicted
+ *   no_evidence  nothing recorded bears on it — never reported as a pass
+ */
+export function localCheck(events, action, invariants = []) {
+  const text = typeof action?.text === "string" ? action.text : "";
+  const path = typeof action?.path === "string" ? action.path : "";
+  const kind = action?.kind ?? "edit";
+  const reasons = [], corrections = [], invHits = [], overrides = [];
+  const overridesFor = events.filter((e) => e.kind === "override" && e.override?.term);
+  const sidecar = /(^|[\\/])\.memory-pulse([\\/]|$)/.test(path);
+  if (text && !sidecar) {
+    const retired = supersededSet(events);
+    for (const c of events) {
+      if (c.kind !== "correction" || !Array.isArray(c.withdrawn) || retired.has(c.t)) continue;
+      const disavowed = Array.isArray(c.replacement) && c.replacement.some((r) => r && text.includes(r));
+      for (const term of c.withdrawn) {
+        if (!term || !text.includes(term)) continue;
+        if (disavowed) { reasons.push(`"${term}" appears beside its replacement (comparison or disavowal) — allowed, per ledger t${c.t}`); continue; }
+        const o = overridesFor.find((x) => x.override.term === term && (!x.override.path || (path && path.startsWith(x.override.path))));
+        if (o) { overrides.push({ t: o.t, term }); reasons.push(`"${term}" is withdrawn at t${c.t} but overridden at t${o.t}${o.override.reason ? ` (${o.override.reason})` : ""}`); continue; }
+        corrections.push({ t: c.t, term, replacement: c.replacement ?? [], cause: c.cause, effect: c.effect, note: c.note ?? "" });
+      }
+    }
+  }
+  for (const h of corrections) reasons.push(`"${h.term}" was withdrawn at ledger t${h.t}: ${h.cause} -> ${h.effect}${h.replacement.length ? ` — use ${h.replacement.join(" / ")}` : ""}`);
+  if (text) for (const inv of invariants) {
+    if (!inv || typeof inv.id !== "string") continue;
+    // `paths`: prefixes the invariant applies to; absent = every path. A rule
+    // about public wording must not fire on a proofs file or a test fixture.
+    const scope = Array.isArray(inv.paths) ? inv.paths.filter((x) => typeof x === "string" && x) : [];
+    if (scope.length && !scope.some((p) => path.startsWith(p))) continue;
+    const tests = (inv.patterns ?? []).map(compilePattern);
+    if (tests.some((t) => t === null)) reasons.push(`invariant ${inv.id} ignored: a pattern does not compile`);
+    const hit = tests.find((t) => t && t.test(text));
+    if (!hit) continue;
+    const severity = inv.severity === "warn" ? "warn" : "block";
+    invHits.push({ id: inv.id, severity, pattern: hit.src });
+    reasons.push(`${severity === "warn" ? "warning" : "invariant"} ${inv.id}${inv.statement ? `: ${inv.statement}` : ""} (matched ${hit.src})`);
+  }
+  const evidence = [];
+  if (text) for (const e of events) {
+    if (e.kind === "override") continue;
+    const terms = [e.cause, e.effect].filter((x) => typeof x === "string" && x.length >= 4).concat(Array.isArray(e.replacement) ? e.replacement.filter((r) => typeof r === "string" && r.length >= 2) : []);
+    const via = terms.find((t) => text.includes(t));
+    if (via) evidence.push({ t: e.t, cause: e.cause, effect: e.effect, kind: e.kind ?? "event", via });
+  }
+  evidence.sort((a, b) => (a.kind === "correction") === (b.kind === "correction") ? (b.t ?? 0) - (a.t ?? 0) : a.kind === "correction" ? -1 : 1);
+  let verdict;
+  if (corrections.length || invHits.some((h) => h.severity === "block")) verdict = "blocked";
+  else if (!text.trim()) { verdict = "no_evidence"; reasons.push("empty action text — nothing to check"); }
+  else if (!evidence.length) { verdict = "no_evidence"; reasons.push(`no recorded event bears on this ${kind}; ${events.length} event(s) checked`); }
+  else { verdict = "verified"; reasons.push(`${evidence.length} recorded event(s) bear on this ${kind}; none contradicted`); }
+  return { verdict, reasons, evidence: evidence.slice(0, 20), corrections, invariants: invHits, overrides, checked: { events: events.length, invariants: invariants.length, action: kind, path: path || null } };
+}
+export const exitCodeFor = (verdict, { ci = false } = {}) => (verdict === "blocked" ? 2 : verdict === "no_evidence" && ci ? 1 : 0);
+
 export function findViolations(events, text, filePath = "") {
   const hits = [];
   if (!text) return hits;
@@ -452,18 +532,80 @@ export function findViolations(events, text, filePath = "") {
   return hits;
 }
 async function cliGuard() {
+  // `guard allow "<term>" [--path p] "<reason>"` records an OVERRIDE: an
+  // explicit decision that a hit is a false block, scoped to a path prefix.
+  // Overrides are ledger events — they are the false-block signal the bench
+  // and the signed capsule count. Never inferred.
+  const argv = process.argv.slice(3);
+  if (argv[0] === "allow") {
+    const rest = argv.slice(1);
+    const pi = rest.indexOf("--path");
+    const path = pi >= 0 ? rest[pi + 1] : undefined;
+    const pos = rest.filter((a, i) => a !== "--path" && rest[i - 1] !== "--path");
+    const [term, reason] = pos;
+    if (!term) { console.error('usage: memory-pulse guard allow "<withdrawn term>" [--path <prefix>] "<reason>"'); process.exit(1); }
+    const r = appendEvent({ cause: "guard-allow", effect: `override:${term}`, kind: "override", note: reason, override: { term, path, reason } });
+    console.log(r.written ? `override recorded at t${r.t}: "${term}"${path ? ` under ${path}` : " (any path)"} — counted as a false block in your report` : `not recorded: ${r.reason}`);
+    process.exit(r.written ? 0 : 1);
+  }
   let raw = "";
   for await (const chunk of process.stdin) raw += chunk;
   let payload; try { payload = JSON.parse(raw); } catch { return; } // not a hook call: allow
   const text = textOfToolInput(payload.tool_input);
   const { events } = readEvents();
   const file = payload.tool_input?.file_path ?? "";
-  const hits = findViolations(events, text, file);
-  if (!hits.length) return;
-  try { appendFileSync(violationsPath(), JSON.stringify({ at: new Date().toISOString(), file, hits: hits.map((h) => ({ term: h.term, t: h.t })) }) + "\n"); } catch { /* reporting is best effort */ }
-  const lines = hits.map((h) => `  • "${h.term}" was withdrawn at ledger t${h.t} (${h.cause} -> ${h.effect})${h.note ? `: ${h.note}` : ""}${h.replacement?.length ? ` — use ${h.replacement.join(" / ")}` : ""}`);
-  process.stderr.write(`memory-pulse guard: this edit reintroduces a withdrawn value.\n${lines.join("\n")}\nUse the corrected value (mentioning both old and new in a comparison is fine), or record a new correction if the old one is wrong.\n`);
+  const v = localCheck(events, { kind: "edit", text, path: file }, readInvariants());
+  // no_evidence and verified pass SILENTLY here: a hook that warns on every
+  // edit the ledger has nothing to say about livelocks the agent. The loud
+  // form of no_evidence is `check --ci`.
+  if (v.verdict !== "blocked") return;
+  try { appendFileSync(violationsPath(), JSON.stringify({ at: new Date().toISOString(), file, hits: v.corrections.map((h) => ({ term: h.term, t: h.t })), invariants: v.invariants.map((i) => i.id) }) + "\n"); } catch { /* reporting is best effort */ }
+  const lines = v.reasons.filter((r) => !/^\d+ recorded event/.test(r)).map((r) => `  • ${r}`);
+  process.stderr.write(`memory-pulse guard: blocked.\n${lines.join("\n")}\nUse the corrected value (mentioning both old and new in a comparison is fine), record a new correction if the old one is wrong, or \`memory-pulse guard allow "<term>" --path <prefix> "<reason>"\` if this is a false block.\n`);
   process.exit(2);
+}
+
+// `memory-pulse check [--ci] [--receipt] [--kind edit|publish|command|custom]
+//                     [--path p] (--text "…" | --file f | --diff [base] | stdin)`
+// The three-verdict check, local by default. --ci makes no_evidence loud
+// (exit 1: never green on an empty evidence set); --receipt asks the engine
+// for the signed, keyless-verifiable form and its integrity view.
+async function cliCheck() {
+  const argv = process.argv.slice(3);
+  const flag = (n) => { const i = argv.indexOf(`--${n}`); return i >= 0 ? argv[i + 1] : undefined; };
+  const has = (n) => argv.includes(`--${n}`);
+  const ci = has("ci"), wantReceipt = has("receipt");
+  const kind = flag("kind") ?? "edit";
+  let text = flag("text"), path = flag("path");
+  if (text == null && flag("file") != null) { path = path ?? flag("file"); text = readFileSync(flag("file"), "utf8"); }
+  if (text == null && has("diff")) {
+    // Added lines only: a check is about what the change INTRODUCES.
+    const base = flag("diff") && !flag("diff").startsWith("--") ? flag("diff") : null;
+    const { execFileSync } = await import("node:child_process");
+    const args = base ? ["diff", `${base}...HEAD`, "--unified=0"] : ["diff", "--unified=0"];
+    const out = execFileSync("git", args, { encoding: "utf8" });
+    text = out.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++")).map((l) => l.slice(1)).join("\n");
+    path = path ?? "git-diff";
+  }
+  if (text == null) { let raw = ""; for await (const c of process.stdin) raw += c; text = raw; }
+  const { events } = readEvents();
+  const invariants = readInvariants();
+  let v = localCheck(events, { kind, text, path }, invariants);
+  let receipt = null, integrity = null;
+  if (wantReceipt) {
+    const out = await callApi("/v1/check", { action: { kind, text, path }, events, invariants, ...(readMemoryKey() ? { verifyKey: true } : {}) });
+    v = { ...out, local: v.verdict };
+    receipt = out.receipt ?? null; integrity = out.integrity ?? null;
+    if (out.receiptHint && !receipt) v.reasons.push(out.receiptHint);
+  }
+  const code = exitCodeFor(v.verdict, { ci });
+  if (has("json")) { console.log(JSON.stringify({ ...v, receipt, integrity }, null, 2)); process.exit(code); }
+  console.log(`memory-pulse check: ${v.verdict.toUpperCase()}${ci && v.verdict === "no_evidence" ? " (not a pass — the ledger has nothing to say about this)" : ""}`);
+  for (const r of v.reasons) console.log(`  • ${r}`);
+  if (v.evidence?.length) console.log(`  evidence: ${v.evidence.slice(0, 5).map((e) => `t${e.t} ${e.cause} -> ${e.effect}`).join("; ")}${v.evidence.length > 5 ? ` (+${v.evidence.length - 5})` : ""}`);
+  if (integrity?.drift?.length) console.log(`  drift: ${integrity.drift.join("; ")}`);
+  if (receipt) console.log(`  receipt: ${receipt.kind} ${receipt.verdict} over ${receipt.count} events, head ${receipt.head.slice(0, 12)}… — verify keyless at ${API}/v1/verify`);
+  process.exit(code);
 }
 
 // `npx memory-pulse report` — correction re-violation scoreboard, computed
@@ -568,11 +710,12 @@ if (isMain) {
   if (sub === "brief") { await cliBrief(); process.exit(0); }
   if (sub === "install-hook") { cliInstallHook(); process.exit(0); }
   if (sub === "guard") { await cliGuard(); process.exit(0); }
+  if (sub === "check") { await cliCheck(); process.exit(0); }
   if (sub === "report") { cliReport(); process.exit(0); }
   if (sub === "bench") { await cliBench(); process.exit(0); }
   if (sub === "stats") { await cliStats(); process.exit(0); }
   if (sub === "badge") { cliBadge(); process.exit(0); }
-  if (sub && sub !== "serve") { console.error(`unknown command: ${sub} (try: brief, guard, report, bench, stats, badge, install-hook)`); process.exit(1); }
+  if (sub && sub !== "serve") { console.error(`unknown command: ${sub} (try: brief, check, guard, report, bench, stats, badge, install-hook)`); process.exit(1); }
   process.stderr.write(`memory-pulse: ledger ${ledgerPath()} — api ${API}\n`);
   const rl = readline.createInterface({ input: process.stdin, terminal: false });
   // In-flight calls are drained before exit. Exiting the moment stdin closes

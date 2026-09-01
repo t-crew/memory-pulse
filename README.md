@@ -87,6 +87,8 @@ remember({ cause: "pricing-shipped", effect: "price-corrected", kind: "correctio
 npx memory-pulse brief          # the re-entry brief (what the SessionStart hook prints)
 npx memory-pulse guard          # PreToolUse hook: blocks edits that reintroduce withdrawn terms
                                 # (a later correction can `supersedes: [t]` an earlier one — only the latest binds)
+npx memory-pulse check --ci     # Memory CI: one of three verdicts for a change, from files you own
+npx memory-pulse guard allow "<term>" --path <prefix> "<reason>"   # record a false block as an override
 npx memory-pulse report         # correction re-violation scoreboard, computed locally
 npx memory-pulse bench          # instant measured metrics on YOUR ledger
 npx memory-pulse stats          # your telemetry capsule, signature verified by the engine
@@ -167,6 +169,43 @@ roadmap.)
 **License?** Client: MIT. Engine: proprietary, hosted.
 
 MIT © Travis Crew
+
+## Memory CI — three verdicts, never a green badge on nothing
+
+`memory-pulse check` gives a change one of three verdicts, computed locally
+from your ledger and your declared invariants:
+
+- **blocked** — the text writes back a value a correction withdrew (the
+  verdict names the ledger line that retired it and what to use instead), or
+  trips a declared invariant. Exit 2.
+- **verified** — recorded events bear on the text and none is contradicted.
+  Exit 0.
+- **no evidence** — the ledger has nothing to say. Reported as exactly that:
+  exit 1 under `--ci`, never a pass. (The hook stays silent on it so an
+  agent is not nagged on every edit; CI is where it is loud.)
+
+```
+npx memory-pulse check --ci --diff origin/main      # added lines of the branch
+npx memory-pulse check --ci --file docs/pricing.md
+echo "price is $49" | npx memory-pulse check --ci
+npx memory-pulse check --receipt --text "…"        # engine-signed receipt, keyless verify at /v1/verify
+```
+
+**Invariants** are declared, never inferred: `.memory-pulse/invariants.jsonl`,
+one per line — `{"id":"receipt-wording","statement":"say tamper-evident",
+"patterns":["/\\bproof\\b/i"],"paths":["site/"],"severity":"block"}`.
+A pattern written `/…/flags` is a regular expression; anything else is a
+verbatim substring. `paths` scopes the rule to path prefixes (a rule about
+public wording must not fire on a proofs file); `severity: "warn"` reports
+without blocking.
+
+**Overrides** are the false-block signal. `guard allow "$49" --path docs/history
+"historical table"` records an `override` event scoped to that path prefix;
+the hit passes there and nowhere else, and `report`/the signed capsule count
+it. The guard never guesses: only explicit withdrawn terms and declared
+invariants can block. Measured on our own 852-event ledger (bench in the
+engine repo): precision 1.0, false-block 0 over 871 negatives incl. 694 real
+notes; p95 1.7 ms at 1k events.
 
 ## Releasing
 
