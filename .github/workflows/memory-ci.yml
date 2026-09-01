@@ -1,0 +1,24 @@
+# Dogfood: this repository's own pull requests are checked against this
+# repository's own ledger (.memory-pulse/events.jsonl) and invariants. A PR
+# that writes back a withdrawn value fails here with the ledger line cited;
+# a PR the ledger knows nothing about is NEUTRAL, never green.
+name: memory-ci
+on:
+  pull_request:
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+jobs:
+  memory-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the diff is base...HEAD; a shallow clone has no base
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: ./
+        with:
+          ledger: .memory-pulse/events.jsonl

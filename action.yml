@@ -1,0 +1,56 @@
+# memory-pulse — Memory CI as a PR status check.
+#
+#   - uses: t-crew/memory-pulse@v0
+#     with:
+#       ledger: .memory-pulse/events.jsonl      # optional (default)
+#
+# Runs `memory-pulse check --ci` over the ADDED lines of the pull request
+# against the repo's own ledger and declared invariants, then reports one of
+# three verdicts as a check run and one sticky PR comment:
+#   blocked      → failure   (cites the ledger line that retired the value)
+#   verified     → success   ("N memories checked, M corrections enforced")
+#   no_evidence  → neutral   never green on an empty evidence set
+# Needs: permissions { checks: write, pull-requests: write, contents: read }.
+# Nothing leaves the runner unless you set MEMORY_PULSE_KEY for signed receipts.
+name: memory-pulse
+description: Memory CI — block a pull request that writes back a value your ledger retired; never green on no evidence.
+author: Travis Crew
+branding:
+  icon: shield
+  color: purple
+inputs:
+  ledger:
+    description: Path to the ledger file (JSONL) relative to the repository root.
+    required: false
+    default: .memory-pulse/events.jsonl
+  base:
+    description: Base ref to diff against (defaults to the pull request base branch).
+    required: false
+    default: ""
+  api-key:
+    description: MEMORY_PULSE_KEY for signed, keyless-verifiable check receipts (Pro/Enterprise). Optional.
+    required: false
+    default: ""
+outputs:
+  verdict:
+    description: blocked | verified | no_evidence
+    value: ${{ steps.check.outputs.verdict }}
+  conclusion:
+    description: failure | success | neutral
+    value: ${{ steps.check.outputs.conclusion }}
+runs:
+  using: composite
+  steps:
+    - name: memory-pulse check
+      id: check
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        MEMORY_PULSE_LEDGER: ${{ inputs.ledger }}
+        MEMORY_PULSE_KEY: ${{ inputs.api-key }}
+        MP_ACTION_BASE: ${{ inputs.base }}
+        MP_ACTION_CLI: ${{ github.action_path }}/server.mjs
+      run: |
+        # The runner exits 2 on blocked (fails the job); 0 otherwise. The
+        # check run carries the neutral/success distinction.
+        node "${{ github.action_path }}/action/run.mjs"

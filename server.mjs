@@ -508,7 +508,9 @@ export function localCheck(events, action, invariants = []) {
   else if (!text.trim()) { verdict = "no_evidence"; reasons.push("empty action text — nothing to check"); }
   else if (!evidence.length) { verdict = "no_evidence"; reasons.push(`no recorded event bears on this ${kind}; ${events.length} event(s) checked`); }
   else { verdict = "verified"; reasons.push(`${evidence.length} recorded event(s) bear on this ${kind}; none contradicted`); }
-  return { verdict, reasons, evidence: evidence.slice(0, 20), corrections, invariants: invHits, overrides, checked: { events: events.length, invariants: invariants.length, action: kind, path: path || null } };
+  const retiredT = supersededSet(events);
+  const binding = events.filter((e) => e.kind === "correction" && Array.isArray(e.withdrawn) && e.withdrawn.length && !retiredT.has(e.t)).length;
+  return { verdict, reasons, evidence: evidence.slice(0, 20), corrections, invariants: invHits, overrides, checked: { events: events.length, corrections: binding, invariants: invariants.length, action: kind, path: path || null } };
 }
 export const exitCodeFor = (verdict, { ci = false } = {}) => (verdict === "blocked" ? 2 : verdict === "no_evidence" && ci ? 1 : 0);
 

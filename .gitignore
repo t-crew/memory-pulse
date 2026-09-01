@@ -1,2 +1,7 @@
 node_modules/
-.memory-pulse/
+# The ledger and declared invariants are committed on purpose: they are what
+# the memory-ci workflow checks every pull request against. Everything else
+# under .memory-pulse/ (memory key, telemetry capsule, violations) stays local.
+.memory-pulse/*
+!.memory-pulse/events.jsonl
+!.memory-pulse/invariants.jsonl

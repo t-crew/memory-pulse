@@ -207,6 +207,35 @@ invariants can block. Measured on our own 852-event ledger (bench in the
 engine repo): precision 1.0, false-block 0 over 871 negatives incl. 694 real
 notes; p95 1.7 ms at 1k events.
 
+## PR status check — `uses: t-crew/memory-pulse@v0`
+
+The same three verdicts as a GitHub check on every pull request, against the
+ledger and invariants committed in your repository:
+
+```yaml
+# .github/workflows/memory-ci.yml
+on: pull_request
+permissions: { contents: read, checks: write, pull-requests: write }
+jobs:
+  memory-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: t-crew/memory-pulse@v0
+```
+
+It checks the **added lines** of the PR. `blocked` fails the check and the
+sticky comment cites the ledger line that retired each value; `verified`
+succeeds with "N memories checked, M corrections enforced"; `no_evidence` is
+a **neutral** conclusion with an explanation — never a green badge on an
+empty evidence set. The comment is one per PR and updated in place. Nothing
+leaves the runner unless you pass `api-key` for signed receipts. This
+repository runs it on itself (`.memory-pulse/events.jsonl` is committed for
+that reason); the first pull request it blocked is the demo.
+
 ## Releasing
 
 ```bash
