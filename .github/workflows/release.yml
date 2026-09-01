@@ -10,7 +10,9 @@
 name: release
 on:
   push:
-    tags: ["v*"]
+    # Only exact release tags publish. The moving major tag `v0` (what
+    # `uses: t-crew/memory-pulse@v0` resolves) must never trigger a publish.
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
 permissions:
   id-token: write   # OIDC for npm and the MCP registry
   contents: read
