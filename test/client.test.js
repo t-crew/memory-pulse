@@ -567,3 +567,19 @@ test("chain: appendEvent links rows; verifyChain passes on the real file and fai
   const r = localCheck(readEvents().events, { kind: "edit", text: "harmless", path: "/x" }, [], { chain: v }); assert.equal(r.verdict, "blocked"); assert.match(r.reasons.join("\n"), /ledger chain broken/i);
   writeFileSync(ledger, good); assert.equal(verifyChain().ok, true);
 });
+
+test("seal: the local ledger is checked against the last sealed head before it is trusted; an edit below the watermark blocks", async () => {
+  const { mkdtempSync, writeFileSync, readFileSync } = await import("node:fs"); const { tmpdir } = await import("node:os"); const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "mps-")); const ledger = join(dir, "events.jsonl"); writeFileSync(ledger, "");
+  process.env.MEMORY_PULSE_LEDGER = ledger;
+  const mod = await import("../server.mjs?seal=" + Date.now()); const { appendEvent, readEvents, setHeadHex, verifyLocalSeal, localCheck } = mod;
+  appendEvent({ cause: "a", effect: "b", note: "one" }); appendEvent({ cause: "b", effect: "c", note: "two" });
+  const rows = readEvents().events; const seal = { schema: "catalyst.rain.seal.v1", events: 2, through: 2, head: setHeadHex(rows), tag: "not-checked-locally" };
+  writeFileSync(join(dir, "seal.rain"), JSON.stringify(seal));
+  assert.equal(verifyLocalSeal().ok, true);
+  appendEvent({ cause: "c", effect: "d", note: "three (after the watermark)" }); assert.equal(verifyLocalSeal().ok, true, "appends after the watermark are fine");
+  const good = readFileSync(ledger, "utf8"); writeFileSync(ledger, good.replace('"note":"two"', '"note":"TWO"'));
+  const v = verifyLocalSeal(); assert.equal(v.ok, false); assert.match(v.reason, /content changed/);
+  const r = localCheck(readEvents().events, { kind: "edit", text: "harmless", path: "/x" }, [], { seal: v }); assert.equal(r.verdict, "blocked"); assert.match(r.reasons[0], /sealed head mismatch/);
+  writeFileSync(ledger, good); assert.equal(verifyLocalSeal().ok, true);
+});

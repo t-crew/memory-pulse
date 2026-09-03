@@ -20,7 +20,7 @@
  *   MEMORY_PULSE_LEDGER  override the ledger path (default: ./.memory-pulse/events.jsonl)
  */
 import readline from "node:readline";
-import { createHash } from "node:crypto";
+import { createHash, createCipheriv } from "node:crypto";
 import http from "node:http";
 import https from "node:https";
 import { gzipSync } from "node:zlib";
@@ -119,6 +119,32 @@ export function verifyChain(path = ledgerPath()) {
     prev = row.hash; chained++;
   }
   return { ok: true, legacy: legacy.length, chained, head: prev, from, sealed: true };
+}
+
+export // ---- Set head + seal (2026-09-03). The engine returns a signed seal on every read call: the order-free set head
+// (MuHash-style fold mod a 3072-bit prime; rows enter as SHA-256(canonical row) → AES-256-CTR keystream → BigInt) over
+// every row's full content, the row-chain head, a count and a watermark, under the engine's tag. The client keeps it
+// beside the ledger and presents it with the next call. Locally it cannot check the tag (no secret here) but it CAN
+// check content: rows up to the sealed watermark must still fold to the sealed head — a rogue edit below the watermark
+// is caught before the ledger is trusted. The engine re-checks the tag and the fold on the next call.
+const SEAL_P = (1n << 3072n) - 1103717n;
+const sealMod = (a) => ((a % SEAL_P) + SEAL_P) % SEAL_P;
+export function sealElement(row) {
+  const { hash, ...rest } = row; const key = createHash("sha256").update(canonicalJson(rest)).digest();
+  const v = BigInt("0x" + createCipheriv("aes-256-ctr", key, Buffer.alloc(16)).update(Buffer.alloc(384)).toString("hex")) % SEAL_P;
+  return v === 0n ? 1n : v;
+}
+export const setHeadHex = (rows) => rows.reduce((v, r) => sealMod(v * sealElement(r)), 1n).toString(16).padStart(768, "0");
+const sealPath = () => join(dirname(ledgerPath()), "seal.rain");
+export function readSeal() { try { return JSON.parse(readFileSync(sealPath(), "utf8")); } catch { return null; } }
+function writeSeal(seal) { if (!seal || typeof seal !== "object" || typeof seal.head !== "string") return; try { mkdirSync(dirname(sealPath()), { recursive: true }); writeFileSync(sealPath(), JSON.stringify(seal, null, 2) + "\n"); } catch { /* read-only checkout */ } }
+/** content check of the local ledger against the last seal — fails closed; { ok: null } when there is no seal yet */
+export function verifyLocalSeal(events = readEvents().events, seal = readSeal()) {
+  if (!seal || typeof seal.head !== "string") return { ok: null, reason: "no seal yet (first engine call issues one)" };
+  const covered = events.filter((e) => (Number(e.t) || 0) <= Number(seal.through));
+  if (covered.length !== Number(seal.events)) return { ok: false, reason: `ledger has ${covered.length} rows up to the sealed watermark t=${seal.through}, the seal covers ${seal.events}`, seal };
+  if (setHeadHex(covered) !== seal.head) return { ok: false, reason: `ledger content changed since the last sealed call (rows up to t=${seal.through} no longer fold to the sealed head)`, seal };
+  return { ok: true, seal };
 }
 
 export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn, replacement, supersedes, override }) {
@@ -275,7 +301,8 @@ async function callApi(route, body) {
   const prior = readTelemetry();
   const mk = readMemoryKey();
   const wantKey = !mk && memoryKeyOn() && Array.isArray(body.events) && body.events.length >= 500;
-  body = { ...body, project: projectName(), ...(prior ? { telemetry: prior } : {}), ...(mk ? { key: mk } : wantKey ? { wantKey: true } : {}) };
+  const priorSeal = readSeal();
+  body = { ...body, project: projectName(), ...(prior ? { telemetry: prior } : {}), ...(priorSeal ? { seal: priorSeal } : {}), ...(mk ? { key: mk } : wantKey ? { wantKey: true } : {}) };
   let res;
   try {
     res = await postJsonRetry(`${API}${route}`, { "content-type": "application/json", ...(KEY ? { "x-mp-key": KEY } : {}) }, JSON.stringify(body));
@@ -289,6 +316,7 @@ async function callApi(route, body) {
   const out = await res.json().catch(() => ({}));
   if (res.ok && out.telemetry) { writeTelemetry(out.telemetry); }
   if (res.ok && out.key) { writeMemoryKey(out.key); delete out.key; }
+  if (res.ok && out.seal) { writeSeal(out.seal); delete out.seal; }
   if (!res.ok) {
     let msg = out.error ?? `API error ${res.status}`;
     if (out.upgrade) msg += ` — upgrade: ${out.upgrade}`;
@@ -539,6 +567,7 @@ const compilePattern = (p) => {
  */
 export function localCheck(events, action, invariants = [], opts = {}) {
   const chain = opts.chain ?? null; const chainBroken = !!(chain && chain.ok === false);
+  const sealCheck = opts.seal ?? null; const sealBroken = !!(sealCheck && sealCheck.ok === false);
   const text = typeof action?.text === "string" ? action.text : "";
   const path = typeof action?.path === "string" ? action.path : "";
   const kind = action?.kind ?? "edit";
@@ -587,7 +616,8 @@ export function localCheck(events, action, invariants = [], opts = {}) {
   evidence.sort((a, b) => (a.kind === "correction") === (b.kind === "correction") ? (b.t ?? 0) - (a.t ?? 0) : a.kind === "correction" ? -1 : 1);
   let verdict;
   if (chainBroken) reasons.unshift(`ledger chain broken: ${chain.reason ?? "verification failed"}${chain.brokenAt != null ? ` (at t=${chain.brokenAt})` : ""} — a memory whose own history is in question cannot vouch for anything`);
-  if (corrections.length || invHits.some((h) => h.severity === "block") || chainBroken) verdict = "blocked";
+  if (sealBroken) reasons.unshift(`sealed head mismatch: ${sealCheck.reason} — the engine's last signed statement about this ledger no longer holds`);
+  if (corrections.length || invHits.some((h) => h.severity === "block") || chainBroken || sealBroken) verdict = "blocked";
   else if (!text.trim()) { verdict = "no_evidence"; reasons.push("empty action text — nothing to check"); }
   else if (!evidence.length) { verdict = "no_evidence"; reasons.push(`no recorded event bears on this ${kind}; ${events.length} event(s) checked`); }
   else { verdict = "verified"; reasons.push(`${evidence.length} recorded event(s) bear on this ${kind}; none contradicted`); }
@@ -644,7 +674,7 @@ async function cliGuard() {
   const invariants = readInvariants();
   const blocked = [];
   for (const a of actions) {
-    const v = localCheck(events, { kind: "edit", text: a.text, path: a.path }, invariants, { chain: verifyChain() });
+    const v = localCheck(events, { kind: "edit", text: a.text, path: a.path }, invariants, { chain: verifyChain(), seal: verifyLocalSeal(events) });
     // no_evidence and verified pass SILENTLY here: a hook that warns on every
     // edit the ledger has nothing to say about livelocks the agent. The loud
     // form of no_evidence is `check --ci`.
@@ -686,7 +716,7 @@ async function cliCheck() {
   if (text == null) { let raw = ""; for await (const c of process.stdin) raw += c; text = raw; }
   const { events } = readEvents();
   const invariants = readInvariants();
-  let v = localCheck(events, { kind, text, path }, invariants, { chain: verifyChain() });
+  let v = localCheck(events, { kind, text, path }, invariants, { chain: verifyChain(), seal: verifyLocalSeal(events) });
   let receipt = null, integrity = null;
   if (wantReceipt) {
     const out = await callApi("/v1/check", { action: { kind, text, path }, events, invariants, ...(readMemoryKey() ? { verifyKey: true } : {}) });
@@ -833,7 +863,7 @@ async function cliLint() {
   const rows = [];
   for (const f of files) {
     let text = ""; try { text = readFileSync(f, "utf8"); } catch { continue; }
-    const v = localCheck(events, { kind: "lint", text, path: f }, invariants, { chain: verifyChain() });
+    const v = localCheck(events, { kind: "lint", text, path: f }, invariants, { chain: verifyChain(), seal: verifyLocalSeal(events) });
     rows.push({ file: f, verdict: v.verdict, reasons: v.reasons.filter((r) => !/^\d+ recorded event/.test(r)), corrections: v.corrections.map((h) => ({ term: h.term, t: h.t })), invariants: v.invariants.map((i) => i.id) });
   }
   const retired = supersededSet(events);
