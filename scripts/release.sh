@@ -43,9 +43,16 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
   git -c user.name="Travis Crew" -c user.email="travisaaroncrew@gmail.com" commit -q -m "release $VERSION" || true
 fi
 
-echo "3/4 tag + push (release.yml publishes to npm + MCP registry)"
+echo "3/4 pull request → merge → tag (main is protected: changes land through a PR; the tag triggers release.yml)"
+BR="release/$VERSION"
+git branch -f "$BR" HEAD > /dev/null
+noproxy git push -f -u origin "$BR" > /dev/null
+if ! noproxy gh pr view "$BR" > /dev/null 2>&1; then
+  noproxy gh pr create --base main --head "$BR" --title "release $VERSION" --body "Automated release $VERSION via scripts/release.sh (tests green, manifests consistent)." > /dev/null
+fi
+noproxy gh pr merge "$BR" --merge --delete-branch > /dev/null
+noproxy git fetch -q origin && git merge -q --ff-only origin/main || { echo "local main did not fast-forward to origin/main — resolve before tagging"; exit 1; }
 git tag -f "v$VERSION" -m "memory-pulse $VERSION" > /dev/null
-noproxy git push --follow-tags origin main
 noproxy git push -f origin "v$VERSION"
 if [ "${MP_LOCAL_PUBLISH:-}" = "1" ] && ! noproxy npm view "memory-pulse@$VERSION" version > /dev/null 2>&1; then
   echo "   local npm publish (approve npm's browser prompt once)"
