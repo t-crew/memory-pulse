@@ -91,7 +91,10 @@ const relPath = (p) => { const cwd = process.cwd(); return p.startsWith(cwd + "/
 const INSTRUCTION_PATTERNS = [
   ["protect-instructions", /\b(ignore|disregard|forget)\b[^.\n]{0,40}\b(previous|prior|above|all|earlier)\b[^.\n]{0,20}\b(instructions?|rules?|prompts?)\b/i],
   ["protect-role", /\byou are now\b|\bfrom now on,? you\b|\bact as (an?|the) (system|admin|developer)\b/i],
-  ["protect-boundaries", /<\/?\s*(system|assistant|tool|user|human|developer)\s*>|\[(system|assistant|tool)\s*:?\s*\]/i],
+  // Any XML-ish wrapper tag, not just the enumerated role names: Claude Code injects synthetic
+  // user-turn content (<task-notification>, <local-command-stdout>, <command-name>, ...) that is
+  // system/tool output, not something the human typed — it must never be read as a correction.
+  ["protect-boundaries", /<\/?\s*[a-z][\w-]{2,40}\s*(?:[\s>]|$)|\[(system|assistant|tool)\s*:?\s*\]/i],
   ["protect-configuration", /\b(reveal|print|show|dump)\b[^.\n]{0,30}\b(system prompt|hidden prompt|your instructions)\b/i],
   ["protect-execution", /\b(run|execute|paste)\b[^.\n]{0,25}\b(this|the following)\b[^.\n]{0,15}\b(command|script|shell|code)\b/i],
   ["protect-installs", /\b(curl|wget)\b[^\n]{0,120}\|\s*(sudo\s+)?(sh|bash|zsh)\b/i],
@@ -596,9 +599,8 @@ export function handoffLine(events, { now = Date.now(), maxAgeMs = 7 * 86400e3 }
   return `↩ last handoff (t=${h.t}${Number.isFinite(t) ? `, ${ago(now - t)}` : ""}): ${(h.note ?? h.effect).replace(/^handoff \S+: ?/, "")}`;
 }
 export function offlineBrief(led, events, { now = Date.now(), recent = 8 } = {}) {
-  const lines = [];
+  const lines = [`memory-pulse: engine unreachable — local render from ${events.length} events (corrections and recency only; no salience ranking)`];
   if (currentMode() === "agent" && existsSync(agentPath())) { const ib = identityBlock(readEvents({ scope: "agent" })); if (ib) lines.push(ib); }
-  lines.push(`memory-pulse: engine unreachable — local render from ${events.length} events (corrections and recency only; no salience ranking)`);
   const hl = handoffLine(events, { now }); if (hl) lines.push(hl);
   const retired = supersededSet(events);
   const corr = events.filter((e) => e.kind === "correction" && !retired.has(e.t)).reverse().slice(0, 20);
@@ -688,6 +690,11 @@ async function cliObserve() {
   try {
     let raw = ""; try { raw = readFileSync(0, "utf8"); } catch { /* no stdin */ }
     let hook = {}; try { hook = raw.trim() ? JSON.parse(raw) : {}; } catch { hook = {}; }
+    // A "prompt" here can be synthetic — Claude Code delivers task-notifications and local-command
+    // output as user-turn text, not something Travis typed. cliAmbient already screens the last user
+    // turn this way; this hook fires on every submission and must too, or a "->" inside forwarded
+    // agent output gets recorded as a binding correction (t898/t899, 2026-09-03).
+    if (instructionLike(hook.prompt ?? "").length) { if (process.argv.includes("--verbose")) console.log("memory-pulse: prompt looks synthetic/instruction-like, skipped"); return; }
     const d = detectCorrection(hook.prompt ?? "");
     if (!d) { if (process.argv.includes("--verbose")) console.log("memory-pulse: no correction shape in this prompt"); return; }
     const r = appendEvent(correctionEvent(d, hook.prompt));
@@ -706,8 +713,8 @@ async function cliBrief() {
   if (process.argv.includes("--offline")) { process.stdout.write(offlineBrief(led, events) + "\n"); return; }
   try {
     const out = await callApi("/v1/pulse", { events, ...(tier ? { tier } : {}), ...(budget ? { budget } : {}) });
-    if (currentMode() === "agent" && existsSync(agentPath())) { const ib = identityBlock(readEvents({ scope: "agent" })); if (ib) process.stdout.write(ib + "\n"); }
     process.stdout.write(loadedLine(led, events, { keyStatus: out.keyStatus, tier: out.tier ?? tier, chars: out.text?.length, budget }) + "\n");
+    if (currentMode() === "agent" && existsSync(agentPath())) { const ib = identityBlock(readEvents({ scope: "agent" })); if (ib) process.stdout.write(ib + "\n"); }
     const hl = handoffLine(events); if (hl) process.stdout.write(hl + "\n");
     if (out.text) process.stdout.write(out.text + "\n");
     if (Array.isArray(out.quarantined) && out.quarantined.length) {

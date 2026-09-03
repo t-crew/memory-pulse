@@ -6,6 +6,8 @@
  */
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
+// tests never inherit the machine's agent mode or agent ledger
+process.env.MEMORY_PULSE_MODE = "deliberate"; process.env.MEMORY_PULSE_AGENT = "/nonexistent/agent/events.jsonl";
 import { mkdtempSync, readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";

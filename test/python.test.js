@@ -1,6 +1,8 @@
 // Cross-language chain: rows written by the Python client verify in Node and vice versa (byte-identical hashes).
 import { test } from "node:test";
 import assert from "node:assert/strict";
+// tests never inherit the machine's agent mode or agent ledger
+process.env.MEMORY_PULSE_MODE = "deliberate"; process.env.MEMORY_PULSE_AGENT = "/nonexistent/agent/events.jsonl";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";

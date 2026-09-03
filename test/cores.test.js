@@ -2,6 +2,8 @@
 // Written red-first. Every function here is deterministic — no model in the loop.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+// tests never inherit the machine's agent mode or agent ledger
+process.env.MEMORY_PULSE_MODE = "deliberate"; process.env.MEMORY_PULSE_AGENT = "/nonexistent/agent/events.jsonl";
 import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
