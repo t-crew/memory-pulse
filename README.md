@@ -4,6 +4,8 @@
 [![license](https://img.shields.io/badge/license-MIT-6366f1)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-server-a855f7)](https://github.com/t-crew/memory-pulse)
 
+**Site:** [pulse.strategic-innovations.ai](https://pulse.strategic-innovations.ai/) — try the guard in the browser · [compare with Mem0, Zep, Letta and CLAUDE.md](https://pulse.strategic-innovations.ai/compare)
+
 **Error correction for agents.** Agent memory is probabilistic; memory-pulse
 detects the error without reading the state, corrects toward the recorded
 truth, and keeps an exact layer for what must never drift. Causal project
