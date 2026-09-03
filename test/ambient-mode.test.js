@@ -10,7 +10,7 @@ import { join } from "node:path";
 const load = async (tag) => {
   const dir = mkdtempSync(join(tmpdir(), "mpa-")); const ledger = join(dir, "events.jsonl"); writeFileSync(ledger, "");
   const ws = join(dir, "agent", "events.jsonl");
-  process.env.MEMORY_PULSE_LEDGER = ledger; process.env.MEMORY_PULSE_AGENT = ws; process.env.MEMORY_PULSE_SETTINGS_DIR = join(dir, "settings");
+  delete process.env.MEMORY_PULSE_MODE; process.env.MEMORY_PULSE_LEDGER = ledger; process.env.MEMORY_PULSE_AGENT = ws; process.env.MEMORY_PULSE_SETTINGS_DIR = join(dir, "settings");
   const mod = await import("../server.mjs?" + tag + "=" + Date.now()); return { dir, ledger, ws, ...mod };
 };
 
@@ -59,6 +59,36 @@ test("ambient capture: decisions go to the project, preferences to the agent led
   assert.deepEqual(extractAmbient(turn("how are you", "Fine, thanks.")), [], "small talk yields nothing");
 });
 
+// Regression (2026-09-03, t898/t899 on the estate ledger): Claude Code delivers a finished
+// background task as a synthetic user-turn wrapped in <task-notification>...</task-notification>.
+// That is forwarded agent output, not something Travis typed — but if it happens to contain an
+// "X -> Y" shape (a rename, a benchmark delta) the arrow correction-shape matched it and recorded
+// a binding correction ("Player join" withdrawn for "Object migrates") that no one ever said.
+test("instructionLike: any XML-ish wrapper tag is caught, not just the enumerated role names", async () => {
+  const { instructionLike } = await load("ib");
+  const wrapped = '<task-notification> <task-id>a4568323</task-id> <tool-use-id>toolu_01</tool-use-id> Player join -> Object migrates </task-notification>';
+  assert.ok(instructionLike(wrapped).includes("protect-boundaries"), "task-notification wrapper is recognized as synthetic");
+  assert.ok(instructionLike("<local-command-stdout>renderer swap -> 2x performance</local-command-stdout>").includes("protect-boundaries"));
+  assert.deepEqual(instructionLike("the price is $29 not $49"), [], "ordinary correction prose is untouched");
+});
+
+test("observe (UserPromptSubmit hook): a task-notification-shaped prompt is never recorded as a user correction, even when its body contains an arrow", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const { fileURLToPath } = await import("node:url");
+  const SERVER = join(fileURLToPath(new URL("../server.mjs", import.meta.url)));
+  const dir = mkdtempSync(join(tmpdir(), "mpo-")); const ledger = join(dir, "events.jsonl"); writeFileSync(ledger, "");
+  const env = { ...process.env, MEMORY_PULSE_LEDGER: ledger };
+  const synthetic = '<task-notification> <task-id>a4568323</task-id> <tool-use-id>toolu_01</tool-use-id> <output-file>/private/tmp/x</output-file> Player join -> Object migrates </task-notification>';
+  execFileSync(process.execPath, [SERVER, "observe"], { env, input: JSON.stringify({ prompt: synthetic }), encoding: "utf8" });
+  assert.equal(readFileSync(ledger, "utf8").trim(), "", "the synthetic notification wrote nothing to the ledger");
+  // The same shape, actually typed by a human with no wrapper tag, still works — this guards
+  // against the fix over-reaching and silencing real ambient corrections.
+  execFileSync(process.execPath, [SERVER, "observe"], { env, input: JSON.stringify({ prompt: "renderer swap -> 2x performance" }), encoding: "utf8" });
+  const rows = readFileSync(ledger, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  assert.equal(rows.length, 1, "an untagged human prompt with the same arrow shape is still captured");
+  assert.deepEqual(rows[0].withdrawn, ["renderer swap"]); assert.deepEqual(rows[0].replacement, ["2x performance"]);
+});
+
 test("guard: a correction recorded in the agent ledger blocks an edit in ANY project", async () => {
   const { appendEvent, guardVerdict } = await load("gw");
   appendEvent({ cause: "pricing-corrected", effect: "price-is-29", kind: "correction", withdrawn: ["$49"], replacement: ["$29"], scope: "agent" });
@@ -76,9 +106,10 @@ test("mode: default is deliberate; `mode agent` installs the Stop + UserPromptSu
   assert.ok(r.installed >= 2);
   appendEvent({ cause: "identity-set", effect: "who", note: "Travis Crew, founder", tags: ["identity"], pinned: true, scope: "agent" });
   const led = readEvents(); const text = offlineBrief(led, led.events);
-  assert.match(text.split("\n")[0], /^AGENT IDENTITY/, "identity first in ambient mode");
+  assert.match(text.split("\n")[0], /^memory-pulse: engine unreachable/, "the load-status line is always first");
+  assert.match(text.split("\n")[1], /^AGENT IDENTITY/, "the agent's self comes right after it in agent mode");
   setMode("deliberate"); assert.equal(currentMode(), "deliberate");
   const s2 = JSON.parse(readFileSync(join(dir, "settings", "settings.json"), "utf8"));
   assert.doesNotMatch(JSON.stringify(s2.hooks.Stop ?? []), /memory-pulse ambient/);
-  assert.doesNotMatch(offlineBrief(led, led.events).split("\n")[0], /^AGENT IDENTITY/, "deliberate mode: no identity block");
+  assert.doesNotMatch(offlineBrief(led, led.events), /AGENT IDENTITY/, "deliberate mode: no identity block");
 });
