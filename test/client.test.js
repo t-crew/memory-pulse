@@ -599,3 +599,9 @@ test("gap sealing: an unchained row from an older writer is reported unsealed, n
   v = verifyChain(); assert.equal(v.ok, false); assert.match(v.reason, /gap/i);
   writeFileSync(ledger, sealed); assert.equal(verifyChain().ok, true);
 });
+
+test("brief prints the engine's seal verdict when the presented seal no longer matches the ledger", async () => {
+  const { sealDriftLine } = await import("../server.mjs?sd=" + Date.now());
+  assert.equal(sealDriftLine({}), "");
+  assert.match(sealDriftLine({ seal_drift: ["ledger content changed since the last sealed call (rows up to t=5 no longer fold to the sealed head)"] }), /ledger integrity \(engine\): ledger content changed/);
+});

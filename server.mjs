@@ -227,6 +227,8 @@ function writeTelemetry(capsule) {
 }
 const projectName = () => process.env.MEMORY_PULSE_PROJECT || process.cwd().split(/[\\/]/).filter(Boolean).pop() || "project";
 const fmtK = (n) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
+/** The engine's own verdict on the seal the client presented — printed, never swallowed (silent success is the failure mode). */
+export const sealDriftLine = (out) => (Array.isArray(out?.seal_drift) && out.seal_drift.length ? `⚠ ledger integrity (engine): ${out.seal_drift.join("; ")}` : "");
 export function telemetryFooter(c) {
   const k = c?.counters;
   if (!k || !k.calls) return "";
@@ -472,6 +474,7 @@ async function cliBrief() {
     if (Array.isArray(out.quarantined) && out.quarantined.length) {
       process.stdout.write(`⚠ ${out.quarantined.length} note(s) quarantined — instruction-like content was not rendered (t=${out.quarantined.map((q) => q.t).join(", ")})\n`);
     }
+    const sd = sealDriftLine(out); if (sd) process.stdout.write(sd + "\n");
     const foot = telemetryFooter(out.telemetry);
     if (foot) process.stdout.write(foot + "\n");
   } catch (e) {
