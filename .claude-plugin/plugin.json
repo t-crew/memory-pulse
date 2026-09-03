@@ -1,6 +1,6 @@
 {
   "name": "memory-pulse",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Causal project memory that costs ~670 tokens of tool definitions, not your context window. Corrections always surface first.",
   "author": {
     "name": "Travis Crew"
