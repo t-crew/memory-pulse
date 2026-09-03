@@ -105,23 +105,32 @@ export const rowHash = (row) => { const { hash, ...rest } = row; return createHa
 export const sealDigest = (rawLines) => createHash("sha256").update(rawLines.map((l) => l.trim()).filter(Boolean).join("\n")).digest("hex");
 const hasHash = (line) => { try { const o = JSON.parse(line); return o && typeof o.hash === "string"; } catch { return false; } };
 export function verifyChain(path = ledgerPath()) {
-  if (!existsSync(path)) return { ok: true, legacy: 0, chained: 0, head: null, from: null, sealed: false };
-  const lines = readFileSync(path, "utf8").split("\n").filter((l) => l.trim()); let i = 0; const legacy = [];
-  while (i < lines.length && !hasHash(lines[i])) legacy.push(lines[i++]);
-  if (i >= lines.length) return { ok: true, legacy: legacy.length, chained: 0, head: null, from: null, sealed: false };
-  let prev = null, chained = 0, from = null;
-  for (; i < lines.length; i++) {
-    let row; try { row = JSON.parse(lines[i]); } catch { return { ok: false, legacy: legacy.length, chained, head: prev, from, reason: `unparseable row after the chain started (line ${i + 1})`, brokenAt: null }; }
-    if (typeof row.hash !== "string") return { ok: false, legacy: legacy.length, chained, head: prev, from, reason: `unchained row after the chain started (t=${row.t ?? "?"})`, brokenAt: row.t ?? null };
-    if (chained === 0) { from = row.t ?? null; if (row.legacy_digest !== sealDigest(legacy)) return { ok: false, legacy: legacy.length, chained, head: null, from, reason: `legacy rows changed since the chain sealed them (digest mismatch at t=${row.t})`, brokenAt: row.t ?? null }; }
-    else if (row.prev !== prev) return { ok: false, legacy: legacy.length, chained, head: prev, from, reason: `row t=${row.t} does not link to the previous row (a row was removed, reordered or inserted)`, brokenAt: row.t ?? null };
-    if (rowHash(row) !== row.hash) return { ok: false, legacy: legacy.length, chained, head: prev, from, reason: `row t=${row.t} does not match its own hash (edited in place)`, brokenAt: row.t ?? null };
-    prev = row.hash; chained++;
+  // Rows before the first hashed row are legacy (sealed by it). After that every chained row links to the previous
+  // chained row AND seals the unchained rows written in between (gap_digest): an older writer appends rows without a
+  // hash, and that is not an edit. An unchained tail is reported as `unsealed` (the next chained write seals it).
+  if (!existsSync(path)) return { ok: true, legacy: 0, chained: 0, head: null, from: null, sealed: false, unsealed: 0 };
+  const lines = readFileSync(path, "utf8").split("\n").filter((l) => l.trim());
+  let prev = null, chained = 0, from = null, legacy = 0; const gap = [];
+  const out = (extra) => ({ legacy, chained, head: prev, from, ...extra });
+  for (let i = 0; i < lines.length; i++) {
+    if (!hasHash(lines[i])) { gap.push(lines[i]); continue; }
+    const row = JSON.parse(lines[i]);
+    if (chained === 0) {
+      from = row.t ?? null; legacy = gap.length;
+      if (row.legacy_digest !== sealDigest(gap)) return out({ ok: false, head: null, reason: `legacy rows changed since the chain sealed them (digest mismatch at t=${row.t})`, brokenAt: row.t ?? null });
+    } else {
+      if (row.prev !== prev) return out({ ok: false, reason: `row t=${row.t} does not link to the previous chained row (a row was removed, reordered or inserted)`, brokenAt: row.t ?? null });
+      const want = row.gap_digest ?? null;
+      if (want === null ? gap.length > 0 : want !== sealDigest(gap)) return out({ ok: false, reason: `unchained rows before t=${row.t} do not match the gap it sealed (${gap.length} row(s); edited, removed or inserted)`, brokenAt: row.t ?? null });
+    }
+    if (rowHash(row) !== row.hash) return out({ ok: false, reason: `row t=${row.t} does not match its own hash (edited in place)`, brokenAt: row.t ?? null });
+    prev = row.hash; chained++; gap.length = 0;
   }
-  return { ok: true, legacy: legacy.length, chained, head: prev, from, sealed: true };
+  if (chained === 0) return { ok: true, legacy: gap.length, chained: 0, head: null, from: null, sealed: false, unsealed: 0 };
+  return out({ ok: true, sealed: true, unsealed: gap.length });
 }
 
-export // ---- Set head + seal (2026-09-03). The engine returns a signed seal on every read call: the order-free set head
+// ---- Set head + seal (2026-09-03). The engine returns a signed seal on every read call: the order-free set head
 // (MuHash-style fold mod a 3072-bit prime; rows enter as SHA-256(canonical row) → AES-256-CTR keystream → BigInt) over
 // every row's full content, the row-chain head, a count and a watermark, under the engine's tag. The client keeps it
 // beside the ledger and presents it with the next call. Locally it cannot check the tag (no secret here) but it CAN
@@ -193,7 +202,7 @@ export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn
       event.supersedes = ts;
     }
   }
-    { const raw = readFileSync(path, "utf8").split("\n").filter((l) => l.trim()); let last = null, seen = false; const legacy = []; for (const l of raw) { if (hasHash(l)) { seen = true; last = JSON.parse(l).hash; } else if (!seen) legacy.push(l); } if (seen) event.prev = last; else { event.legacy_digest = sealDigest(legacy); event.prev = null; } event.hash = rowHash(event); }
+    { const raw = readFileSync(path, "utf8").split("\n").filter((l) => l.trim()); let last = null, seen = false; const gap = []; for (const l of raw) { if (hasHash(l)) { seen = true; last = JSON.parse(l).hash; gap.length = 0; } else gap.push(l); } if (seen) { event.prev = last; if (gap.length) event.gap_digest = sealDigest(gap); } else { event.legacy_digest = sealDigest(gap); event.prev = null; } event.hash = rowHash(event); }
 appendFileSync(path, JSON.stringify(event) + "\n");
   // Echo the canonical stored event back. A shell-quoting accident once ate a
   // word from a note SILENTLY; the caller must be able to see what the ledger
@@ -911,7 +920,7 @@ if (isMain) {
     // walk the row chain and check the ledger against the last seal; exit 2 on either failure (fail closed, like check)
     const chain = verifyChain(); const seal = verifyLocalSeal();
     if (process.argv.includes("--json")) { console.log(JSON.stringify({ chain, seal: { ok: seal.ok, reason: seal.reason ?? null, through: seal.seal?.through ?? null, events: seal.seal?.events ?? null, digest: seal.seal?.digest ?? null } }, null, 2)); process.exit(chain.ok && seal.ok !== false ? 0 : 2); }
-    console.log(chain.ok ? `chain: OK — ${chain.chained} chained row(s)${chain.chained ? ` from t=${chain.from}` : ""}, ${chain.legacy} legacy row(s)${chain.sealed ? " sealed" : " (unsealed until the first chained write)"}${chain.head ? ` · head ${chain.head.slice(0, 12)}` : ""}` : `chain: BROKEN — ${chain.reason}`);
+    console.log(chain.ok ? `chain: OK — ${chain.chained} chained row(s)${chain.chained ? ` from t=${chain.from}` : ""}, ${chain.legacy} legacy row(s)${chain.sealed ? " sealed" : " (unsealed until the first chained write)"}${chain.head ? ` · head ${chain.head.slice(0, 12)}` : ""}${chain.unsealed ? ` · ${chain.unsealed} unsealed row(s) from an older writer (the next write seals them)` : ""}` : `chain: BROKEN — ${chain.reason}`);
     console.log(seal.ok === null ? `seal: none yet — ${seal.reason}` : seal.ok ? `seal: OK — engine-signed over ${seal.seal.events} row(s) through t=${seal.seal.through}${seal.seal.digest ? ` · ${seal.seal.digest.slice(0, 12)}` : ""}` : `seal: MISMATCH — ${seal.reason}`);
     process.exit(chain.ok && seal.ok !== false ? 0 : 2);
   }

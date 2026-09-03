@@ -583,3 +583,19 @@ test("seal: the local ledger is checked against the last sealed head before it i
   const r = localCheck(readEvents().events, { kind: "edit", text: "harmless", path: "/x" }, [], { seal: v }); assert.equal(r.verdict, "blocked"); assert.match(r.reasons[0], /sealed head mismatch/);
   writeFileSync(ledger, good); assert.equal(verifyLocalSeal().ok, true);
 });
+
+test("gap sealing: an unchained row from an older writer is reported unsealed, not broken; the next chained write seals it; editing the sealed row breaks", async () => {
+  const { mkdtempSync, writeFileSync, readFileSync } = await import("node:fs"); const { tmpdir } = await import("node:os"); const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "mpg-")); const ledger = join(dir, "events.jsonl"); writeFileSync(ledger, "");
+  process.env.MEMORY_PULSE_LEDGER = ledger;
+  const mod = await import("../server.mjs?gap=" + Date.now()); const { appendEvent, verifyChain, localCheck, readEvents } = mod;
+  appendEvent({ cause: "a", effect: "b" });
+  writeFileSync(ledger, readFileSync(ledger, "utf8") + JSON.stringify({ t: 2, cause: "old", effect: "writer", note: "no hash" }) + "\n");
+  let v = verifyChain(); assert.equal(v.ok, true, JSON.stringify(v)); assert.equal(v.unsealed, 1);
+  assert.notEqual(localCheck(readEvents().events, { kind: "edit", text: "harmless", path: "/x" }, [], { chain: v }).verdict, "blocked");
+  const r = appendEvent({ cause: "b", effect: "c" }); assert.equal(typeof r.stored.gap_digest, "string");
+  v = verifyChain(); assert.equal(v.ok, true); assert.equal(v.unsealed, 0);
+  const sealed = readFileSync(ledger, "utf8"); writeFileSync(ledger, sealed.replace('"no hash"', '"REWRITTEN"'));
+  v = verifyChain(); assert.equal(v.ok, false); assert.match(v.reason, /gap/i);
+  writeFileSync(ledger, sealed); assert.equal(verifyChain().ok, true);
+});
