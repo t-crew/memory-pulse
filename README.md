@@ -116,6 +116,8 @@ npx memory-pulse guard          # PreToolUse hook: blocks edits that reintroduce
                                 # (a later correction can `supersedes: [t]` an earlier one — only the latest binds)
 npx memory-pulse check --ci     # Memory CI: one of three verdicts for a change, from files you own
 npx memory-pulse verify         # row chain + last engine seal; exit 2 if either fails
+npx memory-pulse brief --offline  # local render when the engine is unreachable
+npx memory-pulse install-hook --ambient  # also record prompts shaped like corrections
 npx memory-pulse lint [--ci]    # dry run: do CLAUDE.md / AGENTS.md / .claude/rules still state a value the ledger retired?
 npx memory-pulse guard allow "<term>" --path <prefix> "<reason>"   # record a false block as an override
 npx memory-pulse report         # correction re-violation scoreboard, computed locally
@@ -175,6 +177,15 @@ A memory that can be rewritten is not a ledger. Since 0.3.1 three things hold, e
 - **Seal.** Every read call returns a seal signed by the engine — row count, watermark, the set head over every row's full content, the chain head. The client keeps it in `seal.rain` beside the ledger and presents it on the next call. Locally, rows up to the sealed watermark must still fold to the sealed head before the ledger is trusted; at the engine, the signature and the fold are re-checked and an edit below the watermark is reported as drift and blocks. A process with write access can rewrite the file and even the chain; it cannot produce the engine's signature, and it cannot make edited rows fold to the sealed head.
 
 Nothing is stored server-side for any of this; the seal travels in the payload like the telemetry capsule and the memory key.
+
+## Survives compaction, works offline, captures corrections, speaks Python
+
+Four things added on 2026-09-03, each deterministic (no model in the loop):
+
+- **Compaction handoff.** `install-hook` now adds a PreCompact hook. Before Claude Code compacts, `memory-pulse handoff` reads the transcript and records what the session was doing as facts: the last asks, the files edited, the last error, the assistant's last state. The next session start prints it first, online or offline. An instruction-like message is dropped from the note, never recorded.
+- **Offline brief.** When the engine is unreachable (air-gapped, dead network, outage) the session no longer starts empty: `brief` prints a local render — every binding correction with its withdrawn and replacement terms, the last handoff, the recent rows — labelled as a local render with no salience ranking. `brief --offline` forces it. Guard, check, lint and verify never needed the network.
+- **Ambient correction capture (opt-in).** `install-hook --ambient` adds a UserPromptSubmit hook. A prompt shaped like a correction — `the price is $29 not $49`, `change 0.3.1 to 0.3.2`, `500 events -> 924 events` — is recorded as a correction carrying both terms, so the guard enforces it from the next edit on. A prompt that does not yield both terms is left alone. Silent unless `--verbose`.
+- **Python client.** `python/memory_pulse.py` is a single stdlib-only file with the same ledger format, the same hash chain and the same guard rule. A LangChain or CrewAI agent and a Claude Code session can share one ledger and verify each other's rows; the test suite writes rows from Python and verifies them in Node, and back.
 
 ## What runs where (the privacy contract)
 

@@ -199,7 +199,7 @@ test("findViolations only matches explicit withdrawn terms on corrections", asyn
 test("install-hook installs both hooks and stays idempotent", () => {
   const dir = mkdtempSync(join(tmpdir(), "mp-hook2-"));
   const run = () => execFileSync(process.execPath, [SERVER, "install-hook"], { env: { ...process.env, MEMORY_PULSE_SETTINGS_DIR: dir }, encoding: "utf8" });
-  assert.match(run(), /installed 2 hook/);
+  assert.match(run(), /installed 3 hook/);
   assert.match(run(), /already installed/);
   const s = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8"));
   assert.equal(s.hooks.PreToolUse[0].matcher, "Edit|Write|MultiEdit");
@@ -437,7 +437,7 @@ test("install-hook --codex writes Codex's hooks.json (user or --project), same e
   const dir = mkdtempSync(join(tmpdir(), "mp-codex-hook-"));
   const run = (...a) => execFileSync(process.execPath, [SERVER, "install-hook", "--codex", ...a], { env: { ...process.env, MEMORY_PULSE_SETTINGS_DIR: dir }, encoding: "utf8" });
   const first = run();
-  assert.match(first, /installed 2 hook\(s\) in .*hooks\.json/);
+  assert.match(first, /installed 3 hook\(s\) in .*hooks\.json/);
   assert.match(first, /run \/hooks, and trust/, "Codex will not run an untrusted hook; the user has to be told");
   assert.match(run(), /already installed/);
   const h = JSON.parse(readFileSync(join(dir, "hooks.json"), "utf8")).hooks;
