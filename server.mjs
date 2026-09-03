@@ -42,7 +42,7 @@ function ledgerPath() {
 // whether its memory arrived whole (anthropics/claude-code #82056 — "loaded
 // whole, truncated, or not at all"). `malformed` lists 1-based line numbers
 // that were skipped; `digest` is the sha256 of the bytes read; `bytes` the size.
-function readEvents() {
+export function readEvents() {
   const path = ledgerPath();
   if (!existsSync(path)) return { path, events: [], malformed: [], bytes: 0, digest: null, lines: 0 };
   const raw = readFileSync(path, "utf8");
@@ -97,7 +97,31 @@ export function instructionLike(text) {
 }
 
 const t_next = (events) => events.reduce((m, e) => Math.max(m, e.t ?? 0), 0) + 1;
-function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn, replacement, supersedes, override }) {
+// ---- Hash chain (2026-09-03). Every appended row carries prev (hash of the previous chained row) and hash (sha256 of its
+// own canonical JSON, keys sorted, prev included). Rows that existed before the chain are never rewritten: the first chained
+// row seals them with a digest of their raw bytes. verifyChain() fails closed and the guard/check/lint refuse a broken ledger.
+const canonicalJson = (v) => v === null || typeof v !== "object" ? JSON.stringify(v) : Array.isArray(v) ? `[${v.map(canonicalJson).join(",")}]` : `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson(v[k])}`).join(",")}}`;
+export const rowHash = (row) => { const { hash, ...rest } = row; return createHash("sha256").update(canonicalJson(rest)).digest("hex"); };
+export const sealDigest = (rawLines) => createHash("sha256").update(rawLines.map((l) => l.trim()).filter(Boolean).join("\n")).digest("hex");
+const hasHash = (line) => { try { const o = JSON.parse(line); return o && typeof o.hash === "string"; } catch { return false; } };
+export function verifyChain(path = ledgerPath()) {
+  if (!existsSync(path)) return { ok: true, legacy: 0, chained: 0, head: null, from: null, sealed: false };
+  const lines = readFileSync(path, "utf8").split("\n").filter((l) => l.trim()); let i = 0; const legacy = [];
+  while (i < lines.length && !hasHash(lines[i])) legacy.push(lines[i++]);
+  if (i >= lines.length) return { ok: true, legacy: legacy.length, chained: 0, head: null, from: null, sealed: false };
+  let prev = null, chained = 0, from = null;
+  for (; i < lines.length; i++) {
+    let row; try { row = JSON.parse(lines[i]); } catch { return { ok: false, legacy: legacy.length, chained, head: prev, from, reason: `unparseable row after the chain started (line ${i + 1})`, brokenAt: null }; }
+    if (typeof row.hash !== "string") return { ok: false, legacy: legacy.length, chained, head: prev, from, reason: `unchained row after the chain started (t=${row.t ?? "?"})`, brokenAt: row.t ?? null };
+    if (chained === 0) { from = row.t ?? null; if (row.legacy_digest !== sealDigest(legacy)) return { ok: false, legacy: legacy.length, chained, head: null, from, reason: `legacy rows changed since the chain sealed them (digest mismatch at t=${row.t})`, brokenAt: row.t ?? null }; }
+    else if (row.prev !== prev) return { ok: false, legacy: legacy.length, chained, head: prev, from, reason: `row t=${row.t} does not link to the previous row (a row was removed, reordered or inserted)`, brokenAt: row.t ?? null };
+    if (rowHash(row) !== row.hash) return { ok: false, legacy: legacy.length, chained, head: prev, from, reason: `row t=${row.t} does not match its own hash (edited in place)`, brokenAt: row.t ?? null };
+    prev = row.hash; chained++;
+  }
+  return { ok: true, legacy: legacy.length, chained, head: prev, from, sealed: true };
+}
+
+export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn, replacement, supersedes, override }) {
   // Instruction-like notes are refused at the write. The engine quarantines
   // them at read time too (and reports it), but a note that would be rendered
   // into every future session as an instruction should never reach the ledger.
@@ -143,7 +167,8 @@ function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn, repla
       event.supersedes = ts;
     }
   }
-  appendFileSync(path, JSON.stringify(event) + "\n");
+    { const raw = readFileSync(path, "utf8").split("\n").filter((l) => l.trim()); let last = null, seen = false; const legacy = []; for (const l of raw) { if (hasHash(l)) { seen = true; last = JSON.parse(l).hash; } else if (!seen) legacy.push(l); } if (seen) event.prev = last; else { event.legacy_digest = sealDigest(legacy); event.prev = null; } event.hash = rowHash(event); }
+appendFileSync(path, JSON.stringify(event) + "\n");
   // Echo the canonical stored event back. A shell-quoting accident once ate a
   // word from a note SILENTLY; the caller must be able to see what the ledger
   // actually holds without re-reading the file.
@@ -512,7 +537,8 @@ const compilePattern = (p) => {
  *   verified     recorded events bear on the text and none is contradicted
  *   no_evidence  nothing recorded bears on it — never reported as a pass
  */
-export function localCheck(events, action, invariants = []) {
+export function localCheck(events, action, invariants = [], opts = {}) {
+  const chain = opts.chain ?? null; const chainBroken = !!(chain && chain.ok === false);
   const text = typeof action?.text === "string" ? action.text : "";
   const path = typeof action?.path === "string" ? action.path : "";
   const kind = action?.kind ?? "edit";
@@ -560,7 +586,8 @@ export function localCheck(events, action, invariants = []) {
   }
   evidence.sort((a, b) => (a.kind === "correction") === (b.kind === "correction") ? (b.t ?? 0) - (a.t ?? 0) : a.kind === "correction" ? -1 : 1);
   let verdict;
-  if (corrections.length || invHits.some((h) => h.severity === "block")) verdict = "blocked";
+  if (chainBroken) reasons.unshift(`ledger chain broken: ${chain.reason ?? "verification failed"}${chain.brokenAt != null ? ` (at t=${chain.brokenAt})` : ""} — a memory whose own history is in question cannot vouch for anything`);
+  if (corrections.length || invHits.some((h) => h.severity === "block") || chainBroken) verdict = "blocked";
   else if (!text.trim()) { verdict = "no_evidence"; reasons.push("empty action text — nothing to check"); }
   else if (!evidence.length) { verdict = "no_evidence"; reasons.push(`no recorded event bears on this ${kind}; ${events.length} event(s) checked`); }
   else { verdict = "verified"; reasons.push(`${evidence.length} recorded event(s) bear on this ${kind}; none contradicted`); }
@@ -617,7 +644,7 @@ async function cliGuard() {
   const invariants = readInvariants();
   const blocked = [];
   for (const a of actions) {
-    const v = localCheck(events, { kind: "edit", text: a.text, path: a.path }, invariants);
+    const v = localCheck(events, { kind: "edit", text: a.text, path: a.path }, invariants, { chain: verifyChain() });
     // no_evidence and verified pass SILENTLY here: a hook that warns on every
     // edit the ledger has nothing to say about livelocks the agent. The loud
     // form of no_evidence is `check --ci`.
@@ -659,7 +686,7 @@ async function cliCheck() {
   if (text == null) { let raw = ""; for await (const c of process.stdin) raw += c; text = raw; }
   const { events } = readEvents();
   const invariants = readInvariants();
-  let v = localCheck(events, { kind, text, path }, invariants);
+  let v = localCheck(events, { kind, text, path }, invariants, { chain: verifyChain() });
   let receipt = null, integrity = null;
   if (wantReceipt) {
     const out = await callApi("/v1/check", { action: { kind, text, path }, events, invariants, ...(readMemoryKey() ? { verifyKey: true } : {}) });
@@ -806,7 +833,7 @@ async function cliLint() {
   const rows = [];
   for (const f of files) {
     let text = ""; try { text = readFileSync(f, "utf8"); } catch { continue; }
-    const v = localCheck(events, { kind: "lint", text, path: f }, invariants);
+    const v = localCheck(events, { kind: "lint", text, path: f }, invariants, { chain: verifyChain() });
     rows.push({ file: f, verdict: v.verdict, reasons: v.reasons.filter((r) => !/^\d+ recorded event/.test(r)), corrections: v.corrections.map((h) => ({ term: h.term, t: h.t })), invariants: v.invariants.map((i) => i.id) });
   }
   const retired = supersededSet(events);

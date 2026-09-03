@@ -552,3 +552,18 @@ test("localCheck: an invariant with cite + replacement names the ledger rows and
   assert.match(r.reasons.join("\n"), /invariant cartesian-pairwise: no pairwise tables \(matched .*\) — ledger t459, t871 — instead: fold into a register and read by resonance/);
   assert.deepEqual(r.invariants[0].cite, ["t459", "t871"]);
 });
+
+// ---- hash chain (2026-09-03): the client appends prev + hash, seals legacy rows, verifies on read, and the guard refuses a broken ledger
+test("chain: appendEvent links rows; verifyChain passes on the real file and fails closed on a tampered one; the guard blocks", async () => {
+  const { mkdtempSync, writeFileSync, readFileSync } = await import("node:fs"); const { tmpdir } = await import("node:os"); const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "mpc-")); const ledger = join(dir, "events.jsonl");
+  writeFileSync(ledger, JSON.stringify({ t: 1, cause: "x", effect: "y", note: "legacy" }) + "\n");
+  process.env.MEMORY_PULSE_LEDGER = ledger;
+  const mod = await import("../server.mjs?chain=" + Date.now()); const { appendEvent, verifyChain, localCheck, readEvents } = mod;
+  const a = appendEvent({ cause: "y", effect: "z", note: "first chained" }); assert.equal(a.written, true); assert.equal(typeof a.stored.hash, "string"); assert.equal(typeof a.stored.legacy_digest, "string");
+  const b = appendEvent({ cause: "z", effect: "w", note: "second" }); assert.equal(b.stored.prev, a.stored.hash);
+  let v = verifyChain(); assert.equal(v.ok, true); assert.equal(v.legacy, 1); assert.equal(v.chained, 2);
+  const good = readFileSync(ledger, "utf8"); writeFileSync(ledger, good.replace('"first chained"', '"FIRST chained"')); v = verifyChain(); assert.equal(v.ok, false); assert.equal(v.brokenAt, 2);
+  const r = localCheck(readEvents().events, { kind: "edit", text: "harmless", path: "/x" }, [], { chain: v }); assert.equal(r.verdict, "blocked"); assert.match(r.reasons.join("\n"), /ledger chain broken/i);
+  writeFileSync(ledger, good); assert.equal(verifyChain().ok, true);
+});
