@@ -543,3 +543,12 @@ test("pulse budget: the tool forwards `budget` (tokens) and drops the tier so th
   const bad = await new Promise((ok) => execFile(process.execPath, [SERVER, "brief", "--budget", "-5"], { env: { ...process.env, MEMORY_PULSE_LEDGER: ledger }, encoding: "utf8" }, (e, so, se) => ok({ code: e?.code, se })));
   assert.equal(bad.code, 1); assert.match(bad.se, /positive number of tokens/);
 });
+
+test("localCheck: an invariant with cite + replacement names the ledger rows and the instruction in its reason", async () => {
+  const { localCheck } = await import("../server.mjs");
+  const inv = [{ id: "cartesian-pairwise", statement: "no pairwise tables", patterns: ["/\\bpairwise (matrix|table)\\b/i"], cite: [459, "t871"], replacement: "fold into a register and read by resonance" }];
+  const r = localCheck([], { kind: "edit", text: "a pairwise matrix of turns", path: "/x/bench/a.mjs" }, inv);
+  assert.equal(r.verdict, "blocked");
+  assert.match(r.reasons.join("\n"), /invariant cartesian-pairwise: no pairwise tables \(matched .*\) — ledger t459, t871 — instead: fold into a register and read by resonance/);
+  assert.deepEqual(r.invariants[0].cite, ["t459", "t871"]);
+});

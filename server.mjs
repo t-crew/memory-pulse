@@ -545,8 +545,11 @@ export function localCheck(events, action, invariants = []) {
     const hit = tests.find((t) => t && t.test(text));
     if (!hit) continue;
     const severity = inv.severity === "warn" ? "warn" : "block";
-    invHits.push({ id: inv.id, severity, pattern: hit.src });
-    reasons.push(`${severity === "warn" ? "warning" : "invariant"} ${inv.id}${inv.statement ? `: ${inv.statement}` : ""} (matched ${hit.src})`);
+    // `cite`: the ledger rows the invariant rests on; `replacement`: what to do instead — the block names both.
+    const cite = (Array.isArray(inv.cite) ? inv.cite : []).map((c) => typeof c === "number" ? `t${c}` : /^t\d+$/.test(String(c)) ? String(c) : /^\d+$/.test(String(c)) ? `t${c}` : null).filter(Boolean);
+    const replacement = typeof inv.replacement === "string" ? inv.replacement : "";
+    invHits.push({ id: inv.id, severity, pattern: hit.src, cite, replacement });
+    reasons.push(`${severity === "warn" ? "warning" : "invariant"} ${inv.id}${inv.statement ? `: ${inv.statement}` : ""} (matched ${hit.src})${cite.length ? ` — ledger ${cite.join(", ")}` : ""}${replacement ? ` — instead: ${replacement}` : ""}`);
   }
   const evidence = [];
   if (text) for (const e of events) {
