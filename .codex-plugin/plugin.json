@@ -1,6 +1,6 @@
 {
   "name": "memory-pulse",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Causal project memory that costs ~670 tokens of tool definitions, not your context window. Corrections surface first and are enforced: a PreToolUse guard blocks an edit that writes a withdrawn value back and cites the ledger line that retired it. The ledger is a local file you own.",
   "author": {
     "name": "Travis Crew",

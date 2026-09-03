@@ -187,6 +187,24 @@ Four things added on 2026-09-03, each deterministic (no model in the loop):
 - **Ambient correction capture (opt-in).** `install-hook --ambient` adds a UserPromptSubmit hook. A prompt shaped like a correction — `the price is $29 not $49`, `change 0.3.1 to 0.3.2`, `500 events -> 924 events` — is recorded as a correction carrying both terms, so the guard enforces it from the next edit on. A prompt that does not yield both terms is left alone. Silent unless `--verbose`.
 - **Python client.** `python/memory_pulse.py` is a single stdlib-only file with the same ledger format, the same hash chain and the same guard rule. A LangChain or CrewAI agent and a Claude Code session can share one ledger and verify each other's rows; the test suite writes rows from Python and verifies them in Node, and back.
 
+## Agent mode: a persistent agent identity that grows (opt-in)
+
+The default is deliberate: memory lives in the repo, capture is explicit. Agent mode is a separate mode for the other thing people ask for — an agent that is the *same agent* tomorrow, in every project and every tool, and that grows.
+
+```
+npx memory-pulse mode agent
+npx memory-pulse identity "Blue, research agent for Travis; innovate, don't debate"
+```
+
+What that turns on:
+
+- **An agent ledger** at `~/.memory-pulse/agent/events.jsonl`: the agent's own, shared by every project and every tool that speaks MCP. Same format, same hash chain, same seal.
+- **A self block, first in every brief**, online or offline: who the agent is (pinned), the standing rules and preferences it has learned, the lessons it carries, and a fingerprint — the chain head and the engine's seal — so the agent can state which memory it is running on and prove it was not swapped or edited overnight.
+- **Growth, after every turn.** A Stop hook records, deterministically, a stated decision (to the project), a user preference or a stated lesson (to the agent), and any correction shaped like one. Capped at four rows a turn, tagged `ambient`, never pinned, never from instruction-like text. Identity itself is only ever set by you or superseded by a correction.
+- **Corrections that follow the agent.** A correction on the agent ledger blocks the same edit in any project.
+
+`npx memory-pulse mode deliberate` turns the hooks off again and leaves the ledgers in place. `remember` takes `scope: "agent"` from any tool.
+
 ## What runs where (the privacy contract)
 
 - Your ledger is a **local file**: `.memory-pulse/events.jsonl` in your

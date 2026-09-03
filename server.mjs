@@ -42,8 +42,16 @@ function ledgerPath() {
 // whether its memory arrived whole (anthropics/claude-code #82056 — "loaded
 // whole, truncated, or not at all"). `malformed` lists 1-based line numbers
 // that were skipped; `digest` is the sha256 of the bytes read; `bytes` the size.
-export function readEvents() {
-  const path = ledgerPath();
+// ---- Agent identity mode (0.5.0, opt-in). The AGENT's own ledger, user-level, shared by every project and every
+// tool: who the agent is (pinned self), the standing rules and preferences it has learned, the lessons it carries,
+// the corrections that follow it everywhere. Same file format, same chain, same seal. Off by default.
+export function agentPath() {
+  const env = process.env.MEMORY_PULSE_AGENT;
+  if (env) return isAbsolute(env) ? env : join(process.cwd(), env);
+  return join(process.env.HOME || process.cwd(), ".memory-pulse", "agent", "events.jsonl");
+}
+export function readEvents(opts = {}) {
+  const path = opts.scope === "agent" ? agentPath() : ledgerPath();
   if (!existsSync(path)) return { path, events: [], malformed: [], bytes: 0, digest: null, lines: 0 };
   const raw = readFileSync(path, "utf8");
   const events = [], malformed = [];
@@ -144,8 +152,9 @@ export function sealElement(row) {
   return v === 0n ? 1n : v;
 }
 export const setHeadHex = (rows) => rows.reduce((v, r) => sealMod(v * sealElement(r)), 1n).toString(16).padStart(768, "0");
-const sealPath = () => join(dirname(ledgerPath()), "seal.rain");
-export function readSeal() { try { return JSON.parse(readFileSync(sealPath(), "utf8")); } catch { return null; } }
+const sealPathFor = (ledger) => join(dirname(ledger), "seal.rain");
+const sealPath = () => sealPathFor(ledgerPath());
+export function readSeal(ledger) { try { return JSON.parse(readFileSync(ledger ? sealPathFor(ledger) : sealPath(), "utf8")); } catch { return null; } }
 function writeSeal(seal) { if (!seal || typeof seal !== "object" || typeof seal.head !== "string") return; try { mkdirSync(dirname(sealPath()), { recursive: true }); writeFileSync(sealPath(), JSON.stringify(seal, null, 2) + "\n"); } catch { /* read-only checkout */ } }
 /** content check of the local ledger against the last seal — fails closed; { ok: null } when there is no seal yet */
 export function verifyLocalSeal(events = readEvents().events, seal = readSeal()) {
@@ -156,14 +165,14 @@ export function verifyLocalSeal(events = readEvents().events, seal = readSeal())
   return { ok: true, seal };
 }
 
-export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn, replacement, supersedes, override }) {
+export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn, replacement, supersedes, override, scope }) {
   // Instruction-like notes are refused at the write. The engine quarantines
   // them at read time too (and reports it), but a note that would be rendered
   // into every future session as an instruction should never reach the ledger.
   // Same deterministic list as the engine; no model in the loop.
   const hits = instructionLike(note);
   if (hits.length) return { written: false, reason: "instruction-like note refused", patterns: hits, hint: "Record what happened, not what to do. Rephrase as a finding." };
-  const { path, events } = readEvents();
+  const { path, events } = readEvents({ scope });
   const dup = events.find((e) => e.cause === cause && e.effect === effect && (e.note ?? "") === (note ?? ""));
   if (dup) return { written: false, reason: "duplicate", t: dup.t, ledger: path };
   if (!existsSync(path)) {
@@ -384,6 +393,7 @@ export const TOOLS = [
         effect: { type: "string" },
         note: { type: "string", description: "What was measured, and how." },
         kind: { type: "string", enum: ["event", "correction"], description: "Default event." },
+        scope: { type: "string", enum: ["project", "agent"], description: "agent = the agent's own cross-project ledger (agent mode)." },
         withdrawn: { type: "array", items: { type: "string" }, description: "For corrections: the exact strings that were withdrawn (a number, a name, a claim). The guard hook blocks an edit that writes them back." },
         replacement: { type: "array", items: { type: "string" }, description: "For corrections: the corrected value(s). An edit containing both a withdrawn term and a replacement (a comparison or disavowal) is allowed through the guard." },
         supersedes: { type: "array", items: { type: "number" }, description: "For corrections: ledger t values of earlier corrections whose withdrawn terms no longer bind." },
@@ -459,6 +469,122 @@ async function dispatch(msg) {
 // `npx memory-pulse brief` — print the re-entry brief and exit. Built for
 // SessionStart hooks: SILENT no-op (exit 0) when the project has no ledger,
 // so installing the hook never adds noise to projects that don't use this.
+// ---- Agent identity: the self block. Printed FIRST in every brief (online or offline) when the mode is agent.
+const tagged = (events, tag) => events.filter((e) => Array.isArray(e.tags) && e.tags.includes(tag));
+export function identityBlock(led) {
+  const events = led?.events ?? []; if (!events.length) return "";
+  const self = tagged(events, "identity").filter((e) => e.pinned).slice(-1)[0] ?? tagged(events, "identity").slice(-1)[0];
+  const rules = tagged(events, "rule"), prefs = tagged(events, "preference"), lessons = tagged(events, "lesson").slice().reverse();
+  const corr = events.filter((e) => e.kind === "correction" && e.withdrawn?.length).length;
+  const chain = verifyChain(led.path); const seal = readSeal(led.path);
+  const name = self ? String(self.note ?? self.effect).split(/[;.\n]/)[0].trim() : "unnamed agent";
+  const lines = [`AGENT IDENTITY — ${name} (agent ledger: ${events.length} rows, head ${chain.head ? chain.head.slice(0, 12) : "none"}${chain.ok ? "" : ", CHAIN BROKEN"}, seal ${seal?.digest ? seal.digest.slice(0, 12) : "not yet"})`];
+  if (self) lines.push(`  self: ${self.note ?? self.effect}`);
+  lines.push(`  fingerprint: chain head ${chain.head ?? "none"}${seal?.issued ? ` · sealed ${seal.issued}` : ""} — the same memory as last session iff these match`);
+  if (rules.length) { lines.push(`  standing rules (${rules.length}):`); for (const r of rules) lines.push(`    rule: ${r.note ?? r.effect} (t${r.t})`); }
+  if (prefs.length) { lines.push(`  preferences (${prefs.length}):`); for (const p of prefs) lines.push(`    preference: ${p.note ?? p.effect} (t${p.t})`); }
+  if (lessons.length) { lines.push(`  lessons carried (${lessons.length}):`); for (const l of lessons.slice(0, 10)) lines.push(`    lesson: ${(l.note ?? l.effect).replace(/^lesson:\s*/i, "")} (t${l.t})`); }
+  lines.push(`  corrections carried: ${corr} binding — enforced in every project`);
+  return lines.join("\n");
+}
+
+// ---- Agent growth: ambient capture at the Stop hook. Last turn only; deterministic shapes; capped; instruction-like
+// text yields nothing. Decisions and corrections belong to the project; preferences and lessons are the agent's.
+const AMBIENT_CAP = 4;
+const clip = (t, n = 140) => String(t).replace(/\s+/g, " ").trim().slice(0, n);
+const lastTurn = (transcriptText) => {
+  const users = [], assistants = []; let seenUser = false;
+  const lines = String(transcriptText).split("\n").filter((l) => l.trim()).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter((o) => o?.message);
+  let lastUserIdx = -1; lines.forEach((o, i) => { if ((o.type === "user" || o.message.role === "user") && partText(o.message.content).trim()) lastUserIdx = i; });
+  if (lastUserIdx < 0) return { user: "", assistant: "" };
+  const user = partText(lines[lastUserIdx].message.content).trim();
+  for (const o of lines.slice(lastUserIdx + 1)) if (o.type === "assistant" || o.message.role === "assistant") { const t = partText(o.message.content).trim(); if (t) assistants.push(t); }
+  return { user, assistant: assistants.join(" ") };
+};
+const AMBIENT_SHAPES = [
+  ["preference", "user", "agent", /\bI (?:prefer|like|want|always|never|don't want|hate)\b[^.!?\n]{3,120}/i, (m) => clip(m[0])],
+  ["decision", "assistant", "project", /\b(?:we'll go with|we will go with|going with|decided (?:to|on)|let's use|we'll use|settled on)\b[^.!?\n]{3,120}/i, (m) => `Decision: ${clip(m[0])}`],
+  ["lesson", "assistant", "agent", /\b(?:lesson|learned that|the fix was|root cause was|takeaway)\b[^\n]{3,160}/i, (m) => `Lesson: ${clip(m[0].replace(/^lesson:?\s*/i, ""), 160)}`],
+];
+export function extractAmbient(transcriptText) {
+  const { user, assistant } = lastTurn(transcriptText);
+  if (!user && !assistant) return [];
+  if (instructionLike(user).length) return [];
+  const out = [];
+  const c = detectCorrection(user); if (c) out.push({ scope: "project", ...correctionEvent(c, user), tags: ["ambient", c.cue] });
+  for (const [tag, side, scope, re, note] of AMBIENT_SHAPES) {
+    const text = side === "user" ? user : assistant; const m = re.exec(text); if (!m) continue;
+    const n = note(m); if (instructionLike(n).length) continue;
+    out.push({ scope, cause: `ambient-${tag}`, effect: slug(n.replace(/^[A-Za-z ]+: /, "")), kind: "event", tags: ["ambient", tag], note: n });
+    if (out.length >= AMBIENT_CAP) break;
+  }
+  return out.slice(0, AMBIENT_CAP);
+}
+async function cliAmbient() {
+  // Stop hook: exit 0 on every path; never runs when the hook itself is what stopped the turn.
+  try {
+    let raw = ""; try { raw = readFileSync(0, "utf8"); } catch { /* no stdin */ }
+    let hook = {}; try { hook = raw.trim() ? JSON.parse(raw) : {}; } catch { hook = {}; }
+    if (hook.stop_hook_active) return;
+    const transcript = typeof hook.transcript_path === "string" && existsSync(hook.transcript_path) ? readFileSync(hook.transcript_path, "utf8") : "";
+    const evs = extractAmbient(transcript); const written = [];
+    for (const e of evs) { const r = appendEvent(e); if (r.written) written.push(`${e.scope}:${e.tags[1] ?? e.kind}`); }
+    if (written.length) console.log(`memory-pulse: ${written.length} ambient row(s) recorded (${written.join(", ")})`);
+  } catch { /* silent */ }
+}
+
+// ---- Guard across every chat: a correction on the agent ledger binds in any project.
+export function guardVerdict(action, { events, invariants = [] } = {}) {
+  const led = events ? { events } : readEvents();
+  const v = localCheck(led.events, action, invariants, { chain: verifyChain(), seal: verifyLocalSeal(led.events) });
+  const ap = agentPath();
+  if (existsSync(ap)) {
+    const a = readEvents({ scope: "agent" });
+    const av = localCheck(a.events, action, [], { chain: verifyChain(ap) });
+    if (av.verdict === "blocked") { v.verdict = "blocked"; v.reasons = [...av.reasons.filter((r) => !/no recorded event/.test(r)).map((r) => r.replace(/\bledger t(\d+)/g, "agent ledger t$1").replace(/at t(\d+)/g, "at agent ledger t$1")), ...v.reasons]; }
+  }
+  return v;
+}
+
+// ---- Mode switch. deliberate (default) | agent. The mode lives beside the agent ledger; the hooks are the mode.
+const modeConfigPath = () => join(dirname(agentPath()), "config.json");
+export function currentMode() {
+  if (process.env.MEMORY_PULSE_MODE) return process.env.MEMORY_PULSE_MODE;
+  try { return JSON.parse(readFileSync(modeConfigPath(), "utf8")).mode === "agent" ? "agent" : "deliberate"; } catch { return "deliberate"; }
+}
+export function setMode(mode) {
+  if (!["agent", "deliberate"].includes(mode)) throw new Error("mode must be agent or deliberate");
+  const home = process.env.MEMORY_PULSE_SETTINGS_DIR || join(process.env.HOME || "", ".claude");
+  const file = join(home, "settings.json");
+  let settings = {}; if (existsSync(file)) { try { settings = JSON.parse(readFileSync(file, "utf8")); } catch { throw new Error(`refusing to touch ${file}: it is not valid JSON`); } }
+  settings.hooks = settings.hooks || {};
+  const wanted = { Stop: "npx -y memory-pulse ambient", UserPromptSubmit: "npx -y memory-pulse observe" };
+  let installed = 0, removed = 0;
+  for (const [event, cmd] of Object.entries(wanted)) {
+    const arr = (settings.hooks[event] = settings.hooks[event] || []);
+    const has = JSON.stringify(arr).includes(cmd);
+    if (mode === "agent" && !has) { arr.push({ hooks: [{ type: "command", command: cmd }] }); installed++; }
+    if (mode === "deliberate" && has) { settings.hooks[event] = arr.filter((h) => !JSON.stringify(h).includes(cmd)); removed++; }
+  }
+  mkdirSync(home, { recursive: true }); writeFileSync(file, JSON.stringify(settings, null, 2) + "\n");
+  mkdirSync(dirname(modeConfigPath()), { recursive: true }); writeFileSync(modeConfigPath(), JSON.stringify({ mode }, null, 2) + "\n");
+  if (mode === "agent" && !existsSync(agentPath())) writeFileSync(agentPath(), "");
+  return { mode, installed, removed, settings: file };
+}
+async function cliMode() {
+  const want = process.argv[3];
+  if (!want) { const m = currentMode(); console.log(`mode: ${m}${m === "agent" ? ` — agent ledger ${agentPath()}` : " (default) — run \`memory-pulse mode agent\` for a persistent agent identity that grows across every chat"}`); return; }
+  const r = setMode(want);
+  console.log(`mode: ${r.mode} — ${r.installed} hook(s) installed, ${r.removed} removed in ${r.settings}`);
+  if (want === "agent") { console.log(`agent ledger: ${agentPath()}`); console.log("Set the agent's self once: memory-pulse identity \"<name>, <role>; <stance>\" — then every brief, in every tool, starts with who the agent is, what it has learned, and a fingerprint of which memory it is running on."); }
+}
+async function cliIdentity() {
+  const note = process.argv.slice(3).filter((a) => !a.startsWith("--")).join(" ").trim();
+  if (!note) { console.error('usage: memory-pulse identity "<name>, <role>; <stance>"'); process.exit(1); }
+  const r = appendEvent({ cause: "identity-set", effect: slug(note.split(/[;,]/)[0]), note, tags: ["identity"], pinned: true, scope: "agent" });
+  console.log(r.written ? `identity recorded on the agent ledger (t=${r.t}) — pinned; supersede it by recording a new one` : `identity not recorded (${r.reason})`);
+}
+
 // ---- Core 1: offline brief (2026-09-03). A dead network must not hand the session nothing. This is a
 // deterministic local render — corrections with their terms, the last handoff, recent rows — and it says so.
 const ago = (ms) => (ms < 90e3 ? `${Math.max(1, Math.round(ms / 1e3))} s ago` : ms < 90 * 60e3 ? `${Math.round(ms / 60e3)} min ago` : ms < 36 * 3600e3 ? `${Math.round(ms / 3600e3)} h ago` : `${Math.round(ms / 86400e3)} d ago`);
@@ -470,7 +596,9 @@ export function handoffLine(events, { now = Date.now(), maxAgeMs = 7 * 86400e3 }
   return `↩ last handoff (t=${h.t}${Number.isFinite(t) ? `, ${ago(now - t)}` : ""}): ${(h.note ?? h.effect).replace(/^handoff \S+: ?/, "")}`;
 }
 export function offlineBrief(led, events, { now = Date.now(), recent = 8 } = {}) {
-  const lines = [`memory-pulse: engine unreachable — local render from ${events.length} events (corrections and recency only; no salience ranking)`];
+  const lines = [];
+  if (currentMode() === "agent" && existsSync(agentPath())) { const ib = identityBlock(readEvents({ scope: "agent" })); if (ib) lines.push(ib); }
+  lines.push(`memory-pulse: engine unreachable — local render from ${events.length} events (corrections and recency only; no salience ranking)`);
   const hl = handoffLine(events, { now }); if (hl) lines.push(hl);
   const retired = supersededSet(events);
   const corr = events.filter((e) => e.kind === "correction" && !retired.has(e.t)).reverse().slice(0, 20);
@@ -530,10 +658,12 @@ const TN = `(\\$?\\d[\\d.,]*[A-Za-z%]*)`;
 const TW = `([A-Za-z][\\w.\\-/]*)`;
 const TERM = `(?:${TQ}|${TD}|${TN}|${TW})`;
 const TERM2 = `([\\w$.\\-/]+(?:\\s+[A-Za-z]+)?)`; // up to two tokens, for arrow forms
+const TNU = `(\\$?\\d[\\d.,]*[A-Za-z%]*(?:\\s+(?!not\\b|it\\b|and\\b|or\\b|but\\b)[a-z]{2,})?)`; // number with an optional unit word
+const TERMU = `(?:${TQ}|${TD}|${TNU}|${TW})`;
 const STOP = new Set(["a", "an", "the", "it", "its", "this", "that", "sure", "fine", "problem", "one", "thing", "same", "now", "here", "there", "yes", "no", "not", "just"]);
 const term = (g) => { const v = g.find((x) => x != null); return v == null ? "" : String(v).replace(/[.,;:!?]+$/, "").trim(); };
 const CORRECTION_SHAPES = [
-  ["is-not", new RegExp(`\\b(?:is|are|was|were|be|called|named|=|:)\\s+${TERM},?\\s+not\\s+${TERM}`, "i"), (m) => ({ replacement: term(m.slice(1, 7)), withdrawn: term(m.slice(7, 13)) })],
+  ["is-not", new RegExp(`\\b(?:is|are|was|were|be|called|named|=|:)\\s+${TERMU},?\\s+not\\s+${TERMU}`, "i"), (m) => ({ replacement: term(m.slice(1, 7)), withdrawn: term(m.slice(7, 13)) })],
   ["not-comma", new RegExp(`\\bnot\\s+${TERM}[^,;\\n]{0,40},\\s*(?:it's|it is|its|it should be|should be|rather|but|make it)\\s+${TERM}`, "i"), (m) => ({ withdrawn: term(m.slice(1, 7)), replacement: term(m.slice(7, 13)) })],
   ["change-to", new RegExp(`\\b(?:change|rename|replace|update|switch|correct)\\s+${TERM}\\s+(?:to|with|into)\\s+${TERM}`, "i"), (m) => ({ withdrawn: term(m.slice(1, 7)), replacement: term(m.slice(7, 13)) })],
   ["arrow", new RegExp(`${TERM2}\\s*(?:->|→|=>)\\s*${TERM2}`), (m) => ({ withdrawn: m[1].trim(), replacement: m[2].trim() })],
@@ -576,6 +706,7 @@ async function cliBrief() {
   if (process.argv.includes("--offline")) { process.stdout.write(offlineBrief(led, events) + "\n"); return; }
   try {
     const out = await callApi("/v1/pulse", { events, ...(tier ? { tier } : {}), ...(budget ? { budget } : {}) });
+    if (currentMode() === "agent" && existsSync(agentPath())) { const ib = identityBlock(readEvents({ scope: "agent" })); if (ib) process.stdout.write(ib + "\n"); }
     process.stdout.write(loadedLine(led, events, { keyStatus: out.keyStatus, tier: out.tier ?? tier, chars: out.text?.length, budget }) + "\n");
     const hl = handoffLine(events); if (hl) process.stdout.write(hl + "\n");
     if (out.text) process.stdout.write(out.text + "\n");
@@ -795,7 +926,7 @@ async function cliGuard() {
   const invariants = readInvariants();
   const blocked = [];
   for (const a of actions) {
-    const v = localCheck(events, { kind: "edit", text: a.text, path: a.path }, invariants, { chain: verifyChain(), seal: verifyLocalSeal(events) });
+    const v = guardVerdict({ kind: "edit", text: a.text, path: a.path }, { events, invariants });
     // no_evidence and verified pass SILENTLY here: a hook that warns on every
     // edit the ledger has nothing to say about livelocks the agent. The loud
     // form of no_evidence is `check --ci`.
@@ -1039,6 +1170,9 @@ if (isMain) {
   if (sub === "guard") { await cliGuard(); process.exit(0); }
   if (sub === "check") { await cliCheck(); process.exit(0); }
   if (sub === "handoff") { await cliHandoff(); process.exit(0); }
+  if (sub === "ambient") { await cliAmbient(); process.exit(0); }
+  if (sub === "mode") { await cliMode(); process.exit(0); }
+  if (sub === "identity") { await cliIdentity(); process.exit(0); }
   if (sub === "observe") { await cliObserve(); process.exit(0); }
   if (sub === "verify") {
     // walk the row chain and check the ledger against the last seal; exit 2 on either failure (fail closed, like check)
