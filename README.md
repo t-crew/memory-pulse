@@ -165,6 +165,16 @@ check (never green on nothing); `--json` for machines. It also tells you
 which corrections carry no `withdrawn` terms — those surface in the brief but
 nothing can enforce them.
 
+## Tamper evidence: the ledger cannot be edited quietly
+
+A memory that can be rewritten is not a ledger. Since 0.3.1 three things hold, each with its own job:
+
+- **Row chain.** Every row `remember` writes carries `prev` (the previous chained row's hash) and `hash` (SHA-256 of its own canonical JSON). Rows that existed before the chain are never rewritten — the first chained row seals them with a digest. An edit in place, a removed row, a reordered row or an unchained row after the chain started fails `verifyChain()`, and a failed chain blocks every `check`, `guard` and `lint` verdict: a memory whose own history is in question cannot vouch for anything.
+- **Set head.** The engine also commits to the ledger as an order-free fold (a multiplicative group mod a 3072-bit prime, the MuHash construction Bitcoin Core uses for its UTXO set). Shards from several agents fold to the same head in any order, and removing a row is the group inverse — so the *state* stays exact while the *history* stays append-only. The literal XOR fold was measured forgeable (a linear system hides an edit in 10 ms at 300 rows) and is not used for this.
+- **Seal.** Every read call returns a seal signed by the engine — row count, watermark, the set head over every row's full content, the chain head. The client keeps it in `seal.rain` beside the ledger and presents it on the next call. Locally, rows up to the sealed watermark must still fold to the sealed head before the ledger is trusted; at the engine, the signature and the fold are re-checked and an edit below the watermark is reported as drift and blocks. A process with write access can rewrite the file and even the chain; it cannot produce the engine's signature, and it cannot make edited rows fold to the sealed head.
+
+Nothing is stored server-side for any of this; the seal travels in the payload like the telemetry capsule and the memory key.
+
 ## What runs where (the privacy contract)
 
 - Your ledger is a **local file**: `.memory-pulse/events.jsonl` in your
