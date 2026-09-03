@@ -9,7 +9,8 @@
   "files": [
     "server.mjs",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "python/"
   ],
   "scripts": {
     "test": "node --test test/*.test.js"

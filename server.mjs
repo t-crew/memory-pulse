@@ -459,6 +459,112 @@ async function dispatch(msg) {
 // `npx memory-pulse brief` — print the re-entry brief and exit. Built for
 // SessionStart hooks: SILENT no-op (exit 0) when the project has no ledger,
 // so installing the hook never adds noise to projects that don't use this.
+// ---- Core 1: offline brief (2026-09-03). A dead network must not hand the session nothing. This is a
+// deterministic local render — corrections with their terms, the last handoff, recent rows — and it says so.
+const ago = (ms) => (ms < 90e3 ? `${Math.max(1, Math.round(ms / 1e3))} s ago` : ms < 90 * 60e3 ? `${Math.round(ms / 60e3)} min ago` : ms < 36 * 3600e3 ? `${Math.round(ms / 3600e3)} h ago` : `${Math.round(ms / 86400e3)} d ago`);
+const handoffTime = (e) => { const m = /(\d{4}-\d{2}-\d{2}T[\d:.]+Z)/.exec(`${e.effect} ${e.note ?? ""}`); return m ? Date.parse(m[1]) : NaN; };
+export function handoffLine(events, { now = Date.now(), maxAgeMs = 7 * 86400e3 } = {}) {
+  const h = [...events].reverse().find((e) => Array.isArray(e.tags) && e.tags.includes("handoff"));
+  if (!h) return "";
+  const t = handoffTime(h); if (Number.isFinite(t) && now - t > maxAgeMs) return "";
+  return `↩ last handoff (t=${h.t}${Number.isFinite(t) ? `, ${ago(now - t)}` : ""}): ${(h.note ?? h.effect).replace(/^handoff \S+: ?/, "")}`;
+}
+export function offlineBrief(led, events, { now = Date.now(), recent = 8 } = {}) {
+  const lines = [`memory-pulse: engine unreachable — local render from ${events.length} events (corrections and recency only; no salience ranking)`];
+  const hl = handoffLine(events, { now }); if (hl) lines.push(hl);
+  const retired = supersededSet(events);
+  const corr = events.filter((e) => e.kind === "correction" && !retired.has(e.t)).reverse().slice(0, 20);
+  lines.push(`CORRECTIONS (${corr.length}) — read before quoting any number:`);
+  for (const c of corr) lines.push(`  ! ${c.cause} -> ${c.effect} (t${c.t})${c.withdrawn?.length ? ` — withdrawn: ${c.withdrawn.join(", ")} → ${(c.replacement ?? []).join(", ") || "(no replacement recorded)"}` : ""}${c.note ? ` — ${String(c.note).slice(0, 120)}` : ""}`);
+  if (!corr.length) lines.push("  (none recorded)");
+  const rec = events.slice(-recent).reverse();
+  lines.push(`RECENT (${rec.length}):`);
+  for (const e of rec) lines.push(`  t${e.t} ${e.cause} -> ${e.effect}`);
+  return lines.join("\n");
+}
+
+// ---- Core 2: compaction handoff (2026-09-03). Compaction loss is the #2 complaint in the demand research. A
+// PreCompact hook reads the transcript and records what the session was doing AS FACTS (asks, files, last error,
+// assistant state); the next session start prints it first, online or offline. Deterministic; no model.
+const partText = (c) => (typeof c === "string" ? c : Array.isArray(c) ? c.filter((p) => p?.type === "text").map((p) => p.text).join(" ") : "");
+export function extractHandoff(transcriptText, { maxAsks = 3, maxFiles = 6 } = {}) {
+  const asks = [], files = []; let lastError = "", state = "";
+  for (const line of String(transcriptText).split("\n")) {
+    if (!line.trim()) continue; let o; try { o = JSON.parse(line); } catch { continue; }
+    const m = o?.message; if (!m) continue;
+    if (o.type === "user" || m.role === "user") {
+      const txt = partText(m.content).trim(); if (txt) asks.push(txt.slice(0, 160));
+      if (Array.isArray(m.content)) for (const p of m.content) if (p?.type === "tool_result" && p.is_error) { const e = partText(p.content) || String(p.content ?? ""); if (e.trim()) lastError = e.trim().slice(0, 160); }
+    } else if (o.type === "assistant" || m.role === "assistant") {
+      const txt = partText(m.content).trim(); if (txt) state = txt.slice(0, 200);
+      if (Array.isArray(m.content)) for (const p of m.content) if (p?.type === "tool_use" && /^(Edit|Write|MultiEdit|NotebookEdit)$/.test(p.name ?? "") && typeof p.input?.file_path === "string" && !files.includes(p.input.file_path)) files.push(p.input.file_path);
+    }
+  }
+  return { asks: asks.slice(-maxAsks), files: files.slice(-maxFiles), lastError, state };
+}
+export function handoffEvent(hook = {}, transcriptText = "", { now = Date.now() } = {}) {
+  const h = extractHandoff(transcriptText);
+  const clean = (t) => (t && !instructionLike(t).length ? t : "");
+  const asks = h.asks.map(clean).filter(Boolean);
+  const iso = new Date(now).toISOString();
+  const note = `handoff ${iso}: asked: ${asks.length ? asks.map((q) => `"${q}"`).join(" · ") : "n/a"} | files: ${h.files.join(", ") || "none"} | last error: ${clean(h.lastError) || "none"} | state: ${clean(h.state) || "n/a"}`;
+  return { cause: `compaction-${hook.trigger || "auto"}-${String(hook.session_id || "session").slice(0, 8)}`, effect: `handoff-${iso}`, kind: "event", tags: ["handoff"], note };
+}
+async function cliHandoff() {
+  // PreCompact hook: must never block compaction — exit 0 on every path, one line of output.
+  try {
+    let raw = ""; try { raw = readFileSync(0, "utf8"); } catch { /* no stdin */ }
+    let hook = {}; try { hook = raw.trim() ? JSON.parse(raw) : {}; } catch { hook = {}; }
+    const transcript = typeof hook.transcript_path === "string" && existsSync(hook.transcript_path) ? readFileSync(hook.transcript_path, "utf8") : "";
+    const r = appendEvent(handoffEvent(hook, transcript));
+    console.log(r.written ? `memory-pulse: handoff recorded (t=${r.t}) — the next session start prints it first` : `memory-pulse: handoff not recorded (${r.reason})`);
+  } catch (e) { console.log(`memory-pulse: handoff skipped (${String(e?.message ?? e).split("\n")[0]})`); }
+}
+
+// ---- Core 3: ambient correction capture (2026-09-03), opt-in (install-hook --ambient). A UserPromptSubmit hook
+// records a correction ONLY when the prompt's shape yields both the withdrawn and the replacement term; anything
+// less is left alone. Deterministic patterns; the guard then enforces the terms like any other correction.
+const TQ = `"([^"]{1,60})"|'([^']{1,60})'|\`([^\`]{1,60})\``;
+const TD = `((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\\.? \\d{1,2}(?:,? \\d{4})?)`;
+const TN = `(\\$?\\d[\\d.,]*[A-Za-z%]*)`;
+const TW = `([A-Za-z][\\w.\\-/]*)`;
+const TERM = `(?:${TQ}|${TD}|${TN}|${TW})`;
+const TERM2 = `([\\w$.\\-/]+(?:\\s+[A-Za-z]+)?)`; // up to two tokens, for arrow forms
+const STOP = new Set(["a", "an", "the", "it", "its", "this", "that", "sure", "fine", "problem", "one", "thing", "same", "now", "here", "there", "yes", "no", "not", "just"]);
+const term = (g) => { const v = g.find((x) => x != null); return v == null ? "" : String(v).replace(/[.,;:!?]+$/, "").trim(); };
+const CORRECTION_SHAPES = [
+  ["is-not", new RegExp(`\\b(?:is|are|was|were|be|called|named|=|:)\\s+${TERM},?\\s+not\\s+${TERM}`, "i"), (m) => ({ replacement: term(m.slice(1, 7)), withdrawn: term(m.slice(7, 13)) })],
+  ["not-comma", new RegExp(`\\bnot\\s+${TERM}[^,;\\n]{0,40},\\s*(?:it's|it is|its|it should be|should be|rather|but|make it)\\s+${TERM}`, "i"), (m) => ({ withdrawn: term(m.slice(1, 7)), replacement: term(m.slice(7, 13)) })],
+  ["change-to", new RegExp(`\\b(?:change|rename|replace|update|switch|correct)\\s+${TERM}\\s+(?:to|with|into)\\s+${TERM}`, "i"), (m) => ({ withdrawn: term(m.slice(1, 7)), replacement: term(m.slice(7, 13)) })],
+  ["arrow", new RegExp(`${TERM2}\\s*(?:->|→|=>)\\s*${TERM2}`), (m) => ({ withdrawn: m[1].trim(), replacement: m[2].trim() })],
+];
+export function detectCorrection(prompt) {
+  const p = String(prompt ?? ""); if (!p.trim()) return null;
+  for (const [cue, re, pick] of CORRECTION_SHAPES) {
+    const m = re.exec(p); if (!m) continue;
+    const { withdrawn, replacement } = pick(m);
+    if (!withdrawn || !replacement || withdrawn.length < 2 || withdrawn.toLowerCase() === replacement.toLowerCase()) continue;
+    if (STOP.has(withdrawn.toLowerCase()) || STOP.has(replacement.toLowerCase())) continue;
+    return { withdrawn: [withdrawn], replacement: [replacement], cue };
+  }
+  return null;
+}
+const slug = (t) => String(t).toLowerCase().replace(/[^a-z0-9.]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "term";
+export function correctionEvent(d, prompt) {
+  return { cause: `user-correction-${slug(d.withdrawn[0])}`, effect: `${slug(d.withdrawn[0])}-withdrawn-for-${slug(d.replacement[0])}`, kind: "correction", withdrawn: d.withdrawn, replacement: d.replacement, tags: ["ambient", d.cue], note: `User corrected "${d.withdrawn[0]}" to "${d.replacement[0]}" — prompt: "${String(prompt).replace(/\s+/g, " ").slice(0, 140)}"` };
+}
+async function cliObserve() {
+  // UserPromptSubmit hook: silent unless --verbose; exit 0 on every path (a hook must never block a prompt).
+  try {
+    let raw = ""; try { raw = readFileSync(0, "utf8"); } catch { /* no stdin */ }
+    let hook = {}; try { hook = raw.trim() ? JSON.parse(raw) : {}; } catch { hook = {}; }
+    const d = detectCorrection(hook.prompt ?? "");
+    if (!d) { if (process.argv.includes("--verbose")) console.log("memory-pulse: no correction shape in this prompt"); return; }
+    const r = appendEvent(correctionEvent(d, hook.prompt));
+    if (process.argv.includes("--verbose") || r.written) console.log(r.written ? `memory-pulse: correction recorded (t=${r.t}) — "${d.withdrawn[0]}" withdrawn, "${d.replacement[0]}" replaces it; the guard enforces it from now on` : `memory-pulse: correction not recorded (${r.reason})`);
+  } catch { /* silent */ }
+}
+
 async function cliBrief() {
   const led = readEvents();
   const { events } = led;
@@ -467,9 +573,11 @@ async function cliBrief() {
   const budget = bi >= 0 ? Number(process.argv[bi + 1]) : (process.env.MEMORY_PULSE_BRIEF_BUDGET ? Number(process.env.MEMORY_PULSE_BRIEF_BUDGET) : undefined);
   if (budget !== undefined && !(Number.isFinite(budget) && budget >= 1)) { console.error("brief --budget takes a positive number of tokens"); process.exit(1); }
   const tier = process.env.MEMORY_PULSE_BRIEF_TIER || (budget ? undefined : "brief");
+  if (process.argv.includes("--offline")) { process.stdout.write(offlineBrief(led, events) + "\n"); return; }
   try {
     const out = await callApi("/v1/pulse", { events, ...(tier ? { tier } : {}), ...(budget ? { budget } : {}) });
     process.stdout.write(loadedLine(led, events, { keyStatus: out.keyStatus, tier: out.tier ?? tier, chars: out.text?.length, budget }) + "\n");
+    const hl = handoffLine(events); if (hl) process.stdout.write(hl + "\n");
     if (out.text) process.stdout.write(out.text + "\n");
     if (Array.isArray(out.quarantined) && out.quarantined.length) {
       process.stdout.write(`⚠ ${out.quarantined.length} note(s) quarantined — instruction-like content was not rendered (t=${out.quarantined.map((q) => q.t).join(", ")})\n`);
@@ -478,8 +586,9 @@ async function cliBrief() {
     const foot = telemetryFooter(out.telemetry);
     if (foot) process.stdout.write(foot + "\n");
   } catch (e) {
-    // A dead network must not break session start — say so in one line.
+    // A dead network must not break session start — and must not hand it nothing: local render, labelled as such.
     process.stdout.write(`memory-pulse: brief unavailable (${String(e?.message ?? e).split(".")[0]})\n`);
+    process.stdout.write(offlineBrief(led, events) + "\n");
   }
 }
 
@@ -832,12 +941,22 @@ function cliInstallHook() {
   const GUARD = "npx -y memory-pulse guard";
   const pre = (settings.hooks.PreToolUse = settings.hooks.PreToolUse || []);
   if (!JSON.stringify(pre).includes(GUARD)) { pre.push({ matcher: codex ? "Edit|Write|apply_patch" : "Edit|Write|MultiEdit", hooks: [{ type: "command", command: GUARD }] }); changed++; }
+  const HANDOFF = "npx -y memory-pulse handoff";
+  const pc = (settings.hooks.PreCompact = settings.hooks.PreCompact || []);
+  if (!JSON.stringify(pc).includes(HANDOFF)) { pc.push({ hooks: [{ type: "command", command: HANDOFF }] }); changed++; }
+  if (process.argv.includes("--ambient")) {
+    const OBSERVE = "npx -y memory-pulse observe";
+    const ups = (settings.hooks.UserPromptSubmit = settings.hooks.UserPromptSubmit || []);
+    if (!JSON.stringify(ups).includes(OBSERVE)) { ups.push({ hooks: [{ type: "command", command: OBSERVE }] }); changed++; }
+  }
   if (!changed) { console.log("hooks already installed — nothing to do"); return; }
   mkdirSync(home, { recursive: true });
   writeFileSync(file, JSON.stringify(settings, null, 2) + "\n");
   console.log(`installed ${changed} hook(s) in ${file}`);
   console.log("SessionStart: every session re-enters through the ledger automatically.");
   console.log(`PreToolUse (${codex ? "apply_patch" : "Edit/Write"}): an edit that writes back a withdrawn value is blocked and explained.`);
+  console.log("PreCompact: what the session was doing is recorded before compaction and printed first at the next start.");
+  if (process.argv.includes("--ambient")) console.log("UserPromptSubmit: a prompt shaped like a correction (\"X not Y\", \"change X to Y\", \"X -> Y\") is recorded with both terms; the guard enforces it.");
   if (codex) console.log("Codex runs no hook it has not been shown: open Codex, run /hooks, and trust the two memory-pulse entries (once per definition).");
   console.log(project ? `Project-scoped: commit ${dirName}/${codex ? "hooks.json" : "settings.json"} and every clone is guarded.` : "Tip: `install-hook --project` writes the hooks into this repo so teammates inherit them.");
   console.log("Remove either by deleting the memory-pulse entries from hooks.");
@@ -919,6 +1038,8 @@ if (isMain) {
   if (sub === "install-hook") { cliInstallHook(); process.exit(0); }
   if (sub === "guard") { await cliGuard(); process.exit(0); }
   if (sub === "check") { await cliCheck(); process.exit(0); }
+  if (sub === "handoff") { await cliHandoff(); process.exit(0); }
+  if (sub === "observe") { await cliObserve(); process.exit(0); }
   if (sub === "verify") {
     // walk the row chain and check the ledger against the last seal; exit 2 on either failure (fail closed, like check)
     const chain = verifyChain(); const seal = verifyLocalSeal();
