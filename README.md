@@ -115,6 +115,7 @@ npx memory-pulse brief --budget 1500   # size it to the tokens you can spare; th
 npx memory-pulse guard          # PreToolUse hook: blocks edits that reintroduce withdrawn terms
                                 # (a later correction can `supersedes: [t]` an earlier one — only the latest binds)
 npx memory-pulse check --ci     # Memory CI: one of three verdicts for a change, from files you own
+npx memory-pulse verify         # row chain + last engine seal; exit 2 if either fails
 npx memory-pulse lint [--ci]    # dry run: do CLAUDE.md / AGENTS.md / .claude/rules still state a value the ledger retired?
 npx memory-pulse guard allow "<term>" --path <prefix> "<reason>"   # record a false block as an override
 npx memory-pulse report         # correction re-violation scoreboard, computed locally

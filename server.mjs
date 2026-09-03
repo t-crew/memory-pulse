@@ -907,6 +907,14 @@ if (isMain) {
   if (sub === "install-hook") { cliInstallHook(); process.exit(0); }
   if (sub === "guard") { await cliGuard(); process.exit(0); }
   if (sub === "check") { await cliCheck(); process.exit(0); }
+  if (sub === "verify") {
+    // walk the row chain and check the ledger against the last seal; exit 2 on either failure (fail closed, like check)
+    const chain = verifyChain(); const seal = verifyLocalSeal();
+    if (process.argv.includes("--json")) { console.log(JSON.stringify({ chain, seal: { ok: seal.ok, reason: seal.reason ?? null, through: seal.seal?.through ?? null, events: seal.seal?.events ?? null, digest: seal.seal?.digest ?? null } }, null, 2)); process.exit(chain.ok && seal.ok !== false ? 0 : 2); }
+    console.log(chain.ok ? `chain: OK — ${chain.chained} chained row(s)${chain.chained ? ` from t=${chain.from}` : ""}, ${chain.legacy} legacy row(s)${chain.sealed ? " sealed" : " (unsealed until the first chained write)"}${chain.head ? ` · head ${chain.head.slice(0, 12)}` : ""}` : `chain: BROKEN — ${chain.reason}`);
+    console.log(seal.ok === null ? `seal: none yet — ${seal.reason}` : seal.ok ? `seal: OK — engine-signed over ${seal.seal.events} row(s) through t=${seal.seal.through}${seal.seal.digest ? ` · ${seal.seal.digest.slice(0, 12)}` : ""}` : `seal: MISMATCH — ${seal.reason}`);
+    process.exit(chain.ok && seal.ok !== false ? 0 : 2);
+  }
   if (sub === "lint") { await cliLint(); process.exit(0); }
   if (sub === "report") { cliReport(); process.exit(0); }
   if (sub === "bench") { await cliBench(); process.exit(0); }
