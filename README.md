@@ -6,6 +6,13 @@
 
 **Site:** [pulse.strategic-innovations.ai](https://pulse.strategic-innovations.ai/) — try the guard in the browser · [compare with Mem0, Zep, Letta and CLAUDE.md](https://pulse.strategic-innovations.ai/compare)
 
+**Corrections your agent can't forget, or write back.** Causal project memory
+for Claude Code, Codex and any MCP client: a local ledger in your repo,
+corrections first in every session, and a guard that blocks the edit that
+writes a withdrawn value back — citing the ledger line that retired it.
+~670 tokens of tool definitions; the hosted engine keeps no database of your
+memory.
+
 **Error correction for agents.** Agent memory is probabilistic; memory-pulse
 detects the error without reading the state, corrects toward the recorded
 truth, and keeps an exact layer for what must never drift. Causal project

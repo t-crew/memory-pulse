@@ -1,7 +1,7 @@
 {
   "name": "memory-pulse",
   "version": "0.5.1",
-  "description": "Causal memory for coding agents that costs ~670 tokens, not your context window. Four MCP tools: re-enter a project, recall what caused what, record findings, run code against memory.",
+  "description": "Causal project memory for coding agents: corrections first in every session, and a guard that blocks the edit that writes a withdrawn value back. 4 MCP tools, ~670 tokens. Claude Code · Codex · Cursor · GitHub Actions",
   "homepage": "https://pulse.strategic-innovations.ai",
   "type": "module",
   "bin": {
