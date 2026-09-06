@@ -51,6 +51,17 @@ after(() => fake.close());
 test("tool definitions stay inside the token budget that is the pitch", () => {
   const size = JSON.stringify(TOOLS).length;
   assert.ok(size < 4000, `tool definitions are ${size} chars; budget 4000`);
+  // The ceiling alone let the PUBLISHED number drift: every surface said
+  // "~670 tokens" while the definitions had grown to 3,406 chars, about 900
+  // at the 3.8 chars/token the site discloses. A ceiling is not a claim.
+  // Pin the claim to the measurement, with room to breathe either side.
+  const claimedTokens = 900;
+  const measuredTokens = Math.round(size / 3.8);
+  assert.ok(
+    Math.abs(measuredTokens - claimedTokens) <= 60,
+    `every public surface claims ~${claimedTokens} tokens; definitions now measure ` +
+    `${size} chars = ~${measuredTokens} tokens. Update the claim everywhere or shrink the tools.`,
+  );
   assert.deepEqual(TOOLS.map((t) => t.name), ["pulse", "recall", "remember", "execute"]);
 });
 
