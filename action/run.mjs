@@ -37,16 +37,16 @@ export function conclusionFor(verdict) {
 /** Title line for the check-run / summary. States what was checked, not "passed". */
 export function titleFor(result) {
   const c = result.checked ?? {};
-  if (result.verdict === "blocked") return `memory-pulse: blocked — ${result.corrections?.length ?? 0} withdrawn value(s) reintroduced${result.invariants?.length ? `, ${result.invariants.length} invariant(s) hit` : ""}`;
-  if (result.verdict === "verified") return `memory-pulse: verified — ${c.events ?? 0} memories checked, ${result.evidence?.length ?? 0} bear on this change, ${c.corrections ?? "?"} correction(s) enforced`;
-  return `memory-pulse: no evidence — ${c.events ?? 0} memories checked, none bear on this change (not a pass)`;
+  if (result.verdict === "blocked") return `memory-pulse blocked this change. ${result.corrections?.length ?? 0} withdrawn value(s) reintroduced${result.invariants?.length ? `, ${result.invariants.length} invariant(s) hit` : ""}`;
+  if (result.verdict === "verified") return `memory-pulse verified this change. ${c.events ?? 0} memories checked, ${result.evidence?.length ?? 0} bear on this change, ${c.corrections ?? "?"} correction(s) enforced`;
+  return `memory-pulse found no evidence. ${c.events ?? 0} memories checked, none bear on this change (not a pass)`;
 }
 
 /** The sticky comment body. Idempotent by MARKER; re-rendered, never appended. */
 export function renderComment(result, { receiptId = null, sha = null } = {}) {
   const lines = [MARKER, `### ${titleFor(result)}`, ""];
   if (result.verdict === "blocked") {
-    lines.push("This change writes back a value the ledger retired, or trips a declared invariant. The verdict cites the line that binds:");
+    lines.push("This change writes back a value the ledger retired, or trips a declared invariant. The verdict cites the line that binds.");
     for (const r of result.reasons ?? []) if (!/^\d+ recorded event/.test(r)) lines.push(`- ${r}`);
     lines.push("", "Use the corrected value (a comparison naming both old and new goes through), record a new correction if the old one is wrong, or record an override with `memory-pulse guard allow \"<term>\" --path <prefix> \"<reason>\"` if this is a false block — overrides are counted.");
   } else if (result.verdict === "verified") {

@@ -610,7 +610,65 @@ export function offlineBrief(led, events, { now = Date.now(), recent = 8 } = {})
   const rec = events.slice(-recent).reverse();
   lines.push(`RECENT (${rec.length}):`);
   for (const e of rec) lines.push(`  t${e.t} ${e.cause} -> ${e.effect}`);
+  const risk = atRiskLines(events, { now }); if (risk) lines.push(risk);
   return lines.join("\n");
+}
+
+// ---- The loop, closed mechanically (2026-09-04). Every block the guard records is a context in which a
+// correction mattered; a correction that keeps biting is the one the agent needs BEFORE the next edit, not
+// after. Deterministic counts over the local violation records — the honest form of "usage": nothing decays,
+// nothing is deleted, an override is counted beside the blocks it answers.
+export function readBlocks({ limit = 2000 } = {}) {
+  try { return readFileSync(violationsPath(), "utf8").split("\n").filter(Boolean).slice(-limit).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter((b) => b && Array.isArray(b.hits)); } catch { return []; }
+}
+export function atRiskLines(events, { now = Date.now(), minBlocks = 2, blocks = readBlocks() } = {}) {
+  if (!blocks.length) return "";
+  const retired = supersededSet(events);
+  const byT = new Map(); const corr = new Map(events.filter((e) => e.kind === "correction").map((e) => [e.t, e]));
+  const overrides = new Map(); for (const e of events) if (e.kind === "override" && e.override?.term) overrides.set(String(e.override.term).toLowerCase(), (overrides.get(String(e.override.term).toLowerCase()) ?? 0) + 1);
+  for (const b of blocks) for (const h of b.hits) {
+    const t = Number(h.t); if (!corr.has(t) || retired.has(t)) continue;
+    const m = byT.get(t) ?? { t, term: h.term, n: 0, dirs: new Map(), last: 0 }; m.n++; const dir = String(b.file ?? "").split("/").slice(0, -1).join("/") || "."; m.dirs.set(dir, (m.dirs.get(dir) ?? 0) + 1); m.last = Math.max(m.last, Date.parse(b.at) || 0); byT.set(t, m);
+  }
+  const rows = [...byT.values()].filter((m) => m.n >= minBlocks).sort((a, b) => b.n - a.n).slice(0, 5);
+  if (!rows.length) return "";
+  const lines = [`AT RISK (${rows.length}) — corrections the guard keeps having to block; read these before editing:`];
+  for (const m of rows) {
+    const c = corr.get(m.t); const ov = overrides.get(String(m.term).toLowerCase()) ?? 0;
+    const where = [...m.dirs].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([d, n]) => `${d} ×${n}`).join(", ");
+    lines.push(`  ! t${m.t} "${m.term}" blocked ${m.n}× (${where})${c?.replacement?.length ? ` → use ${c.replacement.join(", ")}` : ""}${ov ? ` · ${ov} override(s)` : ""}${m.last ? ` · last ${ago(now - m.last)}` : ""}`);
+  }
+  return lines.join("\n");
+}
+
+// `memory-pulse before "<operation>" [--path p] [--text t]` — which corrections bear on what you are about to
+// do, in your own words. The exact rung is local (a withdrawn term in the operation — the guard's rule); the
+// associative rung is the engine's learned read over your events and your block records, and it answers `no
+// evidence` when nothing resonates above the floor. Nothing is stored engine-side.
+async function cliBefore() {
+  const argv = process.argv.slice(3);
+  const opt = (n) => { const i = argv.indexOf(`--${n}`); return i >= 0 ? argv[i + 1] : undefined; };
+  const operation = argv.filter((a, i) => !a.startsWith("--") && argv[i - 1] !== "--path" && argv[i - 1] !== "--text").join(" ");
+  const path = opt("path") ?? ""; const text = opt("text") ?? "";
+  if (!operation && !path && !text) { console.error('usage: memory-pulse before "<what you are about to do>" [--path <file>] [--text <edit>]'); process.exit(1); }
+  const { events } = readEvents();
+  const retired = supersededSet(events);
+  const hay = `${operation} ${text}`.toLowerCase();
+  const exact = events.filter((e) => e.kind === "correction" && !retired.has(e.t) && (e.withdrawn ?? []).some((w) => w && hay.includes(String(w).toLowerCase())));
+  const line = (c, why) => `  ! (t${c.t}) ${c.cause} -> ${c.effect}${c.withdrawn?.length ? ` — withdrawn ${c.withdrawn.map((w) => `"${w}"`).join(", ")}${c.replacement?.length ? ` → use ${c.replacement.join(", ")}` : ""}` : ""}${why ? ` · ${why}` : ""}`;
+  if (exact.length) { console.log(`BEFORE "${operation || path}" · rung exact — the operation names a withdrawn term:`); for (const c of exact) console.log(line(c, "")); }
+  try {
+    const out = await callApi("/v1/before", { events, operation, path, text, blocks: readBlocks() });
+    if (out.error) throw new Error(out.error);
+    if (!exact.length) {
+      if (out.rung === "none") console.log(`BEFORE "${operation || path}" · no evidence — ${out.reason}`);
+      else { console.log(`BEFORE "${operation || path}" · rung ${out.rung} (${out.learned.registers} registers over ${out.learned.vocab} words):`); for (const h of out.hits) console.log(line(h, `${h.why}${h.paths?.length ? ` · bit under ${h.paths.map(([p, n]) => `${p} ×${n}`).join(", ")}` : ""}`)); }
+    }
+    if (Array.isArray(out.atRisk) && out.atRisk.length) console.log(`AT RISK: ${out.atRisk.map((m) => `t${m.t} ${m.withdrawn.map((w) => `"${w}"`).join(", ")} bit ${m.blocks}×`).join("; ")}`);
+  } catch (e) {
+    if (!exact.length) console.log(`BEFORE "${operation || path}" · exact rung only (engine unreachable: ${String(e?.message ?? e).split(".")[0]}) — no withdrawn term in the operation; the learned read needs the engine`);
+    else console.log(`(learned read unavailable: ${String(e?.message ?? e).split(".")[0]})`);
+  }
 }
 
 // ---- Core 2: compaction handoff (2026-09-03). Compaction loss is the #2 complaint in the demand research. A
@@ -717,6 +775,7 @@ async function cliBrief() {
     if (currentMode() === "agent" && existsSync(agentPath())) { const ib = identityBlock(readEvents({ scope: "agent" })); if (ib) process.stdout.write(ib + "\n"); }
     const hl = handoffLine(events); if (hl) process.stdout.write(hl + "\n");
     if (out.text) process.stdout.write(out.text + "\n");
+    const risk = atRiskLines(events); if (risk) process.stdout.write(risk + "\n");
     if (Array.isArray(out.quarantined) && out.quarantined.length) {
       process.stdout.write(`⚠ ${out.quarantined.length} note(s) quarantined — instruction-like content was not rendered (t=${out.quarantined.map((q) => q.t).join(", ")})\n`);
     }
@@ -1173,6 +1232,7 @@ try {
 if (isMain) {
   const sub = process.argv[2];
   if (sub === "brief") { await cliBrief(); process.exit(0); }
+  if (sub === "before") { await cliBefore(); process.exit(0); }
   if (sub === "install-hook") { cliInstallHook(); process.exit(0); }
   if (sub === "guard") { await cliGuard(); process.exit(0); }
   if (sub === "check") { await cliCheck(); process.exit(0); }

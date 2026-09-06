@@ -63,3 +63,32 @@ test(".mcp.json launches this repo's server through the plugin-root variable bot
   assert.equal(m.command, "node");
   assert.deepEqual(m.args, ["${CLAUDE_PLUGIN_ROOT}/server.mjs"]);
 });
+
+// The description is the pitch a developer reads in npm search, the MCP
+// registry, Claude Code's plugin browser, Codex and the marketplace. All five
+// had drifted into five different sentences, each opening on the architecture
+// ("Causal project memory") instead of what the tool does. Versions were
+// pinned here; the sentence was not, so it drifted freely. Now it cannot.
+test("every manifest opens the pitch with the same sentence, in the product voice", () => {
+  const LEAD = "Corrections that outlive the session.";
+  const surfaces = {
+    "package.json": (d) => d.description,
+    "server.json": (d) => d.description,
+    ".claude-plugin/plugin.json": (d) => d.description,
+    ".codex-plugin/plugin.json": (d) => d.description,
+    ".claude-plugin/marketplace.json": (d) => d.plugins[0].description,
+  };
+  for (const [file, pick] of Object.entries(surfaces)) {
+    const text = pick(read(file));
+    assert.ok(text, `${file} has no description`);
+    assert.ok(text.startsWith(LEAD), `${file} does not open with the shared lead: ${text.slice(0, 60)}`);
+    // Tells we removed from every public surface. A semicolon or an em-dash in
+    // a one-line pitch reads as generated; "Causal project memory" sells the
+    // mechanism before the outcome.
+    for (const tell of ["Causal project memory", ";", "—", ", not "]) {
+      assert.ok(!text.includes(tell), `${file} description carries "${tell}"`);
+    }
+    // Registries truncate. Keep the sentence that matters inside the fold.
+    assert.ok(text.length <= 260, `${file} description is ${text.length} chars, over 260`);
+  }
+});

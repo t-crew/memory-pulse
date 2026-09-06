@@ -30,8 +30,8 @@ test("verdict → conclusion: blocked fails, verified succeeds, no_evidence is N
 
 test("titles state what was checked, not 'passed'", () => {
   assert.match(titleFor({ verdict: "verified", checked: { events: 12, corrections: 3 }, evidence: [{}, {}] }), /12 memories checked, 2 bear on this change, 3 correction\(s\) enforced/);
-  assert.match(titleFor({ verdict: "no_evidence", checked: { events: 12 } }), /no evidence — 12 memories checked, none bear on this change \(not a pass\)/);
-  assert.match(titleFor({ verdict: "blocked", corrections: [{}], invariants: [{ id: "x" }] }), /blocked — 1 withdrawn value\(s\) reintroduced, 1 invariant\(s\) hit/);
+  assert.match(titleFor({ verdict: "no_evidence", checked: { events: 12 } }), /found no evidence\. 12 memories checked, none bear on this change \(not a pass\)/);
+  assert.match(titleFor({ verdict: "blocked", corrections: [{}], invariants: [{ id: "x" }] }), /memory-pulse blocked this change\. 1 withdrawn value\(s\) reintroduced, 1 invariant\(s\) hit/);
 });
 
 test("renderComment carries the marker, the citations, and the receipt; findSticky locates it", () => {
@@ -71,7 +71,7 @@ test("e2e: a PR that reintroduces a withdrawn value fails the action with the ci
   const run = () => { try { return { code: 0, out: execFileSync(process.execPath, [join(ROOT, "action", "run.mjs")], { cwd: dir, encoding: "utf8", env: { ...process.env, GITHUB_BASE_REF: "main", GITHUB_STEP_SUMMARY: summary, MEMORY_PULSE_LEDGER: join(dir, ".memory-pulse", "events.jsonl"), GITHUB_TOKEN: "", GITHUB_REPOSITORY: "" } }) }; } catch (e) { return { code: e.status, out: String(e.stdout) + String(e.stderr) }; } };
   const blocked = run();
   assert.equal(blocked.code, 2, blocked.out);
-  assert.match(blocked.out, /memory-pulse: blocked — 1 withdrawn value/);
+  assert.match(blocked.out, /memory-pulse blocked this change\. 1 withdrawn value/);
   assert.match(readFileSync(summary, "utf8"), /withdrawn at ledger t2/);
   // Benign PR: a comparison that names the replacement.
   writeFileSync(join(dir, "pricing.md"), "# Pricing\n\nPro was $49/mo; it is $29/mo now.\n");
@@ -79,7 +79,7 @@ test("e2e: a PR that reintroduces a withdrawn value fails the action with the ci
   writeFileSync(summary, "");
   const ok = run();
   assert.equal(ok.code, 0, ok.out);
-  assert.match(ok.out, /memory-pulse: verified/);
+  assert.match(ok.out, /memory-pulse verified this change/);
   // A PR the ledger knows nothing about: neutral, exit 0, and the summary says so.
   writeFileSync(join(dir, "other.md"), "unrelated prose\n");
   git("add", "-A"); git("commit", "-q", "-m", "unrelated");
@@ -87,7 +87,7 @@ test("e2e: a PR that reintroduces a withdrawn value fails the action with the ci
   writeFileSync(summary, "");
   const ne = run();
   assert.equal(ne.code, 0);
-  assert.match(ne.out, /memory-pulse: no evidence/);
+  assert.match(ne.out, /memory-pulse found no evidence/);
   assert.match(readFileSync(summary, "utf8"), /not as a pass/);
 });
 
