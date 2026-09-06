@@ -1,6 +1,6 @@
 {
   "name": "memory-pulse",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "description": "Corrections that outlive the session. Surfaces a correction first in every session and blocks the edit that writes the old value back, for about 900 tokens of tool definitions.",
   "author": {
     "name": "Travis Crew"
