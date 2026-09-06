@@ -1,16 +1,16 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.t-crew/memory-pulse",
-  "description": "Corrections that outlive the session. memory-pulse surfaces a correction first in every session and blocks the edit that writes the old value back, quoting the line that retired it.",
+  "description": "Corrections that outlive the session. A guard blocks the edit that writes the old value back.",
   "repository": {
     "url": "https://github.com/t-crew/memory-pulse",
     "source": "github"
   },
-  "version": "0.5.2",
+  "version": "0.5.3",
   "packages": [
     {
       "identifier": "memory-pulse",
-      "version": "0.5.2",
+      "version": "0.5.3",
       "transport": {
         "type": "stdio"
       },

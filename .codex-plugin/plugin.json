@@ -1,6 +1,6 @@
 {
   "name": "memory-pulse",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Corrections that outlive the session. Surfaces a correction first in every session. A PreToolUse guard blocks an edit that writes the old value back and cites the ledger line that retired it. The ledger is a local file you own.",
   "author": {
     "name": "Travis Crew",
