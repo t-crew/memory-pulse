@@ -17,8 +17,8 @@ is a file in your own repository.
 Most memory tools stop at showing the correction to the model. The guard is
 the part that acts on it.
 
-All four tool definitions come to **~2.5 KB, about 670 tokens**, and a test in
-this repo fails the build if they ever exceed 4 KB. Independent measurements put a typical five to ten server MCP
+All four tool definitions come to **~3.3 KB, about 900 tokens**, and a test in
+this repo fails the build if they grow past that. Independent measurements put a typical five to ten server MCP
 setup at [50-67k tokens of tool definitions](https://getunblocked.com/blog/mcp-token-budget-autopsy/)
 before your first prompt, roughly a third of a 200k context window.
 

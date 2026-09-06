@@ -69,6 +69,16 @@ test(".mcp.json launches this repo's server through the plugin-root variable bot
 // had drifted into five different sentences, each opening on the architecture
 // ("Causal project memory") instead of what the tool does. Versions were
 // pinned here; the sentence was not, so it drifted freely. Now it cannot.
+test("the server reports the package version to MCP clients", async () => {
+  // It was hardcoded at 0.2.1 while the package shipped 0.5.3, so every client
+  // displayed a version three releases stale.
+  const { version } = read("package.json");
+  const src = readFileSync(join(ROOT, "server.mjs"), "utf8");
+  assert.ok(!/serverInfo:\s*\{[^}]*version:\s*"\d/.test(src),
+    "serverInfo carries a hardcoded version; it must read package.json");
+  assert.match(version, /^\d+\.\d+\.\d+$/);
+});
+
 test("every manifest opens the pitch with the same sentence, in the product voice", () => {
   const LEAD = "Corrections that outlive the session.";
   // Each registry enforces its own ceiling. The MCP registry rejects a publish

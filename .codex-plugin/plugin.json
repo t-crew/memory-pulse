@@ -24,7 +24,7 @@
   "interface": {
     "displayName": "Memory Pulse",
     "shortDescription": "Project memory whose corrections surface first \u2014 and are enforced.",
-    "longDescription": "Re-enter a project through its causal ledger at session start, recall what caused what, record decisions and corrections with withdrawn terms, and let the guard block any edit that reintroduces a withdrawn value. Reads cost ~670 tokens of tool definitions; the ledger is a local file in your repo and writes work offline.",
+    "longDescription": "Re-enter a project through its causal ledger at session start, recall what caused what, record decisions and corrections with withdrawn terms, and let the guard block any edit that reintroduces a withdrawn value. Reads cost ~900 tokens of tool definitions; the ledger is a local file in your repo and writes work offline.",
     "developerName": "Travis Crew",
     "category": "Developer Tools",
     "capabilities": [

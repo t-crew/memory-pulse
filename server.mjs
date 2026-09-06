@@ -24,6 +24,15 @@ import { createHash, createCipheriv } from "node:crypto";
 import http from "node:http";
 import https from "node:https";
 import { gzipSync } from "node:zlib";
+
+// The version an MCP client displays. It was hardcoded and had drifted to
+// 0.2.1 while the package shipped 0.5.3, so every client showed a version
+// three releases stale. Read it from the manifest instead; a test pins them.
+const PKG_VERSION = (() => {
+  try {
+    return JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "package.json"), "utf8")).version;
+  } catch { return "0.0.0"; }
+})();
 import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync, realpathSync, readdirSync, statSync} from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -450,7 +459,7 @@ async function dispatch(msg) {
     return ok(id, {
       protocolVersion: SUPPORTED.includes(wanted) ? wanted : SUPPORTED[0],
       capabilities: { tools: {} },
-      serverInfo: { name: "memory-pulse", version: "0.2.1" },
+      serverInfo: { name: "memory-pulse", version: PKG_VERSION },
     });
   }
   if (method === "notifications/initialized" || method === "initialized") return;
