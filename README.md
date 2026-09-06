@@ -148,7 +148,7 @@ its memory loaded whole, truncated, or not at all:
 memory-pulse: loaded 852 events from .memory-pulse/events.jsonl · sha256 1a2b3c4d5e6f · 2 binding corrections (10 withdrawn terms) · 1 superseded · ⚠ 1 malformed line skipped: 544 · memory key resumed (+3 new) · tier brief, 5,153 chars
 ```
 
-Every CORRECTIONS line cites its ledger record as `… -> effect (t824) — note`,
+Every CORRECTIONS line cites its ledger record as `… -> effect (t12) — note`,
 so a correction is evidence the agent can point at. `recall` and the guard name the same `t`.
 
 ## Lint: the rules a session loads, checked against the ledger
