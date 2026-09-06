@@ -17,9 +17,8 @@ is a file in your own repository.
 Most memory tools stop at showing the correction to the model. The guard is
 the part that acts on it.
 
-All four tool definitions come to **~2.5 KB, about 670 tokens**
-(cert_c71bba29493a), and a test in this repo fails the build if they ever
-exceed 4 KB. Independent measurements put a typical five to ten server MCP
+All four tool definitions come to **~2.5 KB, about 670 tokens**, and a test in
+this repo fails the build if they ever exceed 4 KB. Independent measurements put a typical five to ten server MCP
 setup at [50-67k tokens of tool definitions](https://getunblocked.com/blog/mcp-token-budget-autopsy/)
 before your first prompt, roughly a third of a 200k context window.
 
@@ -261,7 +260,7 @@ Local writes are free on either tier.
 ## Measured, on our own ledger
 
 Measured on the ledger of the project that builds memory-pulse, a 767-event
-file of 1.08 MB, pinned as run cert_c71bba29493a:
+file of 1.08 MB, measured 2026-09-01:
 
 - A cross-referencing question answered through `execute` returned **124
   chars** against the 1,080,983-char full dump. The intermediates never
@@ -273,8 +272,7 @@ file of 1.08 MB, pinned as run cert_c71bba29493a:
   nothing.
 
 The ratios depend on ledger size, and a ten-event ledger has nothing to
-compress. The methodology lives in the engine's benchmark suite, and the
-numbers above come from that pinned run.
+compress. The methodology lives in the engine's benchmark suite.
 
 ## FAQ
 
