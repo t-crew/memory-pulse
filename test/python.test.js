@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 // tests never inherit the machine's agent mode or agent ledger
 process.env.MEMORY_PULSE_MODE = "deliberate"; process.env.MEMORY_PULSE_AGENT = "/nonexistent/agent/events.jsonl";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,4 +39,17 @@ L.append("pricing-corrected", "price-is-29", kind="correction", withdrawn=["$49"
 print(json.dumps([L.check("the price is $49")["verdict"], L.check("was $49, now $29")["verdict"], L.check("nothing relevant")["verdict"]]))
 `], { encoding: "utf8" });
   assert.deepEqual(JSON.parse(out.trim()), ["blocked", "verified", "no_evidence"]);
+});
+
+// The decode-time guard ships beside the Python client. Its suite is stdlib
+// only and loads no model, so it runs here in milliseconds. Gate on the
+// summary line, never on a filter pipeline: an empty run must not pass.
+test("python span guard: decode-time enforcement, tested without a model", () => {
+  const root = new URL("..", import.meta.url).pathname;
+  const r = spawnSync("python3", ["-m", "unittest", "python/test_span_guard.py"], { cwd: root, encoding: "utf8" });
+  const summary = (r.stderr + r.stdout);
+  const ran = summary.match(/^Ran (\d+) tests?/m);
+  assert.ok(ran && Number(ran[1]) >= 14, `expected the span guard suite to run, got: ${summary.slice(-400)}`);
+  assert.match(summary, /^OK$/m, summary.slice(-600));
+  assert.equal(r.status, 0);
 });

@@ -5,3 +5,4 @@ node_modules/
 .memory-pulse/*
 !.memory-pulse/events.jsonl
 !.memory-pulse/invariants.jsonl
+__pycache__/
