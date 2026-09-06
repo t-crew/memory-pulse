@@ -71,14 +71,18 @@ test(".mcp.json launches this repo's server through the plugin-root variable bot
 // pinned here; the sentence was not, so it drifted freely. Now it cannot.
 test("every manifest opens the pitch with the same sentence, in the product voice", () => {
   const LEAD = "Corrections that outlive the session.";
+  // Each registry enforces its own ceiling. The MCP registry rejects a publish
+  // with 422 "expected length <= 100" on body.description, which failed the
+  // v0.5.2 release after npm had already published. The others truncate in the
+  // UI rather than refusing, so 260 is the practical limit there.
   const surfaces = {
-    "package.json": (d) => d.description,
-    "server.json": (d) => d.description,
-    ".claude-plugin/plugin.json": (d) => d.description,
-    ".codex-plugin/plugin.json": (d) => d.description,
-    ".claude-plugin/marketplace.json": (d) => d.plugins[0].description,
+    "package.json": [(d) => d.description, 260],
+    "server.json": [(d) => d.description, 100],
+    ".claude-plugin/plugin.json": [(d) => d.description, 260],
+    ".codex-plugin/plugin.json": [(d) => d.description, 260],
+    ".claude-plugin/marketplace.json": [(d) => d.plugins[0].description, 260],
   };
-  for (const [file, pick] of Object.entries(surfaces)) {
+  for (const [file, [pick, cap]] of Object.entries(surfaces)) {
     const text = pick(read(file));
     assert.ok(text, `${file} has no description`);
     assert.ok(text.startsWith(LEAD), `${file} does not open with the shared lead: ${text.slice(0, 60)}`);
@@ -88,7 +92,6 @@ test("every manifest opens the pitch with the same sentence, in the product voic
     for (const tell of ["Causal project memory", ";", "—", ", not "]) {
       assert.ok(!text.includes(tell), `${file} description carries "${tell}"`);
     }
-    // Registries truncate. Keep the sentence that matters inside the fold.
-    assert.ok(text.length <= 260, `${file} description is ${text.length} chars, over 260`);
+    assert.ok(text.length <= cap, `${file} description is ${text.length} chars, over its ${cap} limit`);
   }
 });
