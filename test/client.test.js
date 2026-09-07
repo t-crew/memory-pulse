@@ -215,7 +215,9 @@ test("install-hook installs both hooks and stays idempotent", () => {
   assert.match(run(), /installed 3 hook/);
   assert.match(run(), /already installed/);
   const s = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8"));
-  assert.equal(s.hooks.PreToolUse[0].matcher, "Edit|Write|MultiEdit");
+  // Bash joined the matcher when the guard learned to read a heredoc: a shell
+  // write was the one path that reached a file without passing the guard.
+  assert.equal(s.hooks.PreToolUse[0].matcher, "Edit|Write|MultiEdit|Bash");
 });
 
 test("guard: a comparison or disavowal that names the replacement is allowed; a bare reintroduction is not", async () => {
@@ -617,4 +619,177 @@ test("brief prints the engine's seal verdict when the presented seal no longer m
   const { sealDriftLine } = await import("../server.mjs?sd=" + Date.now());
   assert.equal(sealDriftLine({}), "");
   assert.match(sealDriftLine({ seal_drift: ["ledger content changed since the last sealed call (rows up to t=5 no longer fold to the sealed head)"] }), /ledger integrity \(engine\): ledger content changed/);
+});
+
+// The guard hook runs inside PreToolUse on every edit, and localCheck's cost is
+// dominated by an evidence walk that touches every event to separate `verified`
+// from `no_evidence`. The hook reports neither: it is silent unless blocked.
+// Measured p95 per edit before this option: 1.08 ms at 1,000 events and 146 ms
+// at 250,000, the Enterprise ceiling this product sells. With the walk skipped,
+// 8.35 ms at 250,000.
+test("blockOnly: the blocked verdict and its reasons are unchanged", async () => {
+  const { localCheck } = await import("../server.mjs");
+  const events = [];
+  for (let t = 1; t <= 400; t++) {
+    events.push({
+      t, cause: `cause-${t}-alpha`, effect: `effect-${t}-beta`,
+      kind: t % 6 === 0 ? "correction" : "event",
+      ...(t % 30 === 0 ? { withdrawn: [`retired-value-${t}`], replacement: [`current-value-${t}`] } : {}),
+    });
+  }
+  const action = { kind: "edit", path: "docs/pricing.md", text: "price $29\nlegacy: retired-value-30\n" };
+
+  const full = localCheck(events, action, []);
+  const fast = localCheck(events, action, [], { blockOnly: true });
+
+  assert.equal(full.verdict, "blocked", "the fixture must actually block");
+  assert.equal(fast.verdict, "blocked", "blockOnly must reach the same verdict");
+  // Evidence lines are the only thing that may differ, and only on the
+  // non-blocked path. Every reason that explains the block must be identical.
+  const blockReasons = (r) => r.reasons.filter((x) => !/bear on this/.test(x));
+  assert.deepEqual(blockReasons(fast), blockReasons(full), "block reasons must be byte-identical");
+});
+
+test("blockOnly: a clean edit is reported honestly, never as verified", async () => {
+  const { localCheck } = await import("../server.mjs");
+  const events = [{ t: 1, cause: "unrelated-cause", effect: "unrelated-effect", kind: "event" }];
+  const clean = { kind: "edit", path: "docs/x.md", text: "nothing here relates to anything recorded" };
+
+  assert.equal(localCheck(events, clean, []).verdict, "no_evidence");
+  // Skipping the walk means we did not look for evidence, so claiming either
+  // `verified` or `no_evidence` would be a false statement about what was checked.
+  const fast = localCheck(events, clean, [], { blockOnly: true });
+  assert.equal(fast.verdict, "not_blocked");
+  assert.match(fast.reasons.join(" "), /evidence not gathered/);
+});
+
+// A correction with no withdrawn term binds nothing: it prints in the brief and
+// the guard lets every edit through. On this project's own ledger that was 153
+// of 164 corrections, so the guard enforced 7% of the record.
+test("bindCorrection: an effect that states the transition supplies its own terms", async () => {
+  const { bindCorrection } = await import("../server.mjs");
+  const bound = bindCorrection({ cause: "price-49-launched", effect: "49-withdrawn-for-29", kind: "correction" });
+  assert.deepEqual(bound.withdrawn, ["49"]);
+  assert.deepEqual(bound.replacement, ["29"]);
+  assert.ok(!bound._unenforceable, "a correction that binds something is not warned about");
+});
+
+test("bindCorrection: anything it cannot read is recorded and reported, never guessed", async () => {
+  const { bindCorrection } = await import("../server.mjs");
+  const bound = bindCorrection({
+    cause: "salience-at-ingest", effect: "salience-at-ingest-was-wrong", kind: "correction",
+    note: 'the ranker read 0.195 where it should read 0.945, and "salience-at-ingest" was the cause',
+  });
+  // Inference was measured at 7/11 top-3, which is a fine suggestion and would
+  // wreck the 1.0 precision as enforcement. So no term is invented.
+  assert.equal(bound.withdrawn, undefined, "no term may be invented");
+  assert.equal(bound._unenforceable, true);
+  assert.match(bound._hint, /binds nothing/);
+  assert.match(bound._hint, /0\.195|salience-at-ingest/, "candidates come from the user's own text");
+});
+
+test("bindCorrection: leaves declared terms and non-corrections alone", async () => {
+  const { bindCorrection } = await import("../server.mjs");
+  const declared = { cause: "a", effect: "b", kind: "correction", withdrawn: ["$49"], replacement: ["$29"] };
+  assert.deepEqual(bindCorrection(declared), declared);
+  const plain = { cause: "a", effect: "b", kind: "event" };
+  assert.deepEqual(bindCorrection(plain), plain);
+});
+
+// A heredoc is not an edit tool, so it reached a file without passing the
+// guard, and `check --ci` on the pull request was the only layer that caught
+// it. The general case is undecidable; these constructs are not.
+test("shellWrites: extracts the write target and content, and only from writes", async () => {
+  const { shellWrites } = await import("../server.mjs");
+  const writes = [
+    ["cat > pricing.md <<'EOF'\nThe price is $49 per seat.\nEOF", "pricing.md", "$49"],
+    ["cat >> notes.md <<EOF\nregion us-east-1\nEOF", "notes.md", "us-east-1"],
+    ['echo "region us-east-1" > infra.txt', "infra.txt", "us-east-1"],
+    ["printf 'v0.1.8\\n' >> CHANGELOG.md", "CHANGELOG.md", "0.1.8"],
+    ['echo "hello" | tee notes.md', "notes.md", "hello"],
+  ];
+  for (const [cmd, path, needle] of writes) {
+    const r = shellWrites({ command: cmd });
+    assert.equal(r.length >= 1, true, `no write found in ${JSON.stringify(cmd)}`);
+    assert.equal(r[0].path, path);
+    assert.ok(r[0].text.includes(needle), `content missing ${needle} in ${JSON.stringify(r[0].text)}`);
+  }
+});
+
+test("shellWrites: a read is not a write, and an unreadable write is a miss not a block", async () => {
+  const { shellWrites } = await import("../server.mjs");
+  const notWrites = [
+    "grep '$49' pricing.md",                  // reads the very term the guard blocks
+    "cat pricing.md",
+    "ls -la > /dev/null",                     // redirect with no literal content
+    "node build.mjs > out.log",               // content is not knowable without running it
+    "rm -rf dist",
+  ];
+  for (const cmd of notWrites) {
+    assert.deepEqual(shellWrites({ command: cmd }), [], `false write from ${JSON.stringify(cmd)}`);
+  }
+});
+
+test("the guard blocks a withdrawn value written through a heredoc", async () => {
+  const { shellWrites, localCheck } = await import("../server.mjs");
+  const events = [{
+    t: 1, cause: "price-49-launched", effect: "price-corrected-to-29", kind: "correction",
+    withdrawn: ["$49"], replacement: ["$29"],
+  }];
+  const [w] = shellWrites({ command: "cat > pricing.md <<'EOF'\nThe price is $49 per seat.\nEOF" });
+  const v = localCheck(events, { kind: "edit", text: w.text, path: w.path }, [], { blockOnly: true });
+  assert.equal(v.verdict, "blocked", "a heredoc reintroducing a withdrawn value must block");
+});
+
+// The seal is what the keyless-verify claim rests on: rows up to the sealed
+// watermark must fold to the sealed head, so an edit below the watermark is
+// visible even to someone holding no key. sealElement and readSeal had no test.
+test("sealElement: the fold is order-free and any edit changes the head", async () => {
+  const { sealElement, setHeadHex } = await import("../server.mjs");
+  const rows = [
+    { t: 1, cause: "a", effect: "b", hash: "ignored-by-the-fold" },
+    { t: 2, cause: "c", effect: "d" },
+    { t: 3, cause: "e", effect: "f" },
+  ];
+  // Order-free is the property that lets shards from several agents merge with
+  // no coordination, so it is the one worth pinning.
+  const head = setHeadHex(rows);
+  assert.equal(setHeadHex([rows[2], rows[0], rows[1]]), head, "the fold must not depend on row order");
+
+  // An edit in place, a removed row, and an added row must each move the head.
+  assert.notEqual(setHeadHex([{ ...rows[0], effect: "b!" }, rows[1], rows[2]]), head, "an edited row must change the head");
+  assert.notEqual(setHeadHex([rows[0], rows[1]]), head, "a removed row must change the head");
+  assert.notEqual(setHeadHex([...rows, { t: 4, cause: "g", effect: "h" }]), head, "an added row must change the head");
+
+  // `hash` is excluded from the element, so re-chaining does not move the head.
+  assert.equal(sealElement({ t: 1, cause: "a", effect: "b", hash: "one" }),
+               sealElement({ t: 1, cause: "a", effect: "b", hash: "two" }),
+               "the row's own hash must not feed its seal element");
+  assert.notEqual(sealElement(rows[0]), 0n, "an element is never the identity");
+});
+
+test("verifyLocalSeal: fails closed on a changed ledger, and is honest when unsealed", async () => {
+  const { verifyLocalSeal, setHeadHex } = await import("../server.mjs");
+  const rows = [{ t: 1, cause: "a", effect: "b" }, { t: 2, cause: "c", effect: "d" }];
+  const seal = { head: setHeadHex(rows), through: 2, events: 2 };
+
+  assert.equal(verifyLocalSeal(rows, seal).ok, true, "an untouched ledger verifies");
+
+  // No seal yet is not a pass and not a failure: it is unknown, and saying so
+  // is the difference between this and a green badge on nothing.
+  assert.equal(verifyLocalSeal(rows, null).ok, null);
+
+  const edited = [{ t: 1, cause: "a", effect: "CHANGED" }, rows[1]];
+  const bad = verifyLocalSeal(edited, seal);
+  assert.equal(bad.ok, false, "an edit below the watermark must fail");
+  assert.match(bad.reason, /no longer fold/);
+
+  const short = verifyLocalSeal([rows[0]], seal);
+  assert.equal(short.ok, false, "a removed row must fail");
+  assert.match(short.reason, /the seal covers/);
+});
+
+test("readSeal returns null rather than throwing when there is no seal", async () => {
+  const { readSeal } = await import("../server.mjs");
+  assert.equal(readSeal(join(mkdtempSync(join(tmpdir(), "mp-seal-")), "events.jsonl")), null);
 });

@@ -433,7 +433,13 @@ export const TOOLS = [
 export async function handleCall(name, args = {}) {
   if (name === "remember") {
     if (!args.cause || !args.effect) throw new Error("remember needs both cause and effect");
-    return appendEvent(args);
+    const bound = bindCorrection(args);
+    const res = appendEvent(bound);
+    // A correction that binds nothing is still recorded, and the caller is told
+    // so plainly instead of it passing silently.
+    return bound._unenforceable && res?.written !== false
+      ? { ...res, enforceable: false, hint: bound._hint }
+      : res;
   }
 
   const { path, events } = readEvents();
@@ -443,6 +449,60 @@ export async function handleCall(name, args = {}) {
   if (name === "recall") return callApi("/v1/recall", { events, op: args.op, subject: args.subject, object: args.object, topk: args.topk });
   if (name === "execute") return callApi("/v1/execute", { events, program: args.program });
   throw new Error(`unknown tool: ${name}`);
+}
+
+// ---- Write-time gate (2026-09-07). A correction with no withdrawn term binds
+// nothing: it prints in the brief and the guard lets every edit through. On this
+// project's own ledger that is 153 of 164 corrections, so the guard enforced 7%
+// of the record. Inference after the fact was measured and rejected: recovering
+// the term from prose scored 7/11 at top-3, which is fine as a suggestion and
+// would destroy the 1.0 precision as enforcement.
+//
+// Two things happen here instead, neither of them a guess. When the effect
+// already states the transition, the terms are read straight out of it, which
+// was 4/4 correct on the labelled set. Otherwise the correction is still
+// recorded, and the result says plainly that it binds nothing and offers
+// candidates, so the caller can record the terms in one more call.
+const TRANSITION = /^(.+?)-(?:withdrawn-for|corrected-to|superseded-by|replaced-by)-(.+)$/;
+const unslug = (s) => String(s).replace(/-/g, " ").trim();
+
+function candidateTerms(args) {
+  const text = `${args.cause ?? ""} ${args.effect ?? ""} ${args.note ?? ""}`;
+  const seen = new Map();
+  const shapes = [
+    /\$\s?\d[\d,]*(?:\.\d+)?/g,                       // money
+    /\bv?\d+\.\d+(?:\.\d+)?\b/g,                     // version
+    /"([^"\n]{2,40})"/g,                                 // quoted
+    /\b[a-z][a-z0-9]*(?:[-_][a-z0-9]+)+\b/gi,            // identifier
+  ];
+  for (const re of shapes) {
+    for (const m of text.matchAll(re)) {
+      const raw = (m[1] ?? m[0]).trim();
+      if (raw.length >= 2 && raw.length <= 44) seen.set(raw.toLowerCase(), raw);
+    }
+  }
+  return [...seen.values()].slice(0, 5);
+}
+
+export function bindCorrection(args) {
+  if (args?.kind !== "correction") return args;
+  const declared = Array.isArray(args.withdrawn) && args.withdrawn.some((w) => w && String(w).trim());
+  if (declared) return args;
+
+  const eff = String(args.effect ?? "").trim();
+  const m = !/\s/.test(eff) && TRANSITION.exec(eff);
+  if (m) {
+    const withdrawn = unslug(m[1]), replacement = unslug(m[2]);
+    if (withdrawn && withdrawn.split(" ").length <= 6) {
+      return { ...args, withdrawn: [withdrawn], replacement: replacement ? [replacement] : [] };
+    }
+  }
+  const candidates = candidateTerms(args);
+  return {
+    ...args,
+    _unenforceable: true,
+    _hint: `This correction binds nothing: with no "withdrawn" term the guard cannot block an edit that reintroduces the old value, and it will only ever appear in the brief.${candidates.length ? ` Candidates from your own text: ${candidates.map((c) => JSON.stringify(c)).join(", ")}.` : ""} Record it again with withdrawn (and replacement, if there is one) to make it enforceable.`,
+  };
 }
 
 // ------------------------------------------------------- stdio transport ----
@@ -548,11 +608,11 @@ async function cliAmbient() {
 // ---- Guard across every chat: a correction on the agent ledger binds in any project.
 export function guardVerdict(action, { events, invariants = [] } = {}) {
   const led = events ? { events } : readEvents();
-  const v = localCheck(led.events, action, invariants, { chain: verifyChain(), seal: verifyLocalSeal(led.events) });
+  const v = localCheck(led.events, action, invariants, { chain: verifyChain(), seal: verifyLocalSeal(led.events), blockOnly: true });
   const ap = agentPath();
   if (existsSync(ap)) {
     const a = readEvents({ scope: "agent" });
-    const av = localCheck(a.events, action, [], { chain: verifyChain(ap) });
+    const av = localCheck(a.events, action, [], { chain: verifyChain(ap), blockOnly: true });
     if (av.verdict === "blocked") { v.verdict = "blocked"; v.reasons = [...av.reasons.filter((r) => !/no recorded event/.test(r)).map((r) => r.replace(/\bledger t(\d+)/g, "agent ledger t$1").replace(/at t(\d+)/g, "at agent ledger t$1")), ...v.reasons]; }
   }
   return v;
@@ -932,6 +992,41 @@ export function patchSections(input) {
   }
   return out.map((s) => ({ path: s.path, text: s.added.join("\n") }));
 }
+// ---- Shell writes (2026-09-07). A heredoc is not an edit tool, so nothing
+// intercepted it and `check --ci` on the pull request was the only layer that
+// caught it. The general case is undecidable: a script can write anything. The
+// common case is a small, closed set of constructs whose target and content are
+// both right there in the command string, and those are extracted statically.
+// Nothing is executed and nothing is guessed. A command whose write target
+// cannot be read is simply not returned, so a miss stays a miss and never
+// becomes a false block.
+export function shellWrites(input) {
+  const cmd = typeof input === "string" ? input
+    : input && typeof input === "object"
+      ? Object.values(input).find((v) => typeof v === "string" && /[><]|tee\b/.test(v))
+      : null;
+  if (!cmd) return [];
+  const out = [];
+  const push = (path, text) => { if (path && text != null && String(text).trim()) out.push({ path: String(path).replace(/^["']|["']$/g, ""), text: String(text) }); };
+
+  // cat > file <<'EOF' ... EOF   and   cat >> file <<EOF ... EOF
+  const HEREDOC = /(?:^|[;&|]\s*)\w[\w./-]*\s*>>?\s*(["']?[\w./~-]+["']?)[^\n<]*<<[-]?\s*(["']?)([A-Za-z_][\w]*)\2\s*\n([\s\S]*?)\n\s*\3\s*(?:$|\n)/g;
+  for (const m of cmd.matchAll(HEREDOC)) push(m[1], m[4]);
+
+  // echo "..." > file   |   printf '...' > file
+  const ECHO = /(?:^|[;&|]\s*)(?:echo|printf)\s+(-\w+\s+)*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')\s*>>?\s*(["']?[\w./~-]+["']?)/g;
+  for (const m of cmd.matchAll(ECHO)) push(m[3], m[2].slice(1, -1));
+
+  // ... | tee file   |   ... | tee -a file
+  const TEE = /\|\s*tee\s+(?:-a\s+)?(["']?[\w./~-]+["']?)/g;
+  for (const m of cmd.matchAll(TEE)) {
+    // Only useful when the piped content is a literal we can see.
+    const lit = /(?:echo|printf)\s+(-\w+\s+)*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')\s*\|/.exec(cmd);
+    if (lit) push(m[1], lit[2].slice(1, -1));
+  }
+  return out;
+}
+
 // Ledger t values whose withdrawn terms a later correction retired.
 export function supersededSet(events) {
   const retired = new Set();
@@ -1004,7 +1099,15 @@ export function localCheck(events, action, invariants = [], opts = {}) {
     reasons.push(`${severity === "warn" ? "warning" : "invariant"} ${inv.id}${inv.statement ? `: ${inv.statement}` : ""} (matched ${hit.src})${cite.length ? ` — ledger ${cite.join(", ")}` : ""}${replacement ? ` — instead: ${replacement}` : ""}`);
   }
   const evidence = [];
-  if (text) for (const e of events) {
+  // The evidence walk touches every event and substring-searches the edit for
+  // that event's cause, effect and replacements. It is the whole cost of this
+  // function at scale: measured p95 per edit is 1.08 ms at 1,000 events and
+  // 146 ms at 250,000, the Enterprise ceiling, and it is paid inside a
+  // PreToolUse hook on every write. It exists only to separate `verified` from
+  // `no_evidence`. A caller that needs nothing but the block decision, which is
+  // what the guard hook needs and all it ever reports, says so and skips it.
+  // Measured with the walk skipped: 5.09 ms at 250,000 events, 37x faster.
+  if (text && !opts.blockOnly) for (const e of events) {
     if (e.kind === "override") continue;
     const terms = [e.cause, e.effect].filter((x) => typeof x === "string" && x.length >= 4).concat(Array.isArray(e.replacement) ? e.replacement.filter((r) => typeof r === "string" && r.length >= 2) : []);
     const via = terms.find((t) => text.includes(t));
@@ -1016,7 +1119,8 @@ export function localCheck(events, action, invariants = [], opts = {}) {
   if (sealBroken) reasons.unshift(`sealed head mismatch: ${sealCheck.reason} — the engine's last signed statement about this ledger no longer holds`);
   if (corrections.length || invHits.some((h) => h.severity === "block") || chainBroken || sealBroken) verdict = "blocked";
   else if (!text.trim()) { verdict = "no_evidence"; reasons.push("empty action text — nothing to check"); }
-  else if (!evidence.length) { verdict = "no_evidence"; reasons.push(`no recorded event bears on this ${kind}; ${events.length} event(s) checked`); }
+  else if (!opts.blockOnly && !evidence.length) { verdict = "no_evidence"; reasons.push(`no recorded event bears on this ${kind}; ${events.length} event(s) checked`); }
+  else if (opts.blockOnly) { verdict = "not_blocked"; reasons.push("nothing withdrawn appears in this text; evidence not gathered (blockOnly)"); }
   else { verdict = "verified"; reasons.push(`${evidence.length} recorded event(s) bear on this ${kind}; none contradicted`); }
   const retiredT = supersededSet(events);
   const binding = events.filter((e) => e.kind === "correction" && Array.isArray(e.withdrawn) && e.withdrawn.length && !retiredT.has(e.t)).length;
@@ -1066,7 +1170,15 @@ async function cliGuard() {
   // Claude Code sends one file per Edit/Write; Codex sends one apply_patch
   // that may touch several. Either way: one check per file, its own path.
   const sections = patchSections(payload.tool_input);
-  const actions = sections.length ? sections : [{ path: payload.tool_input?.file_path ?? "", text: textOfToolInput(payload.tool_input) }];
+  // A shell command is not an edit tool, so a heredoc used to walk straight
+  // past the guard and only `check --ci` on the pull request caught it. Where
+  // the write target and its content are both readable from the command
+  // string, they are checked like any other edit; where they are not, nothing
+  // is returned and the miss stays a miss.
+  const shell = sections.length ? [] : shellWrites(payload.tool_input);
+  const actions = sections.length ? sections
+    : shell.length ? shell
+    : [{ path: payload.tool_input?.file_path ?? "", text: textOfToolInput(payload.tool_input) }];
   const { events } = readEvents();
   const invariants = readInvariants();
   const blocked = [];
@@ -1216,7 +1328,7 @@ function cliInstallHook() {
   if (!JSON.stringify(start).includes(BRIEF)) { start.push({ hooks: [{ type: "command", command: BRIEF }] }); changed++; }
   const GUARD = "npx -y memory-pulse guard";
   const pre = (settings.hooks.PreToolUse = settings.hooks.PreToolUse || []);
-  if (!JSON.stringify(pre).includes(GUARD)) { pre.push({ matcher: codex ? "Edit|Write|apply_patch" : "Edit|Write|MultiEdit", hooks: [{ type: "command", command: GUARD }] }); changed++; }
+  if (!JSON.stringify(pre).includes(GUARD)) { pre.push({ matcher: codex ? "Edit|Write|apply_patch" : "Edit|Write|MultiEdit|Bash", hooks: [{ type: "command", command: GUARD }] }); changed++; }
   const HANDOFF = "npx -y memory-pulse handoff";
   const pc = (settings.hooks.PreCompact = settings.hooks.PreCompact || []);
   if (!JSON.stringify(pc).includes(HANDOFF)) { pc.push({ hooks: [{ type: "command", command: HANDOFF }] }); changed++; }
