@@ -618,3 +618,45 @@ test("brief prints the engine's seal verdict when the presented seal no longer m
   assert.equal(sealDriftLine({}), "");
   assert.match(sealDriftLine({ seal_drift: ["ledger content changed since the last sealed call (rows up to t=5 no longer fold to the sealed head)"] }), /ledger integrity \(engine\): ledger content changed/);
 });
+
+// The guard hook runs inside PreToolUse on every edit, and localCheck's cost is
+// dominated by an evidence walk that touches every event to separate `verified`
+// from `no_evidence`. The hook reports neither: it is silent unless blocked.
+// Measured p95 per edit before this option: 1.08 ms at 1,000 events and 146 ms
+// at 250,000, the Enterprise ceiling this product sells. With the walk skipped,
+// 8.35 ms at 250,000.
+test("blockOnly: the blocked verdict and its reasons are unchanged", async () => {
+  const { localCheck } = await import("../server.mjs");
+  const events = [];
+  for (let t = 1; t <= 400; t++) {
+    events.push({
+      t, cause: `cause-${t}-alpha`, effect: `effect-${t}-beta`,
+      kind: t % 6 === 0 ? "correction" : "event",
+      ...(t % 30 === 0 ? { withdrawn: [`retired-value-${t}`], replacement: [`current-value-${t}`] } : {}),
+    });
+  }
+  const action = { kind: "edit", path: "docs/pricing.md", text: "price $29\nlegacy: retired-value-30\n" };
+
+  const full = localCheck(events, action, []);
+  const fast = localCheck(events, action, [], { blockOnly: true });
+
+  assert.equal(full.verdict, "blocked", "the fixture must actually block");
+  assert.equal(fast.verdict, "blocked", "blockOnly must reach the same verdict");
+  // Evidence lines are the only thing that may differ, and only on the
+  // non-blocked path. Every reason that explains the block must be identical.
+  const blockReasons = (r) => r.reasons.filter((x) => !/bear on this/.test(x));
+  assert.deepEqual(blockReasons(fast), blockReasons(full), "block reasons must be byte-identical");
+});
+
+test("blockOnly: a clean edit is reported honestly, never as verified", async () => {
+  const { localCheck } = await import("../server.mjs");
+  const events = [{ t: 1, cause: "unrelated-cause", effect: "unrelated-effect", kind: "event" }];
+  const clean = { kind: "edit", path: "docs/x.md", text: "nothing here relates to anything recorded" };
+
+  assert.equal(localCheck(events, clean, []).verdict, "no_evidence");
+  // Skipping the walk means we did not look for evidence, so claiming either
+  // `verified` or `no_evidence` would be a false statement about what was checked.
+  const fast = localCheck(events, clean, [], { blockOnly: true });
+  assert.equal(fast.verdict, "not_blocked");
+  assert.match(fast.reasons.join(" "), /evidence not gathered/);
+});
