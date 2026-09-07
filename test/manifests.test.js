@@ -55,7 +55,7 @@ test("hooks.json: one SessionStart brief and one guarded PreToolUse edit matcher
   assert.deepEqual(Object.keys(h).sort(), ["PreToolUse", "SessionStart"]);
   const cmds = (ev) => h[ev].flatMap((g) => g.hooks.map((x) => [g.matcher, x.type, x.command]));
   assert.deepEqual(cmds("SessionStart"), [[undefined, "command", 'node "${CLAUDE_PLUGIN_ROOT}/server.mjs" brief']]);
-  assert.deepEqual(cmds("PreToolUse"), [["Edit|Write|MultiEdit|apply_patch", "command", 'node "${CLAUDE_PLUGIN_ROOT}/server.mjs" guard']]);
+  assert.deepEqual(cmds("PreToolUse"), [["Edit|Write|MultiEdit|apply_patch|Bash", "command", 'node "${CLAUDE_PLUGIN_ROOT}/server.mjs" guard']]);
 });
 
 test(".mcp.json launches this repo's server through the plugin-root variable both hosts expand", () => {
