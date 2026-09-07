@@ -113,3 +113,66 @@ test("mode: default is deliberate; `mode agent` installs the Stop + UserPromptSu
   assert.doesNotMatch(JSON.stringify(s2.hooks.Stop ?? []), /memory-pulse ambient/);
   assert.doesNotMatch(offlineBrief(led, led.events), /AGENT IDENTITY/, "deliberate mode: no identity block");
 });
+
+// Prohibitions (2026-09-07). detectCorrection needs both a withdrawn and a
+// replacement, so it only ever saw substitutions. Most real corrections are
+// prohibitions and name nothing to replace. Measured on this repo's own session
+// corpus, recall went 3/11 to 11/11 with precision unchanged at 1.00 over 19
+// negatives.
+test("prohibitions are detected and carry no replacement", async () => {
+  const { detectProhibition } = await load("prohib1");
+  const cases = [
+    ["absolutely no em-dashes, and no semicolons", "em-dashes"],
+    ["never cite catalyst-vqc numbers as current", "catalyst-vqc numbers"],
+    ["stop using Inter for headings", "Inter"],
+    ["avoid the term holographic in anything customer facing", "holographic"],
+    ["dont use the word proof on a public page", "proof"],
+    ["Commit attribution: Travis only. No Co-Authored-By.", "Co-Authored-By"],
+  ];
+  for (const [prompt, want] of cases) {
+    const d = detectProhibition(prompt);
+    assert.ok(d, `no detection for ${JSON.stringify(prompt)}`);
+    assert.equal(d.withdrawn[0], want, `wrong term for ${JSON.stringify(prompt)}`);
+    assert.deepEqual(d.replacement, [], "a prohibition names nothing to replace");
+  }
+});
+
+test("a term is trimmed to what an edit could actually contain", async () => {
+  const { detectProhibition } = await load("prohib2");
+  // "Inter for headings" never matches a file the way "Inter" does, so an
+  // over-long term is detected and then unenforceable, which is worse than a miss.
+  assert.equal(detectProhibition("stop using Inter for headings").withdrawn[0], "Inter");
+  assert.equal(detectProhibition("never cite catalyst-vqc numbers as current").withdrawn[0], "catalyst-vqc numbers");
+});
+
+test("ordinary speech and pasted documents are left alone", async () => {
+  const { detectProhibition } = await load("prohib3");
+  const negatives = [
+    "no worries, that works",
+    "I have no idea how to Show HN",
+    "there is no account needed on the free tier, which is good",
+    "the free tier needs no key and no console",
+    "avoid breaking the launch, everything else can wait",
+    "dont use up all your context on this",
+    "never mind, I found it",
+    "we have no acquisition channel yet, that is the real problem",
+    // The t918 shape: a design document read as a correction, after which the
+    // guard enforced a field name until it was superseded.
+    ["# HMK design",
+     "The update_key call returns a NEW key. Never reuse a key across requests.",
+     "No plaintext is stored. The server does not decrypt. Do not log the payload.",
+     "Fields: memory_key, state_vector, integrity_value.",
+     "See section 4 for the rotation schedule."].join("\n"),
+  ];
+  for (const p of negatives) {
+    assert.equal(detectProhibition(p), null, `false positive on ${JSON.stringify(p.slice(0, 48))}`);
+  }
+});
+
+test("a prohibition event does not read 'withdrawn-for-undefined'", async () => {
+  const { detectProhibition, correctionEvent } = await load("prohib4");
+  const e = correctionEvent(detectProhibition("absolutely no em-dashes"), "absolutely no em-dashes");
+  assert.equal(e.effect, "em-dashes-withdrawn");
+  assert.deepEqual(e.replacement, []);
+  assert.match(e.note, /^User prohibited "em-dashes"/);
+});

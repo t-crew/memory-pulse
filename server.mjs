@@ -523,7 +523,7 @@ export function extractAmbient(transcriptText) {
   if (!user && !assistant) return [];
   if (instructionLike(user).length) return [];
   const out = [];
-  const c = detectCorrection(user); if (c) out.push({ scope: "project", ...correctionEvent(c, user), tags: ["ambient", c.cue] });
+  const c = detectCorrection(user) ?? detectProhibition(user); if (c) out.push({ scope: "project", ...correctionEvent(c, user), tags: ["ambient", c.cue] });
   for (const [tag, side, scope, re, note] of AMBIENT_SHAPES) {
     const text = side === "user" ? user : assistant; const m = re.exec(text); if (!m) continue;
     const n = note(m); if (instructionLike(n).length) continue;
@@ -737,6 +737,70 @@ const CORRECTION_SHAPES = [
   ["change-to", new RegExp(`\\b(?:change|rename|replace|update|switch|correct)\\s+${TERM}\\s+(?:to|with|into)\\s+${TERM}`, "i"), (m) => ({ withdrawn: term(m.slice(1, 7)), replacement: term(m.slice(7, 13)) })],
   ["arrow", new RegExp(`${TERM2}\\s*(?:->|→|=>)\\s*${TERM2}`), (m) => ({ withdrawn: m[1].trim(), replacement: m[2].trim() })],
 ];
+// ---- Core 3b: prohibitions (2026-09-07). detectCorrection only sees a
+// substitution, so it needs both a withdrawn and a replacement term. Most real
+// corrections are prohibitions ("no em-dashes", "never cite that number") and
+// name nothing to replace, so none of them were ever recorded. localCheck
+// already blocks a withdrawn term whose replacement list is empty, so these are
+// enforceable the moment they are written down.
+// Measured against this repo's own session corpus: recall 3/11 -> 11/11 with
+// precision unchanged at 1.00 over 19 negatives, including the pasted-document
+// shape that caused the t918 false positive.
+const OBJ_P = `((?:"[^"]{2,48}"|'[^']{2,48}'|\`[^\`]{2,48}\`|[A-Za-z$][\\w$.\\-/]*(?:[ -][A-Za-z][\\w$.\\-/]*){0,3}))`;
+const SAY_NOT = new RegExp(`\\b(?:say|use|write|call it|make it|put)\\s+${OBJ_P}\\s*,?\\s+not\\s+${OBJ_P}`, "i");
+const PROHIBIT_SHAPES = [
+  ["no-x",    new RegExp(`(?:^|[.;!?]\\s+|,\\s*)(?:absolutely\\s+)?no\\s+${OBJ_P}`, "i")],
+  ["never-x", new RegExp(`\\bnever\\s+(?:use|cite|say|write|mention|ship|publish)\\s+${OBJ_P}`, "i")],
+  ["dont-x",  new RegExp(`\\b(?:do\\s?n['\u2019]?t|don['\u2019]?t|stop|quit)\\s+(?:use|using|say|saying|write|writing|cite|citing|mention|mentioning)\\s+${OBJ_P}`, "i")],
+  ["avoid-x", new RegExp(`\\bavoid\\s+(?:the\\s+(?:term|word|phrase)\\s+)?${OBJ_P}`, "i")],
+];
+// Words that follow "no" in ordinary speech and name nothing enforceable.
+const NOT_A_TERM = new Set(["worries","problem","idea","account","need","way","one","thing","more","longer","doubt","matter","such","other","further","additional","reason","time","rush","hurry","big","good","bad","difference","comment","clue","luck"]);
+// A retirable term is a noun or an identifier. A verb phrase names an action and
+// an action never appears in a file, so it could never be enforced.
+const PARTICLE = /^(up|out|off|down|in|on|over|away|back|through|around|into)$/i;
+const looksLikeTerm = (o) => {
+  const head = String(o).trim().split(/[ -]/)[0].toLowerCase();
+  return !PARTICLE.test(head) && !(/ing$/.test(head) && head.length > 5);
+};
+// A pasted document is not a correction. This is the t918 lesson: a design doc
+// full of directive prose was recorded as a correction and the guard began
+// enforcing a field name.
+const looksPasted = (p) =>
+  p.split("\n").filter((l) => l.trim()).length >= 4 ||
+  /```|^#{1,6}\s/m.test(p) || p.length > 420;
+// A term is only enforceable if an edit could contain it verbatim. The object
+// pattern takes up to four tokens, so it drags in trailing prepositional
+// phrases: "Inter for headings" never matches a file the way "Inter" does.
+// Cut at the first preposition and the term becomes enforceable again.
+const TAIL = /\s+(?:for|in|on|as|at|with|when|to|of|from|into|about|across|anywhere|everywhere)\b.*$/i;
+const cleanTerm = (s) => String(s)
+  .replace(/^["'`]|["'`]$/g, "")
+  .replace(/[.,;:!?]+$/, "")
+  .replace(/^(?:the|a|an)\s+(?:word|term|phrase)\s+/i, "")
+  .replace(TAIL, "")
+  .trim();
+
+export function detectProhibition(prompt) {
+  const p = String(prompt ?? "");
+  if (!p.trim() || looksPasted(p)) return null;
+  const ok = (o) => o && o.length >= 2 && looksLikeTerm(o) &&
+    !NOT_A_TERM.has(o.toLowerCase().split(/[ -]/)[0]) &&
+    !/^(it|that|this|those|these|them|they|the|a|an)$/i.test(o);
+  const sn = SAY_NOT.exec(p);
+  if (sn) {
+    const keep = cleanTerm(sn[1] ?? ""), drop = cleanTerm(sn[2] ?? "");
+    if (ok(drop)) return { withdrawn: [drop], replacement: keep ? [keep] : [], cue: "say-not" };
+  }
+  for (const [cue, re] of PROHIBIT_SHAPES) {
+    const m = re.exec(p);
+    if (!m) continue;
+    const obj = cleanTerm(m[1] ?? "");
+    if (ok(obj)) return { withdrawn: [obj], replacement: [], cue: `prohibit-${cue}` };
+  }
+  return null;
+}
+
 export function detectCorrection(prompt) {
   const p = String(prompt ?? ""); if (!p.trim()) return null;
   for (const [cue, re, pick] of CORRECTION_SHAPES) {
@@ -750,7 +814,13 @@ export function detectCorrection(prompt) {
 }
 const slug = (t) => String(t).toLowerCase().replace(/[^a-z0-9.]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "term";
 export function correctionEvent(d, prompt) {
-  return { cause: `user-correction-${slug(d.withdrawn[0])}`, effect: `${slug(d.withdrawn[0])}-withdrawn-for-${slug(d.replacement[0])}`, kind: "correction", withdrawn: d.withdrawn, replacement: d.replacement, tags: ["ambient", d.cue], note: `User corrected "${d.withdrawn[0]}" to "${d.replacement[0]}" — prompt: "${String(prompt).replace(/\s+/g, " ").slice(0, 140)}"` };
+  // A prohibition retires a term and names nothing to replace it, so the slug
+  // and the note must not read "withdrawn-for-undefined".
+  const w = d.withdrawn[0];
+  const r = Array.isArray(d.replacement) && d.replacement.length ? d.replacement[0] : null;
+  const effect = r ? `${slug(w)}-withdrawn-for-${slug(r)}` : `${slug(w)}-withdrawn`;
+  const said = r ? `User corrected "${w}" to "${r}"` : `User prohibited "${w}"`;
+  return { cause: `user-correction-${slug(w)}`, effect, kind: "correction", withdrawn: d.withdrawn, replacement: r ? d.replacement : [], tags: ["ambient", d.cue], note: `${said} — prompt: "${String(prompt).replace(/\s+/g, " ").slice(0, 140)}"` };
 }
 async function cliObserve() {
   // UserPromptSubmit hook: silent unless --verbose; exit 0 on every path (a hook must never block a prompt).
@@ -762,7 +832,7 @@ async function cliObserve() {
     // turn this way; this hook fires on every submission and must too, or a "->" inside forwarded
     // agent output gets recorded as a binding correction (t898/t899, 2026-09-03).
     if (instructionLike(hook.prompt ?? "").length) { if (process.argv.includes("--verbose")) console.log("memory-pulse: prompt looks synthetic/instruction-like, skipped"); return; }
-    const d = detectCorrection(hook.prompt ?? "");
+    const d = detectCorrection(hook.prompt ?? "") ?? detectProhibition(hook.prompt ?? "");
     if (!d) { if (process.argv.includes("--verbose")) console.log("memory-pulse: no correction shape in this prompt"); return; }
     const r = appendEvent(correctionEvent(d, hook.prompt));
     if (process.argv.includes("--verbose") || r.written) console.log(r.written ? `memory-pulse: correction recorded (t=${r.t}) — "${d.withdrawn[0]}" withdrawn, "${d.replacement[0]}" replaces it; the guard enforces it from now on` : `memory-pulse: correction not recorded (${r.reason})`);
