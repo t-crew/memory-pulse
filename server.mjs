@@ -605,6 +605,20 @@ async function cliAmbient() {
   } catch { /* silent */ }
 }
 
+// ---- Colour, only where a human is looking. The guard writes to stderr on
+// every blocked edit, and that message is the one moment the product is visible
+// at all, so the retired value and its replacement are worth picking out. It
+// stays off when stderr is not a terminal, so a log file or a CI transcript
+// keeps plain text, and it honours NO_COLOR.
+const COLOR = !process.env.NO_COLOR && process.env.TERM !== "dumb" && process.stderr.isTTY;
+const C = {
+  red: (s) => (COLOR ? `\x1b[31m${s}\x1b[0m` : s),
+  green: (s) => (COLOR ? `\x1b[32m${s}\x1b[0m` : s),
+  bold: (s) => (COLOR ? `\x1b[1m${s}\x1b[0m` : s),
+  dim: (s) => (COLOR ? `\x1b[2m${s}\x1b[0m` : s),
+  strike: (s) => (COLOR ? `\x1b[9m${s}\x1b[0m` : s),
+};
+
 // ---- Guard across every chat: a correction on the agent ledger binds in any project.
 export function guardVerdict(action, { events, invariants = [] } = {}) {
   const led = events ? { events } : readEvents();
@@ -1194,9 +1208,17 @@ async function cliGuard() {
   for (const { file, v } of blocked) {
     try { appendFileSync(violationsPath(), JSON.stringify({ at: new Date().toISOString(), file, hits: v.corrections.map((h) => ({ term: h.term, t: h.t })), invariants: v.invariants.map((i) => i.id) }) + "\n"); } catch { /* reporting is best effort */ }
     if (blocked.length > 1 || sections.length) lines.push(`  ${file || "(no path)"}:`);
-    for (const r of v.reasons) if (!/^\d+ recorded event/.test(r)) lines.push(`  • ${r}`);
+    for (const r of v.reasons) {
+      if (/^\d+ recorded event/.test(r)) continue;
+      // Pick out the retired value and what to use instead. The rest of the
+      // line is the citation, which stays plain so the terms are what carries.
+      const lit = r
+        .replace(/"([^"]+)" was withdrawn/, (_, w) => `${C.red(C.strike(`"${w}"`))} was withdrawn`)
+        .replace(/— use (.+)$/, (_, u) => `— use ${C.green(C.bold(u))}`);
+      lines.push(`  ${C.red("•")} ${lit}`);
+    }
   }
-  process.stderr.write(`memory-pulse guard: blocked.\n${lines.join("\n")}\nUse the corrected value (mentioning both old and new in a comparison is fine), record a new correction if the old one is wrong, or \`memory-pulse guard allow "<term>" --path <prefix> "<reason>"\` if this is a false block.\n`);
+  process.stderr.write(`${C.red(C.bold("memory-pulse guard: blocked."))}\n${lines.join("\n")}\n${C.dim('Use the corrected value (mentioning both old and new in a comparison is fine), record a new correction if the old one is wrong, or `memory-pulse guard allow "<term>" --path <prefix> "<reason>"` if this is a false block.')}\n`);
   process.exit(2);
 }
 
