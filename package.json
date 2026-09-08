@@ -1,6 +1,6 @@
 {
   "name": "memory-pulse",
-  "version": "0.5.6",
+  "version": "0.5.7",
   "description": "Corrections that outlive the session. memory-pulse surfaces a correction first in every session and blocks the edit that writes the old value back. Four MCP tools, ~900 tokens. Claude Code, Codex, Cursor, GitHub Actions.",
   "homepage": "https://pulse.strategic-innovations.ai",
   "type": "module",

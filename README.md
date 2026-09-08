@@ -105,8 +105,11 @@ is checked under its own path. An edit that writes back a withdrawn value is
 **blocked**, and the agent is told which ledger line retired it and when. An
 edit that names the replacement beside the old value passes, because "was $49,
 now $29" is a comparison. Only a bare reintroduction is blocked. A shell
-heredoc is not an edit tool and is not guarded, so `check --ci` on the pull
-request is the layer that catches that case. Record corrections with the exact
+write is guarded too: a heredoc, a literal redirect or a `tee` has its target
+and content read straight out of the command, with nothing executed. A command
+whose write cannot be read from the string returns nothing, so it is a miss
+rather than a false block, and `check --ci` on the pull request remains the
+layer that catches those. Record corrections with the exact
 terms:
 
 ```
