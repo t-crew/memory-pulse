@@ -259,7 +259,9 @@ test("memory key: the engine's key is kept beside the ledger, never returned to 
   const out = await handleCall("pulse", { tier: "brief" });
   assert.equal(out.key, undefined, "a 1 MB key must never land in the agent's context");
   assert.ok(ex(jn(dir, "memory.rain")), "key persisted beside the ledger");
-  assert.equal(rf(jn(dir, ".gitignore"), "utf8").trim(), "memory.rain", "the cache is kept out of version control");
+  // Every rebuildable file has to be listed, and the list grows, so assert membership rather than the whole file.
+  const ignored = rf(jn(dir, ".gitignore"), "utf8").split("\n").map((l) => l.trim()).filter(Boolean);
+  for (const f of ["memory.rain", "seal.resume.json"]) assert.ok(ignored.includes(f), `${f} is kept out of version control`);
   respond = (route) => ({ status: 200, body: { ok: true, route, keyStatus: { status: "resumed", newEvents: 0 } } });
   const again = await handleCall("pulse", { tier: "brief" });
   assert.equal(seen.at(-1).body.key.schema, "catalyst.rain.memory-key.v1", "the stored key rides on the next read");
@@ -792,4 +794,71 @@ test("verifyLocalSeal: fails closed on a changed ledger, and is honest when unse
 test("readSeal returns null rather than throwing when there is no seal", async () => {
   const { readSeal } = await import("../server.mjs");
   assert.equal(readSeal(join(mkdtempSync(join(tmpdir(), "mp-seal-")), "events.jsonl")), null);
+});
+
+test("the seal fold resumes as a group multiply, and only from a chain that verified", async () => {
+  const { setHeadHex, setHeadResumed, verifyChain, verifyLocalSeal, rowHash, sealDigest } = await import("../server.mjs");
+
+  // A chained ledger, written the way the client writes one.
+  const build = (n) => {
+    const rows = []; let prev = null;
+    for (let t = 1; t <= n; t++) {
+      const r = { t, cause: `c${t}`, effect: `e${t}`, kind: "event" };
+      if (t === 1) r.legacy_digest = sealDigest([]); else r.prev = prev;
+      r.gap_digest = sealDigest([]);
+      r.hash = rowHash(r); prev = r.hash; rows.push(r);
+    }
+    return rows;
+  };
+  const fresh = (rows) => {
+    const led = join(mkdtempSync(join(tmpdir(), "mp-resume-")), "events.jsonl");
+    writeFileSync(led, rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
+    return led;
+  };
+  const resumeFile = (led) => join(dirname(led), "seal.resume.json");
+
+  const rows = build(40);
+  const full = setHeadHex(rows);
+
+  // Cold, then warm: the second call resumes over the whole prefix and must land on the same element.
+  const led = fresh(rows);
+  const chain = verifyChain(led);
+  assert.equal(chain.ok, true, "the fixture chain verifies");
+  assert.equal(setHeadResumed(rows, chain, led), full, "a cold fold equals the full fold");
+  assert.ok(existsSync(resumeFile(led)), "a verified chain leaves a resume point");
+  assert.equal(setHeadResumed(rows, chain, led), full, "a warm fold equals the full fold");
+
+  // The group op is associative, so resuming and folding the rest is the same element as folding everything.
+  const longer = build(60);
+  writeFileSync(led, longer.map((r) => JSON.stringify(r)).join("\n") + "\n");
+  assert.equal(setHeadResumed(longer, verifyChain(led), led), setHeadHex(longer),
+    "extending a resumed head equals a full fold over the longer prefix");
+
+  // The resume must actually be taken. A point with a valid anchor and a wrong head proves the path is live:
+  // if this returned the full fold the optimisation would be silently doing nothing.
+  const live = fresh(rows);
+  writeFileSync(resumeFile(live), JSON.stringify({ n: rows.length, anchor: rows[rows.length - 1].hash, head: "1".repeat(768) }));
+  assert.equal(setHeadResumed(rows, verifyChain(live), live), "1".repeat(768), "a stored head is resumed, not recomputed");
+
+  // A point whose anchor no longer matches the row it names is ignored.
+  const forged = fresh(rows);
+  writeFileSync(resumeFile(forged), JSON.stringify({ n: rows.length, anchor: "0".repeat(64), head: "f".repeat(768) }));
+  assert.equal(setHeadResumed(rows, verifyChain(forged), forged), full, "a forged resume point is ignored");
+
+  // Without a chain that verified there is nothing to anchor a resume, so the whole prefix folds from identity.
+  const unanchored = fresh(rows);
+  writeFileSync(resumeFile(unanchored), JSON.stringify({ n: rows.length, anchor: rows[rows.length - 1].hash, head: "1".repeat(768) }));
+  assert.equal(setHeadResumed(rows, { ok: false }, unanchored), full, "a broken chain folds from identity");
+  assert.equal(setHeadResumed(rows, null, unanchored), full, "no chain folds from identity");
+
+  // The whole point: a row edited below the watermark must still fail, resume point or not.
+  const tampered = fresh(rows);
+  const seal = { head: full, through: 40, events: 40 };
+  assert.equal(verifyLocalSeal(rows, seal, verifyChain(tampered), tampered).ok, true, "the untouched ledger verifies");
+  assert.ok(existsSync(resumeFile(tampered)), "and left a resume point behind");
+  const edited = rows.map((r) => (r.t === 7 ? { ...r, effect: "EDITED" } : r));
+  writeFileSync(tampered, edited.map((r) => JSON.stringify(r)).join("\n") + "\n");
+  const tc = verifyChain(tampered);
+  assert.equal(tc.ok, false, "an edited row breaks the chain");
+  assert.equal(verifyLocalSeal(edited, seal, tc, tampered).ok, false, "and the seal still fails on the edit");
 });

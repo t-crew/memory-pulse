@@ -33,7 +33,7 @@ const PKG_VERSION = (() => {
     return JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "package.json"), "utf8")).version;
   } catch { return "0.0.0"; }
 })();
-import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync, realpathSync, readdirSync, statSync} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync, realpathSync, readdirSync, statSync, renameSync, unlinkSync} from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -168,12 +168,39 @@ const sealPathFor = (ledger) => join(dirname(ledger), "seal.rain");
 const sealPath = () => sealPathFor(ledgerPath());
 export function readSeal(ledger) { try { return JSON.parse(readFileSync(ledger ? sealPathFor(ledger) : sealPath(), "utf8")); } catch { return null; } }
 function writeSeal(seal) { if (!seal || typeof seal !== "object" || typeof seal.head !== "string") return; try { mkdirSync(dirname(sealPath()), { recursive: true }); writeFileSync(sealPath(), JSON.stringify(seal, null, 2) + "\n"); } catch { /* read-only checkout */ } }
+const sealResumePathFor = (ledger) => join(dirname(ledger), "seal.resume.json");
+// The set head is a product in an abelian group, so a head already folded over an append-only prefix is resumed with a
+// group multiply over the rows added since — the same order-free property that lets disjoint shards fold without
+// coordination. The row chain anchors it: a resume point is only taken when verifyChain passed AND the row it names
+// still hashes to the recorded anchor, and that row's prev links pin every row before it. An edit below the resume
+// point breaks the chain, so it can never be folded past. With no verified chain the whole prefix folds from identity.
+export function setHeadResumed(rows, chain, ledger = ledgerPath()) {
+  if (!chain || chain.ok !== true) return setHeadHex(rows);
+  const file = sealResumePathFor(ledger);
+  let acc = 1n, start = 0;
+  try {
+    const r = JSON.parse(readFileSync(file, "utf8"));
+    if (Number.isInteger(r.n) && r.n > 0 && r.n <= rows.length && typeof r.head === "string" && /^[0-9a-f]{768}$/.test(r.head)
+      && typeof r.anchor === "string" && rows[r.n - 1]?.hash === r.anchor) { acc = BigInt("0x" + r.head); start = r.n; }
+  } catch { /* no resume point yet */ }
+  for (let i = start; i < rows.length; i++) acc = sealMod(acc * sealElement(rows[i]));
+  const head = acc.toString(16).padStart(768, "0");
+  // Only a chained row can anchor the next resume. An unchained tail from an older writer leaves the point where it is.
+  const last = rows[rows.length - 1];
+  if (typeof last?.hash === "string") {
+    const tmp = `${file}.${process.pid}.tmp`;
+    try { writeFileSync(tmp, JSON.stringify({ n: rows.length, anchor: last.hash, head })); renameSync(tmp, file); }
+    catch { try { unlinkSync(tmp); } catch { /* nothing to clean up */ } /* read-only checkout */ }
+  }
+  return head;
+}
+
 /** content check of the local ledger against the last seal — fails closed; { ok: null } when there is no seal yet */
-export function verifyLocalSeal(events = readEvents().events, seal = readSeal()) {
+export function verifyLocalSeal(events = readEvents().events, seal = readSeal(), chain = null, ledger = ledgerPath()) {
   if (!seal || typeof seal.head !== "string") return { ok: null, reason: "no seal yet (first engine call issues one)" };
   const covered = events.filter((e) => (Number(e.t) || 0) <= Number(seal.through));
   if (covered.length !== Number(seal.events)) return { ok: false, reason: `ledger has ${covered.length} rows up to the sealed watermark t=${seal.through}, the seal covers ${seal.events}`, seal };
-  if (setHeadHex(covered) !== seal.head) return { ok: false, reason: `ledger content changed since the last sealed call (rows up to t=${seal.through} no longer fold to the sealed head)`, seal };
+  if (setHeadResumed(covered, chain, ledger) !== seal.head) return { ok: false, reason: `ledger content changed since the last sealed call (rows up to t=${seal.through} no longer fold to the sealed head)`, seal };
   return { ok: true, seal };
 }
 
@@ -284,7 +311,13 @@ function writeMemoryKey(k) {
     // Only in the default layout: a custom ledger directory is the user's to
     // manage, and this client does not leave files in it uninvited.
     const gi = join(dir, ".gitignore");
-    if (dir.endsWith(".memory-pulse") && !existsSync(gi)) writeFileSync(gi, "memory.rain\n");
+    // Additive: an existing ignore file predates later derived artefacts, and a
+    // rebuildable file that shows up in git status is a support ticket.
+    if (dir.endsWith(".memory-pulse")) {
+      const have = existsSync(gi) ? readFileSync(gi, "utf8") : "";
+      const want = ["memory.rain", "seal.resume.json"].filter((n) => !have.split("\n").some((l) => l.trim() === n));
+      if (want.length) writeFileSync(gi, have + (have && !have.endsWith("\n") ? "\n" : "") + want.join("\n") + "\n");
+    }
   } catch { /* a read-only checkout must not break a read call */ }
 }
 
@@ -622,7 +655,8 @@ const C = {
 // ---- Guard across every chat: a correction on the agent ledger binds in any project.
 export function guardVerdict(action, { events, invariants = [] } = {}) {
   const led = events ? { events } : readEvents();
-  const v = localCheck(led.events, action, invariants, { chain: verifyChain(), seal: verifyLocalSeal(led.events), blockOnly: true });
+  const chain = verifyChain();
+  const v = localCheck(led.events, action, invariants, { chain, seal: verifyLocalSeal(led.events, readSeal(), chain), blockOnly: true });
   const ap = agentPath();
   if (existsSync(ap)) {
     const a = readEvents({ scope: "agent" });
@@ -1247,7 +1281,8 @@ async function cliCheck() {
   if (text == null) { let raw = ""; for await (const c of process.stdin) raw += c; text = raw; }
   const { events } = readEvents();
   const invariants = readInvariants();
-  let v = localCheck(events, { kind, text, path }, invariants, { chain: verifyChain(), seal: verifyLocalSeal(events) });
+  const chain0 = verifyChain();
+  let v = localCheck(events, { kind, text, path }, invariants, { chain: chain0, seal: verifyLocalSeal(events, readSeal(), chain0) });
   let receipt = null, integrity = null;
   if (wantReceipt) {
     const out = await callApi("/v1/check", { action: { kind, text, path }, events, invariants, ...(readMemoryKey() ? { verifyKey: true } : {}) });
@@ -1402,9 +1437,12 @@ async function cliLint() {
   const invariants = readInvariants();
   const files = lintTargets(paths).filter((f) => !/(^|[\\/])\.memory-pulse[\\/]events\.jsonl$/.test(f));
   const rows = [];
+  // Neither the chain walk nor the seal fold depends on the file being linted, so both are computed once for the run.
+  const lintChain = verifyChain();
+  const lintSeal = verifyLocalSeal(events, readSeal(), lintChain);
   for (const f of files) {
     let text = ""; try { text = readFileSync(f, "utf8"); } catch { continue; }
-    const v = localCheck(events, { kind: "lint", text, path: f }, invariants, { chain: verifyChain(), seal: verifyLocalSeal(events) });
+    const v = localCheck(events, { kind: "lint", text, path: f }, invariants, { chain: lintChain, seal: lintSeal });
     rows.push({ file: f, verdict: v.verdict, reasons: v.reasons.filter((r) => !/^\d+ recorded event/.test(r)), corrections: v.corrections.map((h) => ({ term: h.term, t: h.t })), invariants: v.invariants.map((i) => i.id) });
   }
   const retired = supersededSet(events);
@@ -1456,7 +1494,7 @@ if (isMain) {
   if (sub === "observe") { await cliObserve(); process.exit(0); }
   if (sub === "verify") {
     // walk the row chain and check the ledger against the last seal; exit 2 on either failure (fail closed, like check)
-    const chain = verifyChain(); const seal = verifyLocalSeal();
+    const chain = verifyChain(); const seal = verifyLocalSeal(readEvents().events, readSeal(), chain);
     if (process.argv.includes("--json")) { console.log(JSON.stringify({ chain, seal: { ok: seal.ok, reason: seal.reason ?? null, through: seal.seal?.through ?? null, events: seal.seal?.events ?? null, digest: seal.seal?.digest ?? null } }, null, 2)); process.exit(chain.ok && seal.ok !== false ? 0 : 2); }
     console.log(chain.ok ? `chain: OK — ${chain.chained} chained row(s)${chain.chained ? ` from t=${chain.from}` : ""}, ${chain.legacy} legacy row(s)${chain.sealed ? " sealed" : " (unsealed until the first chained write)"}${chain.head ? ` · head ${chain.head.slice(0, 12)}` : ""}${chain.unsealed ? ` · ${chain.unsealed} unsealed row(s) from an older writer (the next write seals them)` : ""}` : `chain: BROKEN — ${chain.reason}`);
     console.log(seal.ok === null ? `seal: none yet — ${seal.reason}` : seal.ok ? `seal: OK — engine-signed over ${seal.seal.events} row(s) through t=${seal.seal.through}${seal.seal.digest ? ` · ${seal.seal.digest.slice(0, 12)}` : ""}` : `seal: MISMATCH — ${seal.reason}`);
