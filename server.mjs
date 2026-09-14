@@ -11,13 +11,15 @@
  *     the hosted engine over TLS, which computes the answer and forgets the
  *     request. The service keeps NO database of your memory — state arrives
  *     in the request and leaves in the response.
- *   - This client is the entire client. No SDK, no dependencies, ~300 lines
+ *   - This client is the entire client. No SDK, no dependencies, one file
  *     you can read in one sitting.
  *
- * Config (env):
+ * Config (env): run `memory-pulse help` for the full list with defaults.
  *   MEMORY_PULSE_KEY     license key (optional — free tier without one)
  *   MEMORY_PULSE_API     override the API base (default: hosted service)
  *   MEMORY_PULSE_LEDGER  override the ledger path (default: ./.memory-pulse/events.jsonl)
+ *   MEMORY_PULSE_AGENT, MEMORY_PULSE_PROJECT, MEMORY_PULSE_MEMORY_KEY, MEMORY_PULSE_MODE,
+ *   MEMORY_PULSE_SETTINGS_DIR, MEMORY_PULSE_BRIEF_BUDGET, MEMORY_PULSE_BRIEF_TIER, NO_COLOR, HOME
  */
 import readline from "node:readline";
 import { createHash, createCipheriv } from "node:crypto";
@@ -34,7 +36,7 @@ const PKG_VERSION = (() => {
   } catch { return "0.0.0"; }
 })();
 import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync, realpathSync, readdirSync, statSync, renameSync, unlinkSync} from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const API = (process.env.MEMORY_PULSE_API ?? "https://pulse.strategic-innovations.ai").replace(/\/$/, "");
@@ -212,8 +214,11 @@ export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn
   const hits = instructionLike(note);
   if (hits.length) return { written: false, reason: "instruction-like note refused", patterns: hits, hint: "Record what happened, not what to do. Rephrase as a finding." };
   const { path, events } = readEvents({ scope });
-  const dup = events.find((e) => e.cause === cause && e.effect === effect && (e.note ?? "") === (note ?? ""));
-  if (dup) return { written: false, reason: "duplicate", t: dup.t, ledger: path };
+  // A duplicate is the same cause, effect, note AND terms. The old rule ignored the terms, so the product's
+  // own hint ("record it again with withdrawn") was refused as a duplicate (daily-use review, 2026-09-09).
+  const norm = (a) => JSON.stringify(Array.isArray(a) ? a.map((w) => String(w).trim()).filter(Boolean) : []);
+  const dup = events.find((e) => e.cause === cause && e.effect === effect && (e.note ?? "") === (note ?? "") && norm(e.withdrawn) === norm(withdrawn) && norm(e.replacement) === norm(replacement));
+  if (dup) return { written: false, reason: "duplicate", t: dup.t, ledger: path, hint: "Nothing written: a row with the same cause, effect, note and terms is refused as a duplicate. Record it again with withdrawn (and replacement) to add terms, or change the note if this is a new finding." };
   if (!existsSync(path)) {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, "");
@@ -225,15 +230,22 @@ export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn
   if (pinned) event.pinned = true;
   // Withdrawn terms are what the guard enforces: exact strings that must not
   // be written again. Only explicit terms count — the guard never guesses.
+  const dropped = [];
   if (Array.isArray(withdrawn)) {
-    const terms = withdrawn.map((w) => String(w).trim()).filter((w) => w.length >= 2);
+    const all = withdrawn.map((w) => String(w).trim()).filter(Boolean);
+    const terms = all.filter((w) => w.length >= 2);
+    dropped.push(...all.filter((w) => w.length < 2));
     if (terms.length) event.withdrawn = terms;
   }
   // Replacement terms let the guard tell a REINTRODUCTION ("price is $49")
   // apart from a DISAVOWAL or comparison ("was $49, now $29"): an edit that
   // carries a replacement alongside the withdrawn term is allowed.
+  // A replacement anywhere in an edit releases every withdrawn term of its correction, so a one-character
+  // replacement ("8") would release the block on nearly any text. Same floor as withdrawn terms.
   if (Array.isArray(replacement)) {
-    const terms = replacement.map((w) => String(w).trim()).filter((w) => w.length >= 1);
+    const all = replacement.map((w) => String(w).trim()).filter(Boolean);
+    const terms = all.filter((w) => w.length >= 2);
+    dropped.push(...all.filter((w) => w.length < 2));
     if (terms.length) event.replacement = terms;
   }
   // A correction of a correction: the earlier event's withdrawn terms stop
@@ -255,7 +267,7 @@ appendFileSync(path, JSON.stringify(event) + "\n");
   // Echo the canonical stored event back. A shell-quoting accident once ate a
   // word from a note SILENTLY; the caller must be able to see what the ledger
   // actually holds without re-reading the file.
-  return { written: true, t, ledger: path, stored: event };
+  return { written: true, t, ledger: path, stored: event, ...(dropped.length ? { dropped } : {}) };
 }
 
 // ------------------------------------------------------------- telemetry ----
@@ -468,11 +480,20 @@ export async function handleCall(name, args = {}) {
     if (!args.cause || !args.effect) throw new Error("remember needs both cause and effect");
     const bound = bindCorrection(args);
     const res = appendEvent(bound);
+    if (res?.written === false) return res;
+    // Terms read out of the effect slug are echoed by name: "price-corrected-to-29" binds the word "price",
+    // which the caller may not have meant (daily-use review, 2026-09-09).
+    const declared = Array.isArray(args.withdrawn) && args.withdrawn.some((w) => w && String(w).trim());
+    if (!declared && Array.isArray(bound.withdrawn) && bound.withdrawn.length) {
+      res.boundFromEffect = { withdrawn: bound.withdrawn, replacement: bound.replacement ?? [] };
+      res.hint = `withdrawn and replacement were read from the effect slug, not declared: the guard now blocks ${bound.withdrawn.map((w) => JSON.stringify(w)).join(", ")} anywhere it appears bare. If that is not the term you meant, record the correction again with withdrawn and replacement, and supersedes: [${res.t}].`;
+    }
     // A correction that binds nothing is still recorded, and the caller is told
-    // so plainly instead of it passing silently.
-    return bound._unenforceable && res?.written !== false
-      ? { ...res, enforceable: false, hint: bound._hint }
-      : res;
+    // so plainly instead of it passing silently. That includes a correction whose
+    // every withdrawn term was under the 2-char floor and dropped.
+    if (bound._unenforceable) return { ...res, enforceable: false, hint: bound._hint };
+    if (bound.kind === "correction" && !res.stored?.withdrawn?.length) return { ...res, enforceable: false, hint: `This correction binds nothing: every withdrawn term was dropped (${(res.dropped ?? []).map((w) => JSON.stringify(w)).join(", ")} under the 2-character floor). Record it again with a longer term, for example the value with its unit or sign.` };
+    return res;
   }
 
   const { path, events } = readEvents();
@@ -694,7 +715,8 @@ export function setMode(mode) {
 async function cliMode() {
   const want = process.argv[3];
   if (!want) { const m = currentMode(); console.log(`mode: ${m}${m === "agent" ? ` — agent ledger ${agentPath()}` : " (default) — run \`memory-pulse mode agent\` for a persistent agent identity that grows across every chat"}`); return; }
-  const r = setMode(want);
+  if (!["agent", "deliberate"].includes(want)) { console.error(`mode must be agent or deliberate (got "${want}")`); process.exit(1); }
+  let r; try { r = setMode(want); } catch (e) { console.error(String(e?.message ?? e)); process.exit(1); }
   console.log(`mode: ${r.mode} — ${r.installed} hook(s) installed, ${r.removed} removed in ${r.settings}`);
   if (want === "agent") { console.log(`agent ledger: ${agentPath()}`); console.log("Set the agent's self once: memory-pulse identity \"<name>, <role>; <stance>\" — then every brief, in every tool, starts with who the agent is, what it has learned, and a fingerprint of which memory it is running on."); }
 }
@@ -820,7 +842,10 @@ async function cliHandoff() {
   try {
     let raw = ""; try { raw = readFileSync(0, "utf8"); } catch { /* no stdin */ }
     let hook = {}; try { hook = raw.trim() ? JSON.parse(raw) : {}; } catch { hook = {}; }
-    const transcript = typeof hook.transcript_path === "string" && existsSync(hook.transcript_path) ? readFileSync(hook.transcript_path, "utf8") : "";
+    // No transcript, no row: a bare invocation or a hook payload without transcript_path used to append an
+    // "asked: n/a | files: none" row every time (fresh-user run, 2026-09-09).
+    if (typeof hook.transcript_path !== "string" || !existsSync(hook.transcript_path)) { console.log("memory-pulse: handoff skipped (no transcript)"); return; }
+    const transcript = readFileSync(hook.transcript_path, "utf8");
     const r = appendEvent(handoffEvent(hook, transcript));
     console.log(r.written ? `memory-pulse: handoff recorded (t=${r.t}) — the next session start prints it first` : `memory-pulse: handoff not recorded (${r.reason})`);
   } catch (e) { console.log(`memory-pulse: handoff skipped (${String(e?.message ?? e).split("\n")[0]})`); }
@@ -943,7 +968,7 @@ async function cliObserve() {
     const d = detectCorrection(hook.prompt ?? "") ?? detectProhibition(hook.prompt ?? "");
     if (!d) { if (process.argv.includes("--verbose")) console.log("memory-pulse: no correction shape in this prompt"); return; }
     const r = appendEvent(correctionEvent(d, hook.prompt));
-    if (process.argv.includes("--verbose") || r.written) console.log(r.written ? `memory-pulse: correction recorded (t=${r.t}) — "${d.withdrawn[0]}" withdrawn, "${d.replacement[0]}" replaces it; the guard enforces it from now on` : `memory-pulse: correction not recorded (${r.reason})`);
+    if (process.argv.includes("--verbose") || r.written) console.log(r.written ? `memory-pulse: correction recorded (t=${r.t}) — "${d.withdrawn[0]}" withdrawn${d.replacement?.[0] ? `, "${d.replacement[0]}" replaces it` : ""}; the guard enforces it from now on` : `memory-pulse: correction not recorded (${r.reason})`);
   } catch { /* silent */ }
 }
 
@@ -1214,7 +1239,12 @@ async function cliGuard() {
   }
   let raw = "";
   for await (const chunk of process.stdin) raw += chunk;
-  let payload; try { payload = JSON.parse(raw); } catch { return; } // not a hook call: allow
+  let payload; try { payload = JSON.parse(raw); } catch {
+    // Not a hook call: allow. Say so under --verbose, because a miswired hook (or a shell that mangled the
+    // JSON) is otherwise indistinguishable from "no evidence" (fresh-user run, 2026-09-09).
+    if (process.argv.includes("--verbose")) process.stderr.write("memory-pulse guard: stdin was not hook JSON, allowing\n");
+    return;
+  }
   // Claude Code sends one file per Edit/Write; Codex sends one apply_patch
   // that may touch several. Either way: one check per file, its own path.
   const sections = patchSections(payload.tool_input);
@@ -1252,8 +1282,49 @@ async function cliGuard() {
       lines.push(`  ${C.red("•")} ${lit}`);
     }
   }
-  process.stderr.write(`${C.red(C.bold("memory-pulse guard: blocked."))}\n${lines.join("\n")}\n${C.dim('Use the corrected value (mentioning both old and new in a comparison is fine), record a new correction if the old one is wrong, or `memory-pulse guard allow "<term>" --path <prefix> "<reason>"` if this is a false block.')}\n`);
+  // A broken chain and a stale seal are different failures with different ways out. A broken chain means a row
+  // was edited, removed or inserted: only a copy you trust repairs that. A seal mismatch with the chain intact
+  // means the rows verify but the engine's last signed statement no longer matches them — either something
+  // rewrote the ledger and re-chained it, or the engine sealed a different view (2026-09-14: the worker sealed
+  // the quarantined view of one row, and this hint sent the author to `git checkout` over 900 uncommitted
+  // rows). The way out is a recorded decision, never a deleted ledger; guard allow cannot repair either.
+  const allReasons = blocked.flatMap(({ v }) => v.reasons);
+  const chainBroken = allReasons.some((r) => /^ledger chain broken/.test(r));
+  const sealStale = !chainBroken && allReasons.some((r) => /^sealed head mismatch/.test(r));
+  const envPrefix = process.env.MEMORY_PULSE_LEDGER ? `MEMORY_PULSE_LEDGER=${process.env.MEMORY_PULSE_LEDGER} ` : "";
+  const hint = chainBroken
+    ? "The ledger's own row chain is broken: a row was edited, removed or inserted, so every edit is blocked until the file is restored from a copy you trust (`memory-pulse verify` names the first broken row). Do not delete the ledger to clear this; the rows are the record. An override cannot repair a chain."
+    : sealStale
+      ? `Your rows verify (chain OK) but the engine's last seal no longer matches them: either something rewrote the ledger and re-chained it, or the engine sealed a different view. \`memory-pulse verify --json\` shows both sides. If you trust the file as it stands: \`${envPrefix}memory-pulse seal accept "<why>"\` records that decision as a ledger row and sets the old seal aside; the next engine call issues a fresh one.`
+      : 'Use the corrected value (mentioning both old and new in a comparison is fine), record a new correction if the old one is wrong, or `memory-pulse guard allow "<term>" --path <prefix> "<reason>"` if this is a false block.';
+  process.stderr.write(`${C.red(C.bold("memory-pulse guard: blocked."))}\n${lines.join("\n")}\n${C.dim(hint)}\n`);
   process.exit(2);
+}
+
+// `memory-pulse seal accept "<why>"` — the recorded way out of a stale seal. The guard fails closed when the
+// engine's last seal no longer folds over the rows; when the row chain still verifies, the rows are intact as
+// chained and the disagreement is between the file and the engine's statement about it. Accepting is a ledger
+// row, so the decision is on the record; the old seal is set aside beside the ledger, never deleted; the next
+// engine call issues a fresh seal over the ledger as it stands. Refused when the chain itself is broken: an
+// edited ledger is not a stale seal, and accept is not a repair.
+async function cliSeal() {
+  const argv = process.argv.slice(3);
+  if (argv[0] !== "accept") { console.error('usage: memory-pulse seal accept "<why you trust the ledger as it stands>"'); process.exit(1); }
+  const reason = argv.slice(1).join(" ").trim();
+  if (!reason) { console.error("seal accept needs a reason: it is recorded as a ledger row"); process.exit(1); }
+  const ledger = ledgerPath();
+  const chain = verifyChain(ledger);
+  if (!chain.ok) { console.error(`refused: the row chain itself is broken (${chain.reason}); accept applies to a stale seal over rows that verify, not to an edited ledger`); process.exit(1); }
+  const seal = readSeal(ledger);
+  const check = verifyLocalSeal(readEvents().events, seal, chain, ledger);
+  if (check.ok !== false) { console.log(check.ok === null ? "nothing to accept: no seal is stored yet" : "nothing to accept: the stored seal matches the ledger"); process.exit(0); }
+  const r = appendEvent({ cause: "seal-accepted", effect: `stale-seal-set-aside:through-t${seal.through}`, note: reason, tags: ["seal"] });
+  if (!r.written) { console.error(`not recorded: ${r.reason}`); process.exit(1); }
+  const sp = sealPathFor(ledger), rp = sealResumePathFor(ledger);
+  const aside = `${sp}.${new Date().toISOString().replace(/[:.]/g, "-")}.stale`;
+  try { renameSync(sp, aside); } catch { /* already gone */ }
+  try { unlinkSync(rp); } catch { /* no resume point */ }
+  console.log(`accepted at t${r.t}: the seal through t=${seal.through} is set aside as ${basename(aside)}; the next engine call issues a fresh seal over the ledger as it stands`);
 }
 
 // `memory-pulse check [--ci] [--receipt] [--kind edit|publish|command|custom]
@@ -1305,15 +1376,17 @@ async function cliCheck() {
 function cliReport() {
   const { events } = readEvents();
   const corrections = events.filter((e) => e.kind === "correction");
+  const retired = supersededSet(events);
   let blocks = [];
   try { blocks = readFileSync(violationsPath(), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)); } catch { /* none yet */ }
   const byT = new Map();
   for (const b of blocks) for (const h of b.hits) byT.set(h.t, (byT.get(h.t) ?? 0) + 1);
-  console.log(`memory-pulse report — ${corrections.length} corrections recorded, ${corrections.filter((c) => c.withdrawn?.length).length} with enforceable withdrawn terms`);
+  const superseded = corrections.filter((c) => retired.has(c.t)).length;
+  console.log(`memory-pulse report — ${corrections.length} corrections recorded, ${corrections.filter((c) => c.withdrawn?.length && !retired.has(c.t)).length} with enforceable withdrawn terms${superseded ? ` (${superseded} superseded, no longer binding)` : ""}`);
   console.log(`  edits blocked by the guard: ${blocks.reduce((n, b) => n + b.hits.length, 0)}${blocks.length ? ` (last: ${blocks[blocks.length - 1].at.slice(0, 10)})` : ""}`);
   const top = [...byT.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
   for (const [t, n] of top) { const c = corrections.find((x) => x.t === t); console.log(`  ${n}× t${t} ${c ? `${c.cause} -> ${c.effect}` : ""} — withdrawn: ${c?.withdrawn?.join(", ")}`); }
-  const unenforced = corrections.filter((c) => !c.withdrawn?.length);
+  const unenforced = corrections.filter((c) => !c.withdrawn?.length && !retired.has(c.t));
   if (unenforced.length) console.log(`  ${unenforced.length} correction(s) have no withdrawn terms and cannot be enforced — add them with remember(withdrawn: [...])`);
 }
 
@@ -1402,7 +1475,7 @@ function cliInstallHook() {
   console.log(`PreToolUse (${codex ? "apply_patch" : "Edit/Write"}): an edit that writes back a withdrawn value is blocked and explained.`);
   console.log("PreCompact: what the session was doing is recorded before compaction and printed first at the next start.");
   if (process.argv.includes("--ambient")) console.log("UserPromptSubmit: a prompt shaped like a correction (\"X not Y\", \"change X to Y\", \"X -> Y\") is recorded with both terms; the guard enforces it.");
-  if (codex) console.log("Codex runs no hook it has not been shown: open Codex, run /hooks, and trust the two memory-pulse entries (once per definition).");
+  if (codex) console.log(`Codex runs no hook it has not been shown: open Codex, run /hooks, and trust the ${changed} memory-pulse entries (once per definition).`);
   console.log(project ? `Project-scoped: commit ${dirName}/${codex ? "hooks.json" : "settings.json"} and every clone is guarded.` : "Tip: `install-hook --project` writes the hooks into this repo so teammates inherit them.");
   console.log("Remove either by deleting the memory-pulse entries from hooks.");
 }
@@ -1471,6 +1544,99 @@ async function cliLint() {
   process.exit(0);
 }
 
+// ---- help (2026-09-09). There was none: --help, -h and help all hit the unknown-command branch, whose list named
+// 9 of 19 subcommands. Every subcommand and every environment variable is listed here; test/help.test.js reads
+// the dispatch table and the process.env reads out of this file and fails when a line is missing.
+function cliHelp() {
+  console.log(`memory-pulse ${PKG_VERSION} — corrections that outlive the session. Ledger: .memory-pulse/events.jsonl in the current directory.
+
+usage: memory-pulse <command> [options]        (npx -y memory-pulse <command> without a global install)
+
+Commands
+  serve                               start the MCP server on stdio (the default with no command); tools: pulse, recall, remember, execute
+  help                                this text (also --help, -h, or --help after any command)
+  brief [--budget N] [--offline]      the re-entry brief the SessionStart hook prints; --budget picks the richest tier that fits N tokens; --offline skips the engine
+  remember <cause> <effect> [--kind event|correction] [--note "..."] [--withdrawn T]... [--replacement T]... [--supersedes N]... [--tags a]... [--pinned] [--scope project|agent]
+                                      record a finding or a correction from the shell; same rules as the remember tool; prints the stored row as JSON; exit 1 when refused
+  before "<what you are about to do>" [--path <file>] [--text <edit>]
+                                      which corrections bear on the change you are about to make: the exact rung locally, the learned rung from the engine
+  check [--ci] [--receipt] [--json] [--kind edit|publish|command|custom] [--path p] (--text "..." | --file f | --diff [base] | stdin)
+                                      one of three verdicts: BLOCKED (exit 2), VERIFIED (0), NO_EVIDENCE (1 under --ci, never a pass)
+  verify [--json]                     walk the row chain and check the last engine seal; exit 2 if either fails
+  seal accept "<why>"                 the recorded way out of a stale seal: appends the decision as a row and sets the old seal aside (never deleted); refused when the chain is broken
+  lint [--ci] [--json] [paths...]     the guard's check over CLAUDE.md, AGENTS.md, .claude/rules, .cursorrules and the other governance files a session loads
+  guard [--verbose]                   PreToolUse hook: reads the tool call from stdin, exit 2 with the ledger line when an edit writes a withdrawn value back
+  guard allow "<term>" [--path <prefix>] "<reason>"
+                                      record a false block as an override scoped to a path prefix
+  report                              correction re-violation scoreboard from .memory-pulse/violations.jsonl, no network
+  bench                               measured metrics on your own ledger (brief size, guard coverage, recall self-consistency); needs the engine
+  stats                               the signed telemetry capsule, signature verified by the engine
+  badge                               README badge markdown from the capsule's counters
+  install-hook [--codex] [--project] [--ambient]
+                                      write three hooks (SessionStart brief, PreToolUse guard, PreCompact handoff) into ~/.claude/settings.json; --codex targets ~/.codex/hooks.json; --project writes them into the repo; --ambient adds the UserPromptSubmit observer
+  mode [agent|deliberate]             show or set the mode; agent adds a Stop and a UserPromptSubmit hook and an agent ledger at ~/.memory-pulse/agent/
+  identity "<name>, <role>; <stance>" pin the agent's self on the agent ledger (agent mode prints it first in every brief)
+  handoff                             PreCompact hook: record what the session was doing from the transcript on stdin
+  ambient                             Stop hook (agent mode): record a stated decision, preference, lesson or correction from the last turn, at most four rows
+  observe [--verbose]                 UserPromptSubmit hook: record a prompt shaped like a correction ("X not Y", "change X to Y", "X -> Y") with both terms
+
+Environment
+  MEMORY_PULSE_API                    engine base URL (default https://pulse.strategic-innovations.ai)
+  MEMORY_PULSE_KEY                    licence key, sent as x-mp-key; without it the engine answers on the free tier
+  MEMORY_PULSE_LEDGER                 project ledger path (default ./.memory-pulse/events.jsonl); sidecar files live beside it
+  MEMORY_PULSE_AGENT                  agent ledger path (default $HOME/.memory-pulse/agent/events.jsonl)
+  MEMORY_PULSE_PROJECT                project name sent with every engine call (default: basename of the current directory)
+  MEMORY_PULSE_MEMORY_KEY             off disables the signed memory key (.memory-pulse/memory.rain, requested at 500+ events)
+  MEMORY_PULSE_MODE                   agent or deliberate for this invocation, overriding ~/.memory-pulse/agent/config.json
+  MEMORY_PULSE_SETTINGS_DIR           directory that receives settings.json or hooks.json for install-hook and mode (tests use it)
+  MEMORY_PULSE_BRIEF_BUDGET           default for brief --budget, in tokens
+  MEMORY_PULSE_BRIEF_TIER             tier for brief when no budget is given: index, brief (default), notes or full
+  NO_COLOR, TERM                      colour in the guard's block message only when NO_COLOR is unset, TERM is not dumb and stderr is a TTY
+  HOME                                root for the agent ledger, ~/.claude/settings.json and ~/.codex/hooks.json
+
+Exit codes: 0 done; 1 usage or refused (remember, mode, lint --ci with nothing to check, check --ci with no evidence); 2 blocked (guard, check, lint) or verification failed (verify).
+Guide: docs/GUIDE.md in the repository (https://github.com/t-crew/memory-pulse/blob/main/docs/GUIDE.md).`);
+}
+
+// ---- remember from the shell (2026-09-09). The Action's no-evidence comment told every reader to run
+// `memory-pulse remember`, which did not exist, and the "any MCP client" route had no way to record the first
+// correction without driving JSON-RPC by hand. Same appendEvent/bindCorrection path as the tool.
+async function cliRemember() {
+  const argv = process.argv.slice(3);
+  const multi = new Set(["withdrawn", "replacement", "supersedes", "tags"]);
+  const single = new Set(["note", "kind", "scope"]);
+  const opts = { withdrawn: [], replacement: [], supersedes: [], tags: [] }; const pos = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--pinned") { opts.pinned = true; continue; }
+    const m = /^--([a-z]+)(?:=(.*))?$/.exec(a);
+    if (!m) { pos.push(a); continue; }
+    const [, k, inline] = m;
+    if (!multi.has(k) && !single.has(k)) { console.error(`memory-pulse remember: unknown option --${k} (run memory-pulse help)`); process.exit(1); }
+    const v = inline ?? argv[++i];
+    if (v == null) { console.error(`memory-pulse remember: --${k} needs a value`); process.exit(1); }
+    if (multi.has(k)) opts[k].push(v); else opts[k] = v;
+  }
+  const [cause, effect] = pos;
+  if (!cause || !effect) {
+    console.error('usage: memory-pulse remember <cause> <effect> [--kind event|correction] [--note "..."] [--withdrawn <term>]... [--replacement <term>]... [--supersedes <t>]... [--tags <tag>]... [--pinned] [--scope project|agent]\n  repeat --withdrawn for each spelling; a term is never split on commas');
+    process.exit(1);
+  }
+  if (opts.kind && !["event", "correction"].includes(opts.kind)) { console.error("memory-pulse remember: --kind must be event or correction"); process.exit(1); }
+  if (opts.scope && !["project", "agent"].includes(opts.scope)) { console.error("memory-pulse remember: --scope must be project or agent"); process.exit(1); }
+  const args = { cause, effect, kind: opts.kind || "event", scope: opts.scope || "project" };
+  if (opts.note) args.note = opts.note;
+  if (opts.withdrawn.length) args.withdrawn = opts.withdrawn;
+  if (opts.replacement.length) args.replacement = opts.replacement;
+  if (opts.supersedes.length) args.supersedes = opts.supersedes.map(Number);
+  if (opts.tags.length) args.tags = opts.tags;
+  if (opts.pinned) args.pinned = true;
+  let res;
+  try { res = await handleCall("remember", args); } catch (e) { console.error(`memory-pulse remember: ${String(e?.message ?? e)}`); process.exit(1); }
+  console.log(JSON.stringify(res, null, 2));
+  process.exit(res?.written ? 0 : 1);
+}
+
 // Importable for tests; the transport runs only when this file is the entry
 // point. Compared by REALPATH, not by name: npm invokes the bin through a
 // .bin/memory-pulse symlink, and a basename comparison silently failed there —
@@ -1482,6 +1648,8 @@ try {
 } catch { /* argv[1] missing or unreadable — we are being imported */ }
 if (isMain) {
   const sub = process.argv[2];
+  if (sub === "help" || sub === "--help" || sub === "-h" || process.argv.slice(2).some((a) => a === "--help" || a === "-h")) { cliHelp(); process.exit(0); }
+  if (sub === "remember") { await cliRemember(); process.exit(0); }
   if (sub === "brief") { await cliBrief(); process.exit(0); }
   if (sub === "before") { await cliBefore(); process.exit(0); }
   if (sub === "install-hook") { cliInstallHook(); process.exit(0); }
@@ -1500,12 +1668,13 @@ if (isMain) {
     console.log(seal.ok === null ? `seal: none yet — ${seal.reason}` : seal.ok ? `seal: OK — engine-signed over ${seal.seal.events} row(s) through t=${seal.seal.through}${seal.seal.digest ? ` · ${seal.seal.digest.slice(0, 12)}` : ""}` : `seal: MISMATCH — ${seal.reason}`);
     process.exit(chain.ok && seal.ok !== false ? 0 : 2);
   }
+  if (sub === "seal") { await cliSeal(); process.exit(0); }
   if (sub === "lint") { await cliLint(); process.exit(0); }
   if (sub === "report") { cliReport(); process.exit(0); }
   if (sub === "bench") { await cliBench(); process.exit(0); }
   if (sub === "stats") { await cliStats(); process.exit(0); }
   if (sub === "badge") { cliBadge(); process.exit(0); }
-  if (sub && sub !== "serve") { console.error(`unknown command: ${sub} (try: brief, check, lint, guard, report, bench, stats, badge, install-hook [--codex] [--project])`); process.exit(1); }
+  if (sub && sub !== "serve") { console.error(`unknown command: ${sub} (run memory-pulse help for the list)`); process.exit(1); }
   process.stderr.write(`memory-pulse: ledger ${ledgerPath()} — api ${API}\n`);
   const rl = readline.createInterface({ input: process.stdin, terminal: false });
   // In-flight calls are drained before exit. Exiting the moment stdin closes

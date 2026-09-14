@@ -6,11 +6,11 @@
     "url": "https://github.com/t-crew/memory-pulse",
     "source": "github"
   },
-  "version": "0.5.8",
+  "version": "0.5.9",
   "packages": [
     {
       "identifier": "memory-pulse",
-      "version": "0.5.8",
+      "version": "0.5.9",
       "transport": {
         "type": "stdio"
       },
