@@ -518,6 +518,20 @@ What that turns on:
   are deterministic lists you can read.
 - This client is the entire client: `server.mjs` and three plain modules in `lib/`, zero dependencies, readable in one sitting.
 
+## Usage counts
+
+Usage counts are off by default. Nothing is counted until you say yes: `install-hook` asks once on a terminal, the one-line installer asks through the terminal, and `memory-pulse telemetry on` turns them on at any time. Neither ever asks in CI. When they are on, the client sends at most once a day, to `/v1/usage`:
+
+| Field | What it holds |
+|---|---|
+| `install` | a random 128-bit id made when you said yes; the engine stores only a hash of it; `memory-pulse telemetry reset` makes a new one |
+| `version` | the client version |
+| `host` | `claude`, `codex` or `other` |
+| `counts` | eight integers since the last send: `guard_check`, `guard_block`, `remember`, `lint`, `check_local`, `scaffold`, `prompt_slice`, `edit_slice` |
+| `capsule` | the signed `.rain` capsule the engine returned last time, so the counts add up without a database on our side |
+
+No ledger text, path, term or prompt is in it, and none can be: the client accepts only those eight names. `memory-pulse telemetry show` prints exactly what would be sent. `memory-pulse telemetry off`, `MEMORY_PULSE_TELEMETRY=0` or `DO_NOT_TRACK=1` stops it.
+
 ## Environment
 
 | variable | default | effect |
