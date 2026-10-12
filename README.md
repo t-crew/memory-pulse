@@ -6,7 +6,9 @@
 
 **Site:** [pulse.strategic-innovations.ai](https://pulse.strategic-innovations.ai/), where the guard runs in the browser. [Compare with Mem0, Zep, Letta and CLAUDE.md](https://pulse.strategic-innovations.ai/compare). **Guide:** [docs/GUIDE.md](docs/GUIDE.md), the day-to-day protocol with runnable examples.
 
-**Corrections that outlive the session.**
+**Give any agent self-improving memory you can trust in production.**
+
+Every correction is kept, put in front of your agent when it matters, and enforced. Memory security is built in: a stored note that reads like an instruction never reaches your agent, every row is hash-chained so any edit to the record shows, and a guard blocks the edit that writes a retired value back.
 
 Your agent acknowledged the correction, then wrote the old value back next
 session. memory-pulse records it once, puts it at the top of every session,
@@ -562,6 +564,8 @@ No ledger text, path, term or prompt is in it, and none can be: the client accep
   (`worker/api.js`, read 2026-09-09). A session start is one read; past the
   limit the brief falls back to the offline render and says why. No account,
   no key.
+- **Starter, $7/mo.** Ledgers to 5,000 events, 1,000 hosted reads a day, the
+  hosted memory (ranked brief, recall, code mode) and the memory-pulse skill.
 - **Pro, $19/mo.** Ledgers to 20,000 events, unlimited reads, signed check
   receipts. One environment variable, `MEMORY_PULSE_KEY`.
 - **Enterprise, $79/mo.** Ledgers to 250,000 events, ten revocable seat keys on

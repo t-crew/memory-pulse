@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.t-crew/memory-pulse",
-  "description": "Corrections that outlive the session. A guard blocks the edit that writes the old value back.",
+  "description": "Give any agent self-improving memory you can trust in production. Built-in memory security.",
   "repository": {
     "url": "https://github.com/t-crew/memory-pulse",
     "source": "github"

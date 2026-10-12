@@ -81,7 +81,7 @@ test("the server reports the package version to MCP clients", async () => {
 });
 
 test("every manifest opens the pitch with the same sentence, in the product voice", () => {
-  const LEAD = "Corrections that outlive the session.";
+  const LEAD = "Give any agent self-improving memory you can trust in production."; // positioning set by Travis, 2026-10-12
   // Each registry enforces its own ceiling. The MCP registry rejects a publish
   // with 422 "expected length <= 100" on body.description, which failed the
   // v0.5.2 release after npm had already published. The others truncate in the

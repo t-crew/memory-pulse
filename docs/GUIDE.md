@@ -410,7 +410,7 @@ The GitHub Action, `uses: t-crew/memory-pulse@v0`, checks the added lines of eve
 
 ## 11. Pricing and keys
 
-Free: ledgers to 500 events and 200 engine reads per IP address per day (`worker/api.js`, read 2026-09-09). A session start is one read. Past the limit the brief falls back to the local render and says why. Pro, $19 a month: 20,000 events, unlimited reads, signed check receipts. Enterprise, $79 a month: 250,000 events, ten revocable seat keys, ledger receipts through `/v1/certify` that anyone verifies keyless at `/v1/verify`, 14-day refund (site pricing, 2026-09-09).
+Free: ledgers to 500 events and 200 engine reads per IP address per day (`worker/api.js`, read 2026-09-09). A session start is one read. Past the limit the brief falls back to the local render and says why. Starter, $7 a month: 5,000 events, 1,000 reads a day counted per key, no signed receipts (2026-10-12). Pro, $19 a month: 20,000 events, unlimited reads, signed check receipts. Enterprise, $79 a month: 250,000 events, ten revocable seat keys, ledger receipts through `/v1/certify` that anyone verifies keyless at `/v1/verify`, 14-day refund (site pricing, 2026-09-09).
 
 Where the key goes: `export MEMORY_PULSE_KEY=mp_live_...` in the shell that starts Claude Code or Codex, because the plugins and the hooks read the shell environment; `--env MEMORY_PULSE_KEY=...` on `claude mcp add`; the `env` block in Cursor's `mcp.json`. Do not also run `claude mcp add` on a plugin install; you would get two servers. The request shape of `/v1/limits` for checking a key is unverified on 2026-09-09; `stats` verifies the telemetry capsule's signature and is the check that is measured.
 
