@@ -10,7 +10,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SERVER } from "./_helpers.mjs";
 
-const run = (ledger, args, input) => spawnSync(process.execPath, [SERVER, ...args], { input: input ?? "", encoding: "utf8", env: { ...process.env, MEMORY_PULSE_LEDGER: ledger, NO_COLOR: "1" } });
+// MEMORY_PULSE_AGENT is pinned away from the machine's real agent ledger: the guard reads it, and since 2026-10-02
+// it may also move a bad tail of it aside, which a test must never do to a real ledger.
+const run = (ledger, args, input) => spawnSync(process.execPath, [SERVER, ...args], { input: input ?? "", encoding: "utf8", env: { ...process.env, MEMORY_PULSE_LEDGER: ledger, MEMORY_PULSE_AGENT: join(ledger, "..", "no-agent", "events.jsonl"), NO_COLOR: "1" } });
 const hook = JSON.stringify({ tool_name: "Write", tool_input: { file_path: "/tmp/x.md", content: "harmless text" } });
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -53,7 +55,11 @@ test("a broken chain is refused by seal accept, and the block says restore from 
   const { appendEvent } = await import("../server.mjs?sealbroken=" + Date.now());
   appendEvent({ cause: "a", effect: "b", note: "one" }); appendEvent({ cause: "b", effect: "c", note: "two" });
   writeFileSync(ledger, readFileSync(ledger, "utf8").replace('"note":"one"', '"note":"ONE"'));
-  const blocked = run(ledger, ["guard"], hook);
+  // An edited row with valid rows after it is a mid-file break: unrelated edits warn and proceed (2026-10-02),
+  // writes to the ledger itself stay blocked with the trusted-copy hint.
+  const unrelated = run(ledger, ["guard"], hook);
+  assert.equal(unrelated.status, 0, unrelated.stderr); assert.match(unrelated.stderr, /chain broken/);
+  const blocked = run(ledger, ["guard"], JSON.stringify({ tool_name: "Write", tool_input: { file_path: ledger, content: "{}" } }));
   assert.equal(blocked.status, 2, blocked.stderr);
   assert.match(blocked.stderr, /ledger chain broken/); assert.match(blocked.stderr, /copy you trust/);
   assert.doesNotMatch(blocked.stderr, /git checkout|seal accept/);

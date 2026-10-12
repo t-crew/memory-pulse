@@ -53,3 +53,15 @@ test("python span guard: decode-time enforcement, tested without a model", () =>
   assert.match(summary, /^OK$/m, summary.slice(-600));
   assert.equal(r.status, 0);
 });
+
+test("python appends take the same ledger lock as node: a live lock is waited for, then refused, never written past", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mpy-lock-")); const ledger = join(dir, "events.jsonl"); writeFileSync(ledger, "");
+  writeFileSync(`${ledger}.lock`, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
+  const held = spawnSync("python3", [PY, "append", ledger, "c", "e"], { encoding: "utf8", env: { ...process.env, MEMORY_PULSE_LOCK_TIMEOUT_MS: "300" } });
+  assert.notEqual(held.status, 0); assert.match(held.stdout + held.stderr, /locked/);
+  assert.equal(readFileSync(ledger, "utf8"), "", "nothing written past a live lock");
+  writeFileSync(`${ledger}.lock`, JSON.stringify({ pid: 999999, at: new Date(0).toISOString() }));
+  py("append", ledger, "c", "e");
+  assert.equal(readFileSync(ledger, "utf8").trim().split("\n").length, 1, "a lock left by a dead process is broken");
+  assert.equal(JSON.parse(py("verify", ledger)).ok, true);
+});

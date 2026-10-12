@@ -6,3 +6,7 @@ node_modules/
 !.memory-pulse/events.jsonl
 !.memory-pulse/invariants.jsonl
 __pycache__/
+
+# written by the client on every guard call / every append
+verify.cache.json
+*.jsonl.lock

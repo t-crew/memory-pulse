@@ -17,11 +17,13 @@ Chain rules (identical to server.mjs):
   legacy_digest (first chained row) / gap_digest (later rows) = sha256 of the raw unchained lines
                 since the previous chained row, trimmed, joined by "\n"
 Rows are never edited. Corrections are appended.
+Every append holds <ledger>.lock (created with O_EXCL; the same lock the npm client takes), re-reads the
+file and computes t, prev and hash under it, so two writers in any language never share a t or a prev.
 
 CLI:  python3 memory_pulse.py verify <ledger>   |   python3 memory_pulse.py append <ledger> <cause> <effect> [note]
 """
 from __future__ import annotations
-import hashlib, json, os, sys, urllib.request
+import hashlib, json, os, sys, time, urllib.request
 
 def canonical_json(v) -> str:
     """JSON.stringify with sorted keys and no whitespace; integral floats print like JS (1.0 -> 1)."""
@@ -64,6 +66,46 @@ def verify_lines(lines) -> dict:
     if chained == 0: return {"ok": True, "legacy": len(gap), "chained": 0, "head": None, "from": None, "sealed": False, "unsealed": 0}
     return out(ok=True, sealed=True, unsealed=len(gap))
 
+class LedgerLocked(RuntimeError): pass
+
+def _pid_alive(pid) -> bool:
+    if not isinstance(pid, int) or pid <= 0: return False
+    try: os.kill(pid, 0); return True
+    except ProcessLookupError: return False
+    except PermissionError: return True
+
+class _LedgerLock:
+    """<ledger>.lock, the same protocol as server.mjs withLedgerLock: a dead holder or a lock older than 30 s is
+    broken; a live one is waited for (MEMORY_PULSE_LOCK_TIMEOUT_MS, default 5000), then refused."""
+    def __init__(self, path: str):
+        self.lock = path + ".lock"
+        self.timeout = int(os.environ.get("MEMORY_PULSE_LOCK_TIMEOUT_MS", "5000")) / 1000.0
+    def __enter__(self):
+        os.makedirs(os.path.dirname(os.path.abspath(self.lock)), exist_ok=True)
+        deadline = time.time() + self.timeout
+        while True:
+            try:
+                fd = os.open(self.lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+                with os.fdopen(fd, "w") as f: f.write(json.dumps({"pid": os.getpid(), "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}))
+                return self
+            except FileExistsError:
+                holder, st = None, None
+                try:
+                    st = os.stat(self.lock)
+                    with open(self.lock, encoding="utf-8") as f: holder = json.loads(f.read())
+                except Exception: pass
+                stale = st is not None and ((isinstance(holder, dict) and not _pid_alive(holder.get("pid"))) or time.time() - st.st_mtime > 30)
+                if stale:
+                    try:
+                        if os.stat(self.lock).st_ino == st.st_ino: os.unlink(self.lock)
+                    except FileNotFoundError: pass
+                    continue
+                if time.time() >= deadline: raise LedgerLocked(f"ledger is locked by pid {(holder or {}).get('pid', '?')} ({self.lock})")
+                time.sleep(0.01)
+    def __exit__(self, *exc):
+        try: os.unlink(self.lock)
+        except FileNotFoundError: pass
+
 class Ledger:
     def __init__(self, path: str, api: str = "https://pulse.strategic-innovations.ai"):
         self.path, self.api = path, api.rstrip("/")
@@ -100,7 +142,12 @@ class Ledger:
         if r: ev["replacement"] = r
         if supersedes: ev["supersedes"] = sorted(set(int(x) for x in supersedes))
         if (w or supersedes) and ev["kind"] != "correction": raise ValueError("withdrawn/supersedes only belong on a correction")
-        # chain
+        with _LedgerLock(self.path): return self._append_locked(ev)
+
+    def _append_locked(self, ev: dict) -> dict:
+        # t, prev and hash are computed from the file as it stands under the lock
+        events = self.events()
+        ev["t"] = max([int(e.get("t") or 0) for e in events if isinstance(e.get("t"), int)] + [0]) + 1
         raw = [l for l in self._lines() if l.strip()]
         last, seen, gap = None, False, []
         for l in raw:
@@ -114,7 +161,7 @@ class Ledger:
         ev["hash"] = row_hash(ev)
         os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
         with open(self.path, "a", encoding="utf-8") as f: f.write(json.dumps(ev, ensure_ascii=False, separators=(",", ":")) + "\n")
-        return {"written": True, "t": t, "stored": ev}
+        return {"written": True, "t": ev["t"], "stored": ev}
 
     def check(self, text: str) -> dict:
         """The guard's core rule, locally: a withdrawn term present without its replacement is blocked."""
@@ -148,5 +195,6 @@ if __name__ == "__main__":
     if len(a) >= 2 and a[0] == "verify":
         v = Ledger(a[1]).verify(); print(json.dumps(v)); sys.exit(0 if v["ok"] else 2)
     if len(a) >= 4 and a[0] == "append":
-        print(json.dumps(Ledger(a[1]).append(a[2], a[3], a[4] if len(a) > 4 else None))); sys.exit(0)
+        try: print(json.dumps(Ledger(a[1]).append(a[2], a[3], a[4] if len(a) > 4 else None))); sys.exit(0)
+        except LedgerLocked as e: print(json.dumps({"written": False, "reason": str(e)})); sys.exit(1)
     print(__doc__); sys.exit(1)
