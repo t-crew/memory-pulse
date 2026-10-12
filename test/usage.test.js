@@ -59,11 +59,15 @@ test("sends at most once per UTC day; a failed send keeps the counts for the nex
   assert.equal(calls, 1); assert.deepEqual(U.usagePayload({ dir, env: env0, version: "0.7.0" }).counts, { lint: 1 }, "kept after a failure");
   const ok = spy();
   await U.maybeSendUsage({ dir, post: ok.post, env: env0, version: "0.7.0", now: Date.parse("2026-10-12T11:00:00Z") });
-  assert.equal(ok.calls.length, 1, "a failed day may retry");
+  assert.equal(ok.calls.length, 0, "one attempt per UTC day, even after a failure (review fix)");
+  await U.maybeSendUsage({ dir, post: ok.post, env: env0, version: "0.7.0", now: Date.parse("2026-10-12T23:59:00Z") });
+  assert.equal(ok.calls.length, 0);
+  await U.maybeSendUsage({ dir, post: ok.post, env: env0, version: "0.7.0", now: Date.parse("2026-10-13T00:01:00Z") });
+  assert.equal(ok.calls.length, 1, "the next day sends what was kept");
   U.recordUsage("lint", { dir, env: env0 });
-  await U.maybeSendUsage({ dir, post: ok.post, env: env0, version: "0.7.0", now: Date.parse("2026-10-12T23:00:00Z") });
+  await U.maybeSendUsage({ dir, post: ok.post, env: env0, version: "0.7.0", now: Date.parse("2026-10-13T23:00:00Z") });
   assert.equal(ok.calls.length, 1, "already sent today");
-  await U.maybeSendUsage({ dir, post: ok.post, env: env0, version: "0.7.0", now: Date.parse("2026-10-13T00:05:00Z") });
+  await U.maybeSendUsage({ dir, post: ok.post, env: env0, version: "0.7.0", now: Date.parse("2026-10-14T00:05:00Z") });
   assert.equal(ok.calls.length, 2); assert.deepEqual(ok.calls[1].counts, { lint: 1 });
 });
 

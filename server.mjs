@@ -986,7 +986,7 @@ export function handoffLine(events, { now = Date.now(), maxAgeMs = 7 * 86400e3 }
   const h = [...events].reverse().find((e) => Array.isArray(e.tags) && e.tags.includes("handoff"));
   if (!h) return "";
   const t = handoffTime(h); if (Number.isFinite(t) && now - t > maxAgeMs) return "";
-  return `↩ last handoff (t=${h.t}${Number.isFinite(t) ? `, ${ago(now - t)}` : ""}): ${(h.note ?? h.effect).replace(/^handoff \S+: ?/, "")}`;
+  return `↩ last handoff (t=${h.t}${Number.isFinite(t) ? `, ${ago(now - t)}` : ""}): ${String(h.note ?? h.effect ?? "").replace(/^handoff \S+: ?/, "")}`;
 }
 // 0.7.0: the scaffolded prompt memory (lib/scaffold.mjs), with this file's ledger helpers injected.
 export { DEFAULT_BUDGETS };
@@ -997,15 +997,30 @@ export function promptSlice(allEvents, prompt, opts = {}) {
   return promptSliceWith(allEvents, prompt, { ...opts, deps: { inForce, supersededSet, instructionLike, containsTerm, held: HELD } });
 }
 export function editSlice(rows, invariants, action, opts = {}) {
-  return editSliceWith(rows, invariants, action, { ...opts, deps: { supersededSet, instructionLike, containsTerm } });
+  return editSliceWith(rows, invariants, action, { ...opts, deps: { supersededSet, instructionLike, containsTerm, held: HELD } });
 }
 // Claude Code saves a hook's injected text over 10,000 chars to a file and shows the model a 2,000-char preview
-// (docs/HOST_FACTS.md; the estate's 16,933-char brief was cut that way). A brief that will not arrive whole is
-// replaced by the scaffold, which is built to fit.
+// (docs/HOST_FACTS.md; the estate's 16,933-char brief was cut that way). When a brief will not arrive whole, only the
+// engine's text gives way: the provenance line, the agent identity, the handoff, AT RISK, quarantine, seal drift and the
+// footer stay, and the organized corrections fill the room that is left. If the identity block itself crowds the room,
+// its preferences and lessons are the first thing dropped (they stay on the agent ledger).
 export const BRIEF_CAP = 9500;
-export function capBrief(text, scaffoldText, cap = BRIEF_CAP) {
-  if (text.length <= cap) return text;
-  return `memory-pulse: the engine brief was ${text.length.toLocaleString("en-US")} chars, over the ${cap.toLocaleString("en-US")} the hosts take whole; this is the scaffold instead.\n${scaffoldText}`;
+const trimIdentity = (block) => {
+  if (!String(block).startsWith("AGENT IDENTITY")) return block;
+  const lines = String(block).split("\n"); const kept = lines.filter((l) => !/^\s+(preference|lesson): /.test(l) && !/^\s+(preferences|lessons carried) \(/.test(l));
+  const dropped = lines.length - kept.length;
+  return dropped ? [...kept, `  (${dropped} preference and lesson lines left out to fit the host's cap; they stay on the agent ledger)`].join("\n") : block;
+};
+export function composeBrief({ head = [], text = "", tail = [] }, scaffoldForRoom, cap = BRIEF_CAP) {
+  const join = (a) => a.filter(Boolean).join("\n");
+  const whole = join([...head, text, ...tail]);
+  if (whole.length <= cap) return whole;
+  const note = `memory-pulse: the engine brief was ${text.length.toLocaleString("en-US")} chars, over the ${cap.toLocaleString("en-US")} the hosts take whole; the organized corrections stand in for it.`;
+  let h = [...head], room = cap - join([...h, note, ...tail]).length - 1;
+  if (room < 1500) { h = h.map(trimIdentity); room = cap - join([...h, note, ...tail]).length - 1; }
+  let sub = room > 0 ? String(scaffoldForRoom(room) ?? "") : "";
+  if (sub.length > room) sub = sub.slice(0, Math.max(0, sub.lastIndexOf("\n", room)));
+  return join([...h, note, sub, ...tail]).slice(0, cap);
 }
 // The one network call usage counts make: POST /v1/usage, two seconds at most, never on the session's critical path for longer.
 async function postUsage(payload) {
@@ -1015,10 +1030,16 @@ async function postUsage(payload) {
   return Promise.race([send, timeout]);
 }
 export async function sendUsageQuietly() { await maybeSendUsage({ post: postUsage, version: PKG_VERSION }); }
+// Agent-ledger corrections bind in every project (the guard enforces them), so they are listed whenever that ledger exists;
+// the identity and rules section is agent mode's. A render that fails says so in one line and never fails the session.
 function scaffoldFor(led, opts = {}) {
-  const agentEvents = currentMode() === "agent" && existsSync(agentPath()) ? readEvents({ scope: "agent" }).events : [];
-  const chain = verifyChain(led.path);
-  return renderScaffold(led.events, { agentEvents, blocks: readBlocks(), chain: chain.ok ? null : chain, ...opts });
+  try {
+    const agentEvents = existsSync(agentPath()) ? readEvents({ scope: "agent" }).events : [];
+    const chain = verifyChain(led.path);
+    return renderScaffold(led.events, { agentEvents, withIdentity: currentMode() === "agent", blocks: readBlocks(), chain: chain.ok ? null : chain, ...opts });
+  } catch (e) {
+    return { text: `memory-pulse: the local memory could not be rendered (${String(e?.message ?? e).split("\n")[0]}); run memory-pulse verify`, sections: [] };
+  }
 }
 export function offlineBrief(led, allEvents, { now = Date.now(), recent = 8 } = {}) {
   const events = inForce(allEvents); const rolledBack = allEvents.length - events.length;
@@ -1294,19 +1315,19 @@ async function cliBrief() {
   if (!engine) { const { text } = scaffoldFor(led); if (text) { process.stdout.write(text + "\n"); recordUsage("scaffold"); } return; }
   try {
     const out = await callApi("/v1/pulse", { events, ...(tier ? { tier } : {}), ...(budget ? { budget } : {}) });
-    const parts = [loadedLine(led, events, { keyStatus: out.keyStatus, tier: out.tier ?? tier, chars: out.text?.length, budget })];
-    if (currentMode() === "agent" && existsSync(agentPath())) { const ib = identityBlock(readEvents({ scope: "agent" })); if (ib) parts.push(ib); }
-    const hl = handoffLine(events); if (hl) parts.push(hl);
-    if (out.text) parts.push(out.text);
-    const risk = atRiskLines(events); if (risk) parts.push(risk);
+    const head = [loadedLine(led, events, { keyStatus: out.keyStatus, tier: out.tier ?? tier, chars: out.text?.length, budget })];
+    if (currentMode() === "agent" && existsSync(agentPath())) { const ib = identityBlock(readEvents({ scope: "agent" })); if (ib) head.push(ib); }
+    const hl = handoffLine(events); if (hl) head.push(hl);
+    const tail = [];
+    const risk = atRiskLines(events); if (risk) tail.push(risk);
     if (Array.isArray(out.quarantined) && out.quarantined.length) {
-      parts.push(`⚠ ${out.quarantined.length} note(s) quarantined — instruction-like content was not rendered (t=${out.quarantined.map((q) => q.t).join(", ")})`);
+      tail.push(`⚠ ${out.quarantined.length} note(s) quarantined — instruction-like content was not rendered (t=${out.quarantined.map((q) => q.t).join(", ")})`);
     }
-    const sd = sealDriftLine(out); if (sd) parts.push(sd);
+    const sd = sealDriftLine(out); if (sd) tail.push(sd);
     const foot = telemetryFooter(out.telemetry);
-    if (foot) parts.push(foot);
-    const brief = parts.join("\n");
-    process.stdout.write(capBrief(brief, brief.length > BRIEF_CAP ? scaffoldFor(led).text : "") + "\n");
+    if (foot) tail.push(foot);
+    const forRoom = (room) => scaffoldFor(led, { withIdentity: false, budgets: { identity: 0, corrections: Math.floor(room * 0.6), state: Math.floor(room * 0.15), findings: Math.floor(room * 0.15), threads: Math.floor(room * 0.1) } }).text;
+    process.stdout.write(composeBrief({ head, text: out.text ?? "", tail }, forRoom) + "\n");
   } catch (e) {
     // A dead network must not break session start — and must not hand it nothing: the local scaffold, labelled as such.
     process.stdout.write(`memory-pulse: brief unavailable (${String(e?.message ?? e).split(".")[0]})\n`);
@@ -1341,7 +1362,7 @@ async function cliPrompt() {
     let raw = ""; try { raw = readFileSync(0, "utf8"); } catch { /* no stdin */ }
     let hook = {}; try { hook = raw.trim() ? JSON.parse(raw) : {}; } catch { return; }
     if (typeof hook.prompt !== "string") return;
-    const slice = promptSlice(readEvents().events, hook.prompt, { blocks: readBlocks() });
+    const slice = promptSlice(readEvents().events, hook.prompt, { blocks: readBlocks(), agentEvents: existsSync(agentPath()) ? readEvents({ scope: "agent" }).events : [] });
     if (slice) { process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: slice } })); recordUsage("prompt_slice"); }
   } catch { /* a hook must never block a prompt */ }
 }
@@ -1653,10 +1674,10 @@ async function cliGuard() {
     // Allowed: add the memory that bears on this file as context. Never a permissionDecision — "allow" would skip the
     // user's permission prompt (docs/HOST_FACTS.md); the guard only blocks or informs.
     try {
-      const rows = [...guardRows(ledgerPath()), ...(existsSync(agentPath()) ? guardRows(agentPath()) : [])];
+      const rows = guardRows(ledgerPath()), agentRows = existsSync(agentPath()) ? guardRows(agentPath()) : [];
       const seen = new Set(); const parts = [];
       for (const a of actions) {
-        const sl = editSlice(rows, invariants, { path: a.path ?? "", text: a.text ?? "" });
+        const sl = editSlice(rows, invariants, { path: a.path ?? "", text: a.text ?? "" }, { agentRows });
         for (const line of sl.split("\n")) if (line && !seen.has(line)) { seen.add(line); parts.push(line); }
       }
       const ctx = parts.join("\n").slice(0, 2000);

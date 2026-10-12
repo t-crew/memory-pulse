@@ -53,7 +53,7 @@ Six routes. Pick the row for your agent. Node 18 or newer (`package.json`
 engines); the test suite runs on 22 and 24.
 
 `remember` and `help` from the shell arrive in 0.5.9. npm served 0.5.8 on
-2026-09-09, where both exit 1 with `unknown command`. Once 0.6.0 is published,
+2026-09-09, where both exit 1 with `unknown command`. Once 0.7.0 is published,
 run `npx -y memory-pulse@0.7.0` until your npx cache catches up; before that,
 run `node server.mjs` from a checkout. Four more things in this README are
 0.5.9 behaviour and differ on 0.5.8: `guard --verbose` names non-JSON stdin
@@ -104,13 +104,14 @@ codex plugin marketplace add t-crew/memory-pulse
 codex plugin add memory-pulse@memory-pulse
 ```
 
-Then, inside Codex, run `/hooks` and trust the two `memory-pulse` entries.
+Then, inside Codex, run `/hooks` and trust the three `memory-pulse` entries
+(session start, prompt and guard).
 Codex runs no hook it has not shown you, and installing a plugin does not
 trust its hooks. That is Codex's rule and a good one.
 
-**npm, global install.** `install-hook` writes three hooks into
-`~/.claude/settings.json`: SessionStart brief, PreToolUse guard and PreCompact
-handoff. `--codex` targets `~/.codex/hooks.json` instead, `--project` writes
+**npm, global install.** `install-hook` writes four hooks into
+`~/.claude/settings.json`: SessionStart brief, UserPromptSubmit prompt,
+PreToolUse guard and PreCompact handoff. `--codex` targets `~/.codex/hooks.json` instead, `--project` writes
 them into the repository, and `--ambient` adds the UserPromptSubmit observer.
 
 ```
@@ -151,7 +152,7 @@ from Cursor's documented shape, not yet verified in Cursor on 2026-09-09.
 A rule file at `.cursor/rules/memory-pulse.mdc` tells the agent to call
 `pulse` before answering about prior work; the guide has the text.
 
-**From source.** One file, zero dependencies:
+**From source.** `server.mjs` plus the plain modules in `lib/`, zero dependencies:
 
 ```
 git clone https://github.com/t-crew/memory-pulse.git
@@ -271,7 +272,7 @@ npx memory-pulse scaffold       # the organized memory: identity and rules, corr
 npx memory-pulse telemetry show # the opt-in usage counts: exactly what would be sent once a day (on, off, reset)
 npx memory-pulse prompt         # UserPromptSubmit hook: the corrections and decisions that bear on the prompt, injected as context
 npx memory-pulse brief --budget 2000   # the richest tier that fits 2000 tokens, corrections first and whole
-npx memory-pulse brief --offline  # local render when the engine is unreachable (automatic on any engine error)
+npx memory-pulse brief --offline  # the plain local list; an engine error falls back to the organized memory instead
 npx memory-pulse remember <cause> <effect> [--kind correction] [--withdrawn T]... [--replacement T]... [--supersedes N] [--note "..."] [--tags a] [--pinned] [--scope agent]
 npx memory-pulse before "<what you are about to do>"   # which corrections bear on the change; exact rung local, learned rung from the engine
 npx memory-pulse guard          # PreToolUse hook: blocks edits that reintroduce withdrawn terms (exit 2); --verbose names a non-JSON stdin
@@ -515,7 +516,7 @@ What that turns on:
   signed capsule also raises a **drift alert** when a ledger loses corrections,
   shrinks, or its usage shape jumps, and the brief footer shows it. Both checks
   are deterministic lists you can read.
-- This client is the entire client: one file, zero dependencies, readable in one sitting.
+- This client is the entire client: `server.mjs` and three plain modules in `lib/`, zero dependencies, readable in one sitting.
 
 ## Environment
 
