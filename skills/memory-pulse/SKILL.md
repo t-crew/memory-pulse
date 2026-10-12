@@ -59,17 +59,23 @@ Rules that decide whether the guard can act on it:
   `-withdrawn-for-`, `-superseded-by-`, `-replaced-by-`), the terms are read
   out of the slug: `price-corrected-to-29` binds the word `price`. The result
   carries `boundFromEffect` when that happened; read it.
-- Matching is a case-sensitive substring with no word boundary. `$49` blocks
-  `$490`; `n=14` does not block `N=14`. Record every spelling you have seen,
-  and prefer exact tokens (`"1480 rps"`, `"n=14"`) over prose.
+- Matching is a case-sensitive token: a term cannot start inside another word
+  or number, a number cannot run on into more digits (`$49` blocks `$49/mo`,
+  not `$490`), and a word under five letters cannot run on (`ten` does not
+  block `tenant`). `n=14` does not block `N=14`. Record every spelling you
+  have seen, and prefer exact tokens (`"1480 rps"`, `"n=14"`) over prose.
 - A replacement anywhere in the same edit releases every term of that
   correction, so make replacements as specific as withdrawn terms: `$29`,
   not `29`. Terms under 2 characters are dropped and the result says
   `enforceable: false`.
 - A wrong correction is fixed with a new one carrying `supersedes: [t]`.
-  Otherwise the old row still binds. Never edit the ledger file: every row
-  hashes the previous one, and a hand edit blocks every edit until the file
-  is restored from git.
+  Otherwise the old row still binds. Never edit or append to a ledger file
+  yourself, from any language: every row hashes the previous one. To record
+  a row from a script, run `memory-pulse append --json '<row>'` (it locks the
+  file and computes `t`, `prev` and `hash`). A bad tail is moved to
+  `events.jsonl.quarantine/` and recorded; a hand edit mid-file blocks writes
+  to the ledger until it is restored from a copy you trust
+  (`memory-pulse verify` names the row and the fix).
 
 For a team, run `npx memory-pulse install-hook --project` once and commit
 `.claude/settings.json`: every clone is then re-entered and guarded without
@@ -140,3 +146,5 @@ What not to do:
   hooks via `/hooks`; say so rather than assuming the ledger is empty.
 - **Teams**: the ledger is read from the directory the agent started in.
   Start at the repository root, or set `MEMORY_PULSE_LEDGER`.
+
+State capsules. `memory-pulse state export > agent.rain` packs the ledger (rows verbatim, chain head, set head, the engine's seal, invariants, one digest); `memory-pulse state import agent.rain` verifies it and installs it on another machine, corrections included; `memory-pulse state rollback --to <t> "<why>"` is one appended row that puts everything after t out of force; `memory-pulse state branch` and `memory-pulse state merge` cut and recombine without rewriting a row. `memory-pulse state` alone says where the ledger stands.

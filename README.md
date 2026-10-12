@@ -53,8 +53,8 @@ Six routes. Pick the row for your agent. Node 18 or newer (`package.json`
 engines); the test suite runs on 22 and 24.
 
 `remember` and `help` from the shell arrive in 0.5.9. npm served 0.5.8 on
-2026-09-09, where both exit 1 with `unknown command`. Once 0.5.9 is published,
-run `npx -y memory-pulse@0.5.9` until your npx cache catches up; before that,
+2026-09-09, where both exit 1 with `unknown command`. Once 0.6.0 is published,
+run `npx -y memory-pulse@0.6.0` until your npx cache catches up; before that,
 run `node server.mjs` from a checkout. Four more things in this README are
 0.5.9 behaviour and differ on 0.5.8: `guard --verbose` names non-JSON stdin
 on stderr (0.5.8 prints nothing), `handoff` with no transcript writes nothing
@@ -181,8 +181,8 @@ and exits 0. The first `remember` creates `.memory-pulse/events.jsonl`, from a
 tool call or from the shell:
 
 ```
-npx -y memory-pulse@0.5.9 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
-# before 0.5.9 is on npm, the same command from a checkout:
+npx -y memory-pulse@0.6.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
+# before 0.6.0 is on npm, the same command from a checkout:
 git clone https://github.com/t-crew/memory-pulse.git && node memory-pulse/server.mjs remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 ```
 
@@ -226,11 +226,13 @@ remember({ cause: "pricing-shipped", effect: "price-corrected", kind: "correctio
 
 The rules that decide whether the guard can act on a correction:
 
-- **Matching is a case-sensitive substring with no word boundary.** `$49`
-  blocks `$490`; `n=14` does not block `N=14`. Record every spelling you have
-  seen, one term each, and choose terms that are not a prefix of a value you
-  still use. `before` matches case-insensitively, and it advises rather than
-  blocks.
+- **Matching is a case-sensitive token.** A term cannot start inside another
+  word or number. A number cannot run on into more digits but may carry a
+  unit: `$49` blocks `$49/mo` and not `$490`. A word under five letters
+  cannot run on (`ten` does not block `tenant`); a longer one keeps its
+  inflections. `n=14` does not block `N=14`. Record every spelling you have
+  seen, one term each. `before` matches case-insensitively, and it advises
+  rather than blocks.
 - **A replacement anywhere in the edit releases every term of that
   correction.** Make replacements as specific as withdrawn terms: `$29`, not
   `29`. Terms under 2 characters are dropped and the result says
@@ -272,8 +274,18 @@ npx memory-pulse before "<what you are about to do>"   # which corrections bear 
 npx memory-pulse guard          # PreToolUse hook: blocks edits that reintroduce withdrawn terms (exit 2); --verbose names a non-JSON stdin
 npx memory-pulse guard allow "<term>" --path <prefix> "<reason>"   # record a false block as an override
 npx memory-pulse check --ci     # Memory CI: one of three verdicts for a change, from files you own
-npx memory-pulse verify         # row chain + last engine seal; exit 2 if either fails; --json for machines
+npx memory-pulse verify         # row chain + last engine seal; on a break: the first bad row and the command that fixes it; exit 2 if either fails; --json for machines
+npx memory-pulse append --json '{"cause":"...","effect":"..."}'   # the one way for another tool to write a row: lock, t, prev and hash done here; also `-` for stdin, --scope agent
+npx memory-pulse repair --quarantine-tail   # move a tail of rows that fail on their own aside, byte-for-byte, recorded; nothing deleted
+npx memory-pulse repair --adopt-quarantine <file> --yes   # re-append quarantined rows through the writer after a person has reviewed them
 npx memory-pulse seal accept "<why>"   # a stale seal over rows that verify: record the decision, set the old seal aside; refused on a broken chain
+npx memory-pulse state          # where this ledger stands: rows, in force, rolled back, heads, seal, branch
+npx memory-pulse state export > agent.rain   # the .rain state capsule: rows verbatim, chain head, set head, seal, invariants, one digest
+npx memory-pulse state import agent.rain     # on another machine: verify, install byte-identical (or fast-forward), record where it came from
+npx memory-pulse state branch exp --at 12 --out exp.rain   # a capsule cut at row 12, named exp; the source ledger is untouched
+npx memory-pulse state merge exp.rain        # carry a diverged branch's findings across once; conflicts are named, never resolved quietly
+npx memory-pulse state rollback --to 12 "<why>"   # one appended row; rows after 12 stay on record, out of force
+npx memory-pulse state verify agent.rain     # verify a capsule without touching any ledger; exit 2 on failure
 npx memory-pulse lint [--ci]    # do CLAUDE.md / AGENTS.md / .claude/rules still state a value the ledger retired?
 npx memory-pulse report         # correction re-violation scoreboard, computed locally
 npx memory-pulse bench          # instant measured metrics on YOUR ledger
@@ -359,27 +371,84 @@ surface in the brief but which nothing can enforce.
 
 Since 0.3.1 three mechanisms hold, each with its own job:
 
-- **Row chain.** Every row `remember` writes carries `prev`, the previous chained row's hash, and `hash`, the SHA-256 of its own canonical JSON. Rows that existed before the chain are never rewritten, and the first chained row seals them with a digest. An edit in place, a removed row, a reordered row or an unchained row after the chain started all fail `verifyChain()`. A failed chain blocks every `check`, `guard` and `lint` verdict, because a memory whose own history is in question cannot vouch for anything.
+- **Row chain.** Every row `remember` writes carries `prev`, the previous chained row's hash, and `hash`, the SHA-256 of its own canonical JSON. Rows that existed before the chain are never rewritten, and the first chained row seals them with a digest. An edit in place, a removed row, a reordered row or an unchained row after the chain started all fail `verifyChain()`. A failed chain blocks every `check` and `lint` verdict, because a memory whose own history is in question cannot vouch for anything. The guard runs on every tool call, so since 0.6.0 it is narrower: a break in the middle of the file blocks writes to the ledger and its sidecars and warns on everything else, and a bad tail is moved aside (below). Reading is never blocked.
 - **Set head.** The engine also commits to the ledger as an order-free fold, a multiplicative group mod a 3072-bit prime, which is the MuHash construction Bitcoin Core uses for its UTXO set. Shards from several agents fold to the same head in any order, and removing a row is the group inverse, so the *state* stays exact while the *history* stays append-only. A literal XOR fold was measured forgeable, since a linear system hides an edit in 10 ms at 300 rows, and it is not used here.
 - **Seal.** Every read call returns a seal signed by the engine, carrying the row count, the watermark, the set head over every row's full content, and the chain head. The client keeps it in `seal.rain` beside the ledger and presents it on the next call. Locally, rows up to the sealed watermark must fold to the sealed head before the ledger is trusted. At the engine the signature and the fold are re-checked, and an edit below the watermark is reported as drift and blocks. A process with write access can rewrite the file and even the chain. It cannot produce the engine's signature, and it cannot make edited rows fold to the sealed head.
 
 Nothing is stored server-side for any of this. The seal travels in the payload, the same way the telemetry capsule and the memory key do.
 
-**Never edit a row by hand.** A hand edit breaks the row chain and blocks every
-edit until the file is restored from a copy you trust; `verify` names the first
-broken row. A stale seal is a different case: the rows verify, but the engine's
+**Never write a ledger file directly.** Another tool that wants to record a row
+runs `memory-pulse append`, which takes the ledger lock (`events.jsonl.lock`) and
+computes `t`, `prev` and `hash` itself; two writers never share a `t`. A row
+written by hand does not chain: on 2026-10-02 a script hashed a row over
+Python's default `json.dumps` separators and reused the previous `t`, and every
+session on the machine was refused every edit until a person removed it.
+
+**A bad tail is moved aside, not fatal.** When every row after the last good
+one fails on its own (unparseable, its own hash wrong, a `t` that does not
+increase, a link to nothing), the guard and the writer move those rows
+byte-for-byte to `events.jsonl.quarantine/<time>.jsonl`, append one chained row
+recording the file, the row count, the SHA-256 of the moved bytes and the
+reason, print one warning line, and let the work continue. Nothing is deleted.
+`memory-pulse repair --adopt-quarantine <file>` shows what would be re-appended;
+with `--yes`, after a person has read them, the rows go back through the writer
+with new `t`, `prev` and `hash` and an `origin` pointing at the quarantine file.
+
+**A break in the middle is restored, not repaired.** A hand edit with valid rows
+after it blocks writes to the ledger and its sidecars until the file is restored
+from a copy you trust; `verify` names the first broken row and lists the copies
+beside the ledger that verify. A stale seal is a different case: the rows verify, but the engine's
 last seal no longer matches them, because something rewrote and re-chained the
 ledger or the engine sealed a different view. `memory-pulse seal accept "<why>"`
 records that decision as a ledger row, sets the old seal aside beside the ledger,
 and the next engine call issues a fresh one. Neither case is fixed by deleting
 the ledger, and the guard's message never suggests it.
 
-**What to commit.** `events.jsonl` and `invariants.jsonl`. Keep `seal.rain`,
-`seal.resume.json`, `telemetry.rain`, `memory.rain` and `violations.jsonl` out
-of git; this repository's `.gitignore` carries that list, and nothing writes a
+**What to commit.** `events.jsonl`, `invariants.jsonl` and, if one exists,
+`events.jsonl.quarantine/` (the record of what was moved aside). Keep
+`seal.rain`, `seal.resume.json`, `verify.cache.json`, `events.jsonl.lock`,
+`telemetry.rain`, `memory.rain` and `violations.jsonl` out of git; this repository's `.gitignore` carries that list, and nothing writes a
 `.gitignore` for you below 500 events. The ledger is read from the directory
 the agent started in, so start at the repository root or set
 `MEMORY_PULSE_LEDGER`.
+
+## Agent state travels as a .rain capsule
+
+An agent's state is its ledger, so moving the agent means moving the ledger
+with its integrity intact. `memory-pulse state export` packs the ledger as a
+`.rain` state capsule: every row verbatim, the row-chain head, the order-free
+set head, the engine's last seal and the declared invariants, under one
+digest. On another machine, `memory-pulse state import` verifies all of that
+before it trusts the capsule, installs the rows byte-identical (or
+fast-forwards a ledger the capsule extends), and records where the state came
+from as a row. The corrections travel with it: the guard blocks on the new
+machine exactly as it did on the old one. A capsule with one edited row is
+refused before anything is written.
+
+Three more operations, none of which rewrites a row:
+
+- `state branch <id> --at <t>` cuts a capsule at row t and names it. Import
+  it elsewhere and work on it; the source ledger is untouched.
+- `state rollback --to <t> "<why>"` appends one row. Every row after t stays
+  on the record and goes out of force: a rolled-back correction stops binding,
+  a rolled-back lesson leaves the identity block, and a later rollback to a
+  higher row restores them. `brief`, `guard`, `check`, `lint`, `before` and
+  `report` read the in-force view; the engine reads the same view and seals
+  the full record.
+- `state merge <file>` carries a diverged branch's findings across once, in
+  the branch's order, each carrying its origin. Duplicates are skipped by
+  content, the branch's own rollbacks are applied at source, a note that reads
+  like an instruction is held back, and a correction that withdraws a term
+  this ledger withdraws with a different replacement is named as a conflict,
+  not resolved. Merging the same capsule twice appends nothing, and two
+  ledgers that merged each other in either order hold the same findings in
+  force.
+
+`state verify <file>` checks a capsule without touching any ledger, and
+`memory-pulse state` alone says where the ledger stands. `--scope agent` does
+all of this for the agent ledger. The seal's engine signature is checked by
+the engine on the next call; locally the capsule's rows must fold to the
+sealed head. No server is in the loop for any of it.
 
 ## Survives compaction, works offline, captures corrections, speaks Python
 
@@ -459,6 +528,7 @@ What that turns on:
 | `MEMORY_PULSE_SETTINGS_DIR` | unset | directory that receives `settings.json` or `hooks.json` for `install-hook` and `mode`; the tests use it |
 | `MEMORY_PULSE_BRIEF_BUDGET` | unset | default for `brief --budget`, in tokens |
 | `MEMORY_PULSE_BRIEF_TIER` | `brief` | tier for `brief` when no budget is given: `index`, `brief`, `notes`, `full` |
+| `MEMORY_PULSE_LOCK_TIMEOUT_MS` | `5000` | how long a writer waits for the ledger lock before refusing; a lock whose holder has exited is broken at once |
 | `NO_COLOR`, `TERM` | unset | colour in the guard's block message only on a TTY with `NO_COLOR` unset and `TERM` not `dumb` |
 | `HOME` | the shell's | root for the agent ledger, `~/.claude/settings.json` and `~/.codex/hooks.json` |
 
@@ -613,7 +683,7 @@ Details that bite:
 ## Releasing
 
 ```bash
-scripts/release.sh 0.5.9
+scripts/release.sh 0.6.0
 ```
 
 The script gates on `fail 0` from the test suite, bumps the four version

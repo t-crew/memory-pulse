@@ -22,13 +22,16 @@ const mk = () => {
 };
 const write = (content) => JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path: "docs/pricing.md", content } });
 
-test("guard on a broken chain says restore from a copy you trust, never git checkout or delete, not guard allow", () => {
+test("guard on a broken chain: unrelated edits warn and proceed; a write to the ledger is refused with restore-from-a-trusted-copy, never git checkout or delete, not guard allow", () => {
   const { run, ledger } = mk();
   for (let i = 1; i <= 4; i++) run(["remember", `c${i}`, `e${i}`, "--kind", "correction", "--withdrawn", `old${i}`]);
   const rows = readFileSync(ledger, "utf8").split("\n").filter(Boolean);
   writeFileSync(ledger, [rows[0], rows[2], rows[3]].join("\n") + "\n");
-  const r = run(["guard"], write("nothing withdrawn here"));
-  assert.equal(r.status, 2, "a broken chain blocks every edit");
+  const unrelated = run(["guard"], write("nothing withdrawn here"));
+  assert.equal(unrelated.status, 0, "since 2026-10-02 a broken chain no longer locks every tool out");
+  assert.match(unrelated.stderr, /chain broken/); assert.match(unrelated.stderr, /memory-pulse verify/);
+  const r = run(["guard"], JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path: ledger, content: "{}" } }));
+  assert.equal(r.status, 2, "a write to the broken ledger itself is blocked");
   assert.match(r.stderr, /ledger chain broken/);
   assert.match(r.stderr, /copy you trust/); assert.doesNotMatch(r.stderr, /git checkout|delete the \.memory-pulse|seal accept/);
   assert.match(r.stderr, /memory-pulse verify/);

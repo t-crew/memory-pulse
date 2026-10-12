@@ -21,11 +21,12 @@
  *   MEMORY_PULSE_AGENT, MEMORY_PULSE_PROJECT, MEMORY_PULSE_MEMORY_KEY, MEMORY_PULSE_MODE,
  *   MEMORY_PULSE_SETTINGS_DIR, MEMORY_PULSE_BRIEF_BUDGET, MEMORY_PULSE_BRIEF_TIER, NO_COLOR, HOME
  */
-import readline from "node:readline";
 import { createHash, createCipheriv } from "node:crypto";
-import http from "node:http";
-import https from "node:https";
-import { gzipSync } from "node:zlib";
+// http, https, zlib and readline load on first use: the guard runs as a fresh process on every tool call and never
+// touches the network, so it does not pay for them (measured 2026-10-02: ~5 ms of a ~60 ms hook call).
+import { createRequire } from "node:module";
+const lazyRequire = createRequire(import.meta.url);
+const builtin = (name) => lazyRequire(`node:${name}`);
 
 // The version an MCP client displays. It was hardcoded and had drifted to
 // 0.2.1 while the package shipped 0.5.3, so every client showed a version
@@ -35,8 +36,8 @@ const PKG_VERSION = (() => {
     return JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "package.json"), "utf8")).version;
   } catch { return "0.0.0"; }
 })();
-import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync, realpathSync, readdirSync, statSync, renameSync, unlinkSync} from "node:fs";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync, realpathSync, readdirSync, statSync, renameSync, unlinkSync, openSync, closeSync, writeSync, truncateSync} from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const API = (process.env.MEMORY_PULSE_API ?? "https://pulse.strategic-innovations.ai").replace(/\/$/, "");
@@ -62,7 +63,7 @@ export function agentPath() {
   return join(process.env.HOME || process.cwd(), ".memory-pulse", "agent", "events.jsonl");
 }
 export function readEvents(opts = {}) {
-  const path = opts.scope === "agent" ? agentPath() : ledgerPath();
+  const path = opts.path ?? (opts.scope === "agent" ? agentPath() : ledgerPath());
   if (!existsSync(path)) return { path, events: [], malformed: [], bytes: 0, digest: null, lines: 0 };
   const raw = readFileSync(path, "utf8");
   const events = [], malformed = [];
@@ -79,7 +80,8 @@ export function readEvents(opts = {}) {
 }
 
 // One line of provenance for the brief: what loaded, from where, what binds.
-export function loadedLine(led, events, opts = {}) {
+export function loadedLine(led, allEvents, opts = {}) {
+  const events = inForce(allEvents); const rolledBack = allEvents.length - events.length;
   const retired = supersededSet(events);
   const binding = events.filter((e) => e.kind === "correction" && Array.isArray(e.withdrawn) && e.withdrawn.length && !retired.has(e.t));
   const terms = new Set(binding.flatMap((e) => e.withdrawn));
@@ -89,6 +91,7 @@ export function loadedLine(led, events, opts = {}) {
   parts.push(`${binding.length} binding correction${binding.length === 1 ? "" : "s"} (${terms.size} withdrawn term${terms.size === 1 ? "" : "s"})`);
   if (unenforceable) parts.push(`${unenforceable} correction${unenforceable === 1 ? "" : "s"} without withdrawn terms (surfaced, not enforced)`);
   if (retired.size) parts.push(`${retired.size} superseded`);
+  if (rolledBack) parts.push(`${rolledBack} row${rolledBack === 1 ? "" : "s"} rolled back (kept on record, out of force)`);
   if (led.malformed?.length) parts.push(`⚠ ${led.malformed.length} malformed line${led.malformed.length === 1 ? "" : "s"} skipped: ${led.malformed.slice(0, 5).join(", ")}${led.malformed.length > 5 ? "…" : ""}`);
   if (opts.keyStatus?.status === "resumed") parts.push(`memory key resumed (+${opts.keyStatus.newEvents ?? 0} new)`);
   else if (opts.keyStatus?.status === "rebuilt") parts.push(`memory key rebuilt${opts.keyStatus.reason ? ` (${opts.keyStatus.reason})` : ""}`);
@@ -131,25 +134,199 @@ export function verifyChain(path = ledgerPath()) {
   // chained row AND seals the unchained rows written in between (gap_digest): an older writer appends rows without a
   // hash, and that is not an edit. An unchained tail is reported as `unsealed` (the next chained write seals it).
   if (!existsSync(path)) return { ok: true, legacy: 0, chained: 0, head: null, from: null, sealed: false, unsealed: 0 };
-  const lines = readFileSync(path, "utf8").split("\n").filter((l) => l.trim());
-  let prev = null, chained = 0, from = null, legacy = 0; const gap = [];
+  return verifyChainLines(readFileSync(path, "utf8").split("\n"));
+}
+/** The same walk over raw lines — a state capsule carries the ledger's lines verbatim and is verified before it is trusted. */
+export function verifyChainLines(rawLines) { return walkChain(rawLines.map((l) => l.trim()).filter(Boolean)).result; }
+// The walk, resumable: `state` is where a previous walk stopped (the verification cache continues from it over
+// appended rows instead of re-hashing the whole ledger on every hook call).
+export function walkChain(lines, state = null) {
+  let prev = state?.prev ?? null, chained = state?.chained ?? 0, from = state?.from ?? null, legacy = state?.legacy ?? 0;
+  const gap = [...(state?.gap ?? [])];
   const out = (extra) => ({ legacy, chained, head: prev, from, ...extra });
-  for (let i = 0; i < lines.length; i++) {
-    if (!hasHash(lines[i])) { gap.push(lines[i]); continue; }
-    const row = JSON.parse(lines[i]);
+  const done = (result) => ({ result, state: result.ok ? { prev, chained, from, legacy, gap: [...gap] } : null });
+  for (const line of lines) {
+    let row = null; try { row = JSON.parse(line); } catch { /* a torn line is an unchained row */ }
+    if (!row || typeof row.hash !== "string") { gap.push(line); continue; }
     if (chained === 0) {
       from = row.t ?? null; legacy = gap.length;
-      if (row.legacy_digest !== sealDigest(gap)) return out({ ok: false, head: null, reason: `legacy rows changed since the chain sealed them (digest mismatch at t=${row.t})`, brokenAt: row.t ?? null });
+      if (row.legacy_digest !== sealDigest(gap)) return done(out({ ok: false, head: null, reason: `legacy rows changed since the chain sealed them (digest mismatch at t=${row.t})`, brokenAt: row.t ?? null }));
     } else {
-      if (row.prev !== prev) return out({ ok: false, reason: `row t=${row.t} does not link to the previous chained row (a row was removed, reordered or inserted)`, brokenAt: row.t ?? null });
+      if (row.prev !== prev) return done(out({ ok: false, reason: `row t=${row.t} does not link to the previous chained row (a row was removed, reordered or inserted)`, brokenAt: row.t ?? null }));
       const want = row.gap_digest ?? null;
-      if (want === null ? gap.length > 0 : want !== sealDigest(gap)) return out({ ok: false, reason: `unchained rows before t=${row.t} do not match the gap it sealed (${gap.length} row(s); edited, removed or inserted)`, brokenAt: row.t ?? null });
+      if (want === null ? gap.length > 0 : want !== sealDigest(gap)) return done(out({ ok: false, reason: `unchained rows before t=${row.t} do not match the gap it sealed (${gap.length} row(s); edited, removed or inserted)`, brokenAt: row.t ?? null }));
     }
-    if (rowHash(row) !== row.hash) return out({ ok: false, reason: `row t=${row.t} does not match its own hash (edited in place)`, brokenAt: row.t ?? null });
+    if (rowHash(row) !== row.hash) return done(out({ ok: false, reason: `row t=${row.t} does not match its own hash (edited in place)`, brokenAt: row.t ?? null }));
     prev = row.hash; chained++; gap.length = 0;
   }
-  if (chained === 0) return { ok: true, legacy: gap.length, chained: 0, head: null, from: null, sealed: false, unsealed: 0 };
-  return out({ ok: true, sealed: true, unsealed: gap.length });
+  if (chained === 0) return done({ ok: true, legacy: gap.length, chained: 0, head: null, from: null, sealed: false, unsealed: 0 });
+  return done(out({ ok: true, sealed: true, unsealed: gap.length }));
+}
+
+// ---- Integrity without lockout (2026-10-02). Another session wrote a row straight into the agent ledger, hashed
+// over Python's json.dumps(row, sort_keys=True) instead of the canonical form, with a reused t. The chain broke at
+// the tail and the guard then refused every Bash/Write/Edit in every session, including the edits that would have
+// repaired the file. Three changes, all here:
+//   1. inspectChain/quarantineTail: when every row after the last good one fails ON ITS OWN MERITS (bad JSON, its
+//      own hash wrong, a non-increasing t, a link to nothing), those rows move byte-for-byte to
+//      <ledger>.quarantine/<time>.jsonl and a canonical row records the move. Nothing is deleted.
+//   2. a break with valid rows after it (an edit, a removal, an insertion mid-file) still blocks writes to the
+//      ledger and its sidecars, and only warns everywhere else.
+//   3. one locked writer: every append takes <ledger>.lock (O_EXCL), re-reads the file, and computes t, prev and
+//      hash itself; `memory-pulse append` is the public way in for other tools.
+const lineEntries = (buf) => {
+  const out = []; let start = 0, n = 0;
+  while (start < buf.length) {
+    let end = buf.indexOf(0x0a, start); end = end === -1 ? buf.length : end + 1;
+    out.push({ start, end, line: ++n, text: buf.subarray(start, end).toString("utf8").replace(/\r?\n$/, "") });
+    start = end;
+  }
+  return out;
+};
+const rowT = (text) => { try { const t = JSON.parse(text).t; return Number.isInteger(t) ? t : null; } catch { return null; } };
+
+/** Where the chain breaks, and whether everything from there on is bad on its own (a quarantinable tail). */
+export function inspectChain(input) {
+  const buf = Buffer.isBuffer(input) ? input : existsSync(input) ? readFileSync(input) : Buffer.alloc(0);
+  const entries = lineEntries(buf).filter((e) => e.text.trim());
+  const res = walkChain(entries.map((e) => e.text.trim())).result;
+  if (res.ok) return { ...res, firstBad: null, tail: null };
+  // the verified prefix ends at the last chained row the walk accepted (its hash is res.head)
+  let keep = 0, maxT = 0, k = -1;
+  if (res.head) {
+    k = entries.findIndex((e) => { try { return JSON.parse(e.text).hash === res.head; } catch { return false; } });
+    keep = entries[k].end;
+  }
+  for (const e of entries.slice(0, k + 1)) { const t = rowT(e.text); if (t !== null && t > maxT) maxT = t; }
+  const bad = entries.find((e, i) => i > k && rowT(e.text) === res.brokenAt && (() => { try { return typeof JSON.parse(e.text).hash === "string"; } catch { return false; } })()) ?? entries[k + 1];
+  // Judge every row after the prefix on its own: valid JSON, its own hash right, linked to the row before it in the
+  // tail, t still increasing. One row that stands on its own makes this a mid-file break, not a bad tail.
+  const tailRows = entries.slice(k + 1);
+  let prevTail = null, lastT = maxT, selfValid = 0;
+  for (const e of tailRows) {
+    let row = null; try { row = JSON.parse(e.text); } catch { /* bad */ }
+    let ok = !!row && typeof row.cause === "string" && typeof row.effect === "string" && Number.isInteger(row.t) && row.t > lastT;
+    if (ok && typeof row.hash === "string") ok = rowHash(row) === row.hash && (prevTail === null || row.prev === prevTail);
+    if (ok) { selfValid++; lastT = row.t; if (typeof row.hash === "string") prevTail = row.hash; }
+  }
+  return { ...res, firstBad: bad ? { t: rowT(bad.text), line: bad.line } : null,
+    tail: { keepBytes: keep, rows: tailRows.length, allBad: tailRows.length > 0 && selfValid === 0, headT: maxT || null } };
+}
+
+const lockPathFor = (ledger) => `${ledger}.lock`;
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const pidAlive = (pid) => { if (!Number.isInteger(pid) || pid <= 0) return false; try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
+/** Run fn holding <ledger>.lock. A lock whose holder is dead, or older than staleMs, is broken; a live one is waited
+ *  for until timeoutMs (MEMORY_PULSE_LOCK_TIMEOUT_MS, default 5000), then refused: never written past. */
+export function withLedgerLock(path, fn, { timeoutMs = Number(process.env.MEMORY_PULSE_LOCK_TIMEOUT_MS ?? 5000), staleMs = 30_000 } = {}) {
+  mkdirSync(dirname(path), { recursive: true });
+  const lock = lockPathFor(path); const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try { const fd = openSync(lock, "wx"); try { writeSync(fd, JSON.stringify({ pid: process.pid, at: new Date().toISOString() })); } finally { closeSync(fd); } break; }
+    catch (e) {
+      if (e.code !== "EEXIST") throw e;
+      let holder = null, st = null;
+      try { st = statSync(lock); holder = JSON.parse(readFileSync(lock, "utf8")); } catch { /* gone or half-written */ }
+      const stale = st && ((holder && !pidAlive(holder.pid)) || Date.now() - st.mtimeMs > staleMs);
+      if (stale) { try { if (statSync(lock).ino === st.ino) unlinkSync(lock); } catch { /* someone else broke it first */ } continue; }
+      if (Date.now() >= deadline) { const err = new Error(`ledger is locked by pid ${holder?.pid ?? "?"} since ${holder?.at ?? "?"} (${lock})`); err.code = "ELEDGERLOCKED"; throw err; }
+      sleepSync(10);
+    }
+  }
+  try { return fn(); } finally { try { unlinkSync(lock); } catch { /* already gone */ } }
+}
+
+const isoStamp = () => new Date().toISOString().replace(/[:.]/g, "-");
+// Called with the lock held. Moves a bad tail aside and records it; refuses anything that is not a bad tail.
+function quarantineTailLocked(path) {
+  if (!existsSync(path)) return { quarantined: false, reason: "no ledger" };
+  const buf = readFileSync(path);
+  const info = inspectChain(buf);
+  if (info.ok) return { quarantined: false, reason: "the chain verifies" };
+  if (!info.tail?.allBad) return { quarantined: false, notTail: true, reason: info.reason, firstBad: info.firstBad };
+  const moved = buf.subarray(info.tail.keepBytes);
+  const dir = `${path}.quarantine`; mkdirSync(dir, { recursive: true });
+  let file = join(dir, `${isoStamp()}.jsonl`); if (existsSync(file)) file = join(dir, `${isoStamp()}-${process.pid}.jsonl`);
+  writeFileSync(file, moved, { flag: "wx" });
+  if (!readFileSync(file).equals(moved)) throw new Error(`quarantine copy of ${path} did not read back identically; ledger left as it was`);
+  truncateSync(path, info.tail.keepBytes);
+  const digest = createHash("sha256").update(moved).digest("hex");
+  const event = appendRowLocked(path, {
+    cause: "ledger-tail-quarantined", effect: `moved-${info.tail.rows}-row${info.tail.rows === 1 ? "" : "s"}-after-t${info.tail.headT ?? 0}-aside`, kind: "event", tags: ["integrity", "quarantine"],
+    note: `${info.tail.rows} row(s) after t=${info.tail.headT ?? 0} failed on their own (${info.reason}) and were moved byte-for-byte to ${file}; nothing was deleted`,
+    quarantine: { file, rows: info.tail.rows, sha256: digest, first_bad_t: info.firstBad?.t ?? null, reason: info.reason },
+  });
+  return { quarantined: true, file, rows: info.tail.rows, sha256: digest, firstBad: info.firstBad, reason: info.reason, t: event.t };
+}
+export function quarantineTail(path) { return withLedgerLock(path, () => quarantineTailLocked(path)); }
+
+// Link a finished row to the chain and append it (lock held): t when the caller left it unset (the file's max t
+// plus one, read under the lock, so two writers never share a t), prev = the last chained row's hash, gap_digest =
+// the unchained rows since it (or legacy_digest = every row so far, for the first chained row), then its own hash.
+function appendRowLocked(path, event) {
+  if (!existsSync(path)) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, ""); }
+  const raw = readFileSync(path, "utf8");
+  if (raw.length && !raw.endsWith("\n")) appendFileSync(path, "\n"); // a torn last line stays its own row
+  const lines = raw.split("\n").filter((l) => l.trim()); let last = null, seen = false, maxT = 0; const gap = [];
+  for (const l of lines) {
+    let o = null; try { o = JSON.parse(l); } catch { /* torn */ }
+    if (o && Number.isInteger(o.t) && o.t > maxT) maxT = o.t;
+    if (o && typeof o.hash === "string") { seen = true; last = o.hash; gap.length = 0; } else gap.push(l);
+  }
+  delete event.prev; delete event.hash; delete event.gap_digest; delete event.legacy_digest;
+  if (!Number.isInteger(event.t)) event.t = maxT + 1;
+  if (seen) { event.prev = last; if (gap.length) event.gap_digest = sealDigest(gap); } else { event.legacy_digest = sealDigest(gap); event.prev = null; }
+  event.hash = rowHash(event);
+  appendFileSync(path, JSON.stringify(event) + "\n");
+  return event;
+}
+// The one writer. A bad tail is moved aside before anything is chained onto it.
+function chainAppend(path, event) {
+  return withLedgerLock(path, () => {
+    const info = existsSync(path) ? inspectChain(path) : { ok: true };
+    if (!info.ok && info.tail?.allBad) quarantineTailLocked(path);
+    return appendRowLocked(path, event);
+  });
+}
+
+// ---- Verification cache (2026-10-02). The guard runs on every Bash/Write/Edit; re-parsing and re-hashing the
+// whole ledger each time cost ~16 ms on 1,500 rows, twice per call. Keyed by inode, size, mtime and ctime (ctime
+// moves on any write, even one that puts mtime back), so an edit is never served from the cache; a ledger that only
+// grew is verified over the appended bytes after the old ones are matched by sha256.
+const cachePathFor = (ledger) => join(dirname(ledger), "verify.cache.json");
+const statKey = (st) => ({ ino: st.ino, size: st.size, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs });
+const sameKey = (a, b) => !!a && !!b && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
+// One read per process: the guard consults the cache three times per call (chain, rows, seal).
+const cacheMemo = new Map();
+function readCacheFile(ledger) {
+  const f = cachePathFor(ledger);
+  if (cacheMemo.has(f)) return cacheMemo.get(f);
+  let all = {}; try { all = JSON.parse(readFileSync(f, "utf8")); } catch { /* none yet */ }
+  cacheMemo.set(f, all); return all;
+}
+function readCache(ledger) { return readCacheFile(ledger)[basename(ledger)] ?? null; }
+function writeCache(ledger, entry) {
+  const all = { ...readCacheFile(ledger), [basename(ledger)]: entry };
+  cacheMemo.set(cachePathFor(ledger), all);
+  try { const tmp = `${cachePathFor(ledger)}.${process.pid}.tmp`; writeFileSync(tmp, JSON.stringify(all)); renameSync(tmp, cachePathFor(ledger)); }
+  catch { /* read-only checkout: no cache, same answers */ }
+}
+export function verifyChainCached(path = ledgerPath(), { maxIncrementals = 256 } = {}) {
+  if (!existsSync(path)) return { ...verifyChain(path), cache: "none" };
+  const st = statSync(path); const key = statKey(st); const entry = readCache(path);
+  if (entry && sameKey(entry.key, key)) return { ...entry.result, cache: "hit" };
+  const buf = readFileSync(path);
+  const digestOf = (b) => createHash("sha256").update(b).digest("hex");
+  if (entry?.state && entry.result?.ok && entry.key.ino === key.ino && buf.length > entry.key.size && (entry.incrementals ?? 0) < maxIncrementals
+      && buf[entry.key.size - 1] === 0x0a && digestOf(buf.subarray(0, entry.key.size)) === entry.prefixSha) {
+    const added = buf.subarray(entry.key.size).toString("utf8").split("\n").map((l) => l.trim()).filter(Boolean);
+    const { result, state } = walkChain(added, entry.state);
+    writeCache(path, { key, prefixSha: digestOf(buf), result, state: state && state.gap.length <= 100 ? state : null, incrementals: (entry.incrementals ?? 0) + 1, guard: null });
+    return { ...result, cache: "incremental" };
+  }
+  const { result, state } = walkChain(buf.toString("utf8").split("\n").map((l) => l.trim()).filter(Boolean));
+  writeCache(path, { key, prefixSha: digestOf(buf), result, state: state && state.gap.length <= 100 ? state : null, incrementals: 0, guard: null });
+  return { ...result, cache: "full" };
 }
 
 // ---- Set head + seal (2026-09-03). The engine returns a signed seal on every read call: the order-free set head
@@ -206,7 +383,11 @@ export function verifyLocalSeal(events = readEvents().events, seal = readSeal(),
   return { ok: true, seal };
 }
 
-export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn, replacement, supersedes, override, scope }) {
+// Fields a row may carry beyond the finding itself. `rollback_to` marks a rollback row (state rollback); `origin` names
+// the branch and row a merged row came from; `state` records which capsule an import or a merge came from.
+const ROW_FIELDS = ["rollback_to", "origin", "state"];
+
+export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn, replacement, supersedes, override, scope, fields }) {
   // Instruction-like notes are refused at the write. The engine quarantines
   // them at read time too (and reports it), but a note that would be rendered
   // into every future session as an instruction should never reach the ledger.
@@ -219,12 +400,8 @@ export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn
   const norm = (a) => JSON.stringify(Array.isArray(a) ? a.map((w) => String(w).trim()).filter(Boolean) : []);
   const dup = events.find((e) => e.cause === cause && e.effect === effect && (e.note ?? "") === (note ?? "") && norm(e.withdrawn) === norm(withdrawn) && norm(e.replacement) === norm(replacement));
   if (dup) return { written: false, reason: "duplicate", t: dup.t, ledger: path, hint: "Nothing written: a row with the same cause, effect, note and terms is refused as a duplicate. Record it again with withdrawn (and replacement) to add terms, or change the note if this is a new finding." };
-  if (!existsSync(path)) {
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, "");
-  }
-  const t = events.reduce((m, e) => Math.max(m, e.t ?? 0), 0) + 1;
-  const event = { t, cause, effect, kind: kind || "event" };
+  // t is assigned by the writer under the ledger lock (two writers never share one); this is only the order of keys.
+  const event = { t: undefined, cause, effect, kind: kind || "event" };
   if (note) event.note = note;
   if (Array.isArray(tags) && tags.length) event.tags = tags;
   if (pinned) event.pinned = true;
@@ -262,12 +439,13 @@ export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn
       event.supersedes = ts;
     }
   }
-    { const raw = readFileSync(path, "utf8").split("\n").filter((l) => l.trim()); let last = null, seen = false; const gap = []; for (const l of raw) { if (hasHash(l)) { seen = true; last = JSON.parse(l).hash; gap.length = 0; } else gap.push(l); } if (seen) { event.prev = last; if (gap.length) event.gap_digest = sealDigest(gap); } else { event.legacy_digest = sealDigest(gap); event.prev = null; } event.hash = rowHash(event); }
-appendFileSync(path, JSON.stringify(event) + "\n");
+  if (fields && typeof fields === "object") for (const k of ROW_FIELDS) if (fields[k] !== undefined) event[k] = fields[k];
+  try { chainAppend(path, event); }
+  catch (e) { if (e.code === "ELEDGERLOCKED") return { written: false, reason: e.message, ledger: path, hint: "Another writer holds the ledger lock; nothing was written. Retry, or remove the lock file if its holder is gone." }; throw e; }
   // Echo the canonical stored event back. A shell-quoting accident once ate a
   // word from a note SILENTLY; the caller must be able to see what the ledger
   // actually holds without re-reading the file.
-  return { written: true, t, ledger: path, stored: event, ...(dropped.length ? { dropped } : {}) };
+  return { written: true, t: event.t, ledger: path, stored: event, ...(dropped.length ? { dropped } : {}) };
 }
 
 // ------------------------------------------------------------- telemetry ----
@@ -327,7 +505,7 @@ function writeMemoryKey(k) {
     // rebuildable file that shows up in git status is a support ticket.
     if (dir.endsWith(".memory-pulse")) {
       const have = existsSync(gi) ? readFileSync(gi, "utf8") : "";
-      const want = ["memory.rain", "seal.resume.json"].filter((n) => !have.split("\n").some((l) => l.trim() === n));
+      const want = ["memory.rain", "seal.resume.json", "verify.cache.json"].filter((n) => !have.split("\n").some((l) => l.trim() === n));
       if (want.length) writeFileSync(gi, have + (have && !have.endsWith("\n") ? "\n" : "") + want.join("\n") + "\n");
     }
   } catch { /* a read-only checkout must not break a read call */ }
@@ -342,11 +520,11 @@ function writeMemoryKey(k) {
 // pooling, no session, no dependency.
 function postJson(url, headers, payload) {
   const u = new URL(url);
-  const mod = u.protocol === "http:" ? http : https;
+  const mod = builtin(u.protocol === "http:" ? "http" : "https");
   // Ledgers compress 5-10x (notes are prose); anything past 4 KB goes up
   // gzipped. The engine inflates it; a small body is not worth the header.
   const gz = Buffer.byteLength(payload) >= 4096;
-  const body = gz ? gzipSync(payload) : Buffer.from(payload);
+  const body = gz ? builtin("zlib").gzipSync(payload) : Buffer.from(payload);
   return new Promise((resolve, reject) => {
     const req = mod.request(u, {
       method: "POST", agent: false,
@@ -597,19 +775,24 @@ async function dispatch(msg) {
 // so installing the hook never adds noise to projects that don't use this.
 // ---- Agent identity: the self block. Printed FIRST in every brief (online or offline) when the mode is agent.
 const tagged = (events, tag) => events.filter((e) => Array.isArray(e.tags) && e.tags.includes(tag));
+// A note that reads like an instruction is never rendered, here or by the engine: memory may inform the agent, never
+// instruct it. Local writes refuse such a note; a row that arrived another way (an imported capsule, an older writer)
+// is held back at render and said to be.
+const HELD = "[held back: note reads like an instruction]";
+const shown = (e) => (instructionLike(e?.note).length ? HELD : (e?.note ?? e?.effect));
 export function identityBlock(led) {
-  const events = led?.events ?? []; if (!events.length) return "";
+  const events = inForce(led?.events ?? []); if (!events.length) return "";
   const self = tagged(events, "identity").filter((e) => e.pinned).slice(-1)[0] ?? tagged(events, "identity").slice(-1)[0];
   const rules = tagged(events, "rule"), prefs = tagged(events, "preference"), lessons = tagged(events, "lesson").slice().reverse();
   const corr = events.filter((e) => e.kind === "correction" && e.withdrawn?.length).length;
   const chain = verifyChain(led.path); const seal = readSeal(led.path);
-  const name = self ? String(self.note ?? self.effect).split(/[;.\n]/)[0].trim() : "unnamed agent";
+  const name = self ? String(shown(self)).split(/[;.\n]/)[0].trim() : "unnamed agent";
   const lines = [`AGENT IDENTITY — ${name} (agent ledger: ${events.length} rows, head ${chain.head ? chain.head.slice(0, 12) : "none"}${chain.ok ? "" : ", CHAIN BROKEN"}, seal ${seal?.digest ? seal.digest.slice(0, 12) : "not yet"})`];
-  if (self) lines.push(`  self: ${self.note ?? self.effect}`);
+  if (self) lines.push(`  self: ${shown(self)}`);
   lines.push(`  fingerprint: chain head ${chain.head ?? "none"}${seal?.issued ? ` · sealed ${seal.issued}` : ""} — the same memory as last session iff these match`);
-  if (rules.length) { lines.push(`  standing rules (${rules.length}):`); for (const r of rules) lines.push(`    rule: ${r.note ?? r.effect} (t${r.t})`); }
-  if (prefs.length) { lines.push(`  preferences (${prefs.length}):`); for (const p of prefs) lines.push(`    preference: ${p.note ?? p.effect} (t${p.t})`); }
-  if (lessons.length) { lines.push(`  lessons carried (${lessons.length}):`); for (const l of lessons.slice(0, 10)) lines.push(`    lesson: ${(l.note ?? l.effect).replace(/^lesson:\s*/i, "")} (t${l.t})`); }
+  if (rules.length) { lines.push(`  standing rules (${rules.length}):`); for (const r of rules) lines.push(`    rule: ${shown(r)} (t${r.t})`); }
+  if (prefs.length) { lines.push(`  preferences (${prefs.length}):`); for (const p of prefs) lines.push(`    preference: ${shown(p)} (t${p.t})`); }
+  if (lessons.length) { lines.push(`  lessons carried (${lessons.length}):`); for (const l of lessons.slice(0, 10)) lines.push(`    lesson: ${String(shown(l)).replace(/^lesson:\s*/i, "")} (t${l.t})`); }
   lines.push(`  corrections carried: ${corr} binding — enforced in every project`);
   return lines.join("\n");
 }
@@ -621,14 +804,17 @@ const clip = (t, n = 140) => String(t).replace(/\s+/g, " ").trim().slice(0, n);
 const lastTurn = (transcriptText) => {
   const users = [], assistants = []; let seenUser = false;
   const lines = String(transcriptText).split("\n").filter((l) => l.trim()).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter((o) => o?.message);
-  let lastUserIdx = -1; lines.forEach((o, i) => { if ((o.type === "user" || o.message.role === "user") && partText(o.message.content).trim()) lastUserIdx = i; });
+  // the last thing a person typed; harness entries after it (a skill body, a notification) belong to the same turn
+  let lastUserIdx = -1; lines.forEach((o, i) => { if (typedUserText(o)) lastUserIdx = i; });
   if (lastUserIdx < 0) return { user: "", assistant: "" };
-  const user = partText(lines[lastUserIdx].message.content).trim();
+  const user = typedUserText(lines[lastUserIdx]);
   for (const o of lines.slice(lastUserIdx + 1)) if (o.type === "assistant" || o.message.role === "assistant") { const t = partText(o.message.content).trim(); if (t) assistants.push(t); }
   return { user, assistant: assistants.join(" ") };
 };
 const AMBIENT_SHAPES = [
-  ["preference", "user", "agent", /\bI (?:prefer|like|want|always|never|don't want|hate)\b[^.!?\n]{3,120}/i, (m) => clip(m[0])],
+  // No bare "I want": ten of the eleven preferences on the estate's agent ledger were one-off requests in that
+  // shape ("i want you to setup my OBS ...") and printed in every identity block (2026-10-12).
+  ["preference", "user", "agent", /\bI (?:prefer|like|always|never|don't want|hate)\b[^.!?\n]{3,120}/i, (m) => clip(m[0])],
   ["decision", "assistant", "project", /\b(?:we'll go with|we will go with|going with|decided (?:to|on)|let's use|we'll use|settled on)\b[^.!?\n]{3,120}/i, (m) => `Decision: ${clip(m[0])}`],
   ["lesson", "assistant", "agent", /\b(?:lesson|learned that|the fix was|root cause was|takeaway)\b[^\n]{3,160}/i, (m) => `Lesson: ${clip(m[0].replace(/^lesson:?\s*/i, ""), 160)}`],
 ];
@@ -674,15 +860,77 @@ const C = {
 };
 
 // ---- Guard across every chat: a correction on the agent ledger binds in any project.
-export function guardVerdict(action, { events, invariants = [] } = {}) {
-  const led = events ? { events } : readEvents();
-  const chain = verifyChain();
-  const v = localCheck(led.events, action, invariants, { chain, seal: verifyLocalSeal(led.events, readSeal(), chain), blockOnly: true });
+// Since 2026-10-02 a broken chain no longer refuses every tool: a bad tail is quarantined on the spot (one warning
+// line, the action proceeds) and a mid-file break blocks only writes that target the ledger or its sidecars.
+
+// The rows the guard enforces (corrections and overrides in force), cached beside the verification result.
+function guardRows(path) {
+  if (!existsSync(path)) return [];
+  const key = statKey(statSync(path)); const entry = readCache(path);
+  if (entry && sameKey(entry.key, key) && Array.isArray(entry.guard)) return entry.guard;
+  // only the fields the block decision reads; notes stay in the ledger (a 1,500-row ledger cached 419 KB with them)
+  const keep = ["t", "kind", "cause", "effect", "withdrawn", "replacement", "supersedes", "override"];
+  const rows = inForce(readEvents({ path }).events).filter((e) => e.kind === "correction" || e.kind === "override")
+    .map((e) => Object.fromEntries(keep.filter((k) => e[k] !== undefined).map((k) => [k, e[k]])));
+  if (entry && sameKey(entry.key, key)) writeCache(path, { ...entry, guard: rows });
+  return rows;
+}
+// verifyLocalSeal needs every row; its verdict is cached under the ledger's key and the seal file's key.
+function sealCheckCached(path, chain) {
+  const sp = sealPathFor(path);
+  if (!existsSync(sp) || !existsSync(path)) return verifyLocalSeal([], readSeal(path), chain, path);
+  const key = statKey(statSync(path)), sk = statKey(statSync(sp)); const entry = readCache(path);
+  if (entry && sameKey(entry.key, key) && entry.seal && sameKey(entry.seal.key, sk)) return entry.seal.result;
+  const r = verifyLocalSeal(readEvents({ path }).events, readSeal(path), chain, path);
+  if (entry && sameKey(entry.key, key)) writeCache(path, { ...entry, seal: { key: sk, result: { ok: r.ok, reason: r.reason ?? null } } });
+  return r;
+}
+const cliPrefixFor = (path) => path === agentPath() ? "memory-pulse" : process.env.MEMORY_PULSE_LEDGER ? `MEMORY_PULSE_LEDGER=${path} memory-pulse` : "memory-pulse";
+const scopeFlagFor = (path) => path === agentPath() ? " --scope agent" : "";
+/** Verify one ledger for the guard; a bad tail is quarantined here, so the work that follows is not refused. */
+export function ledgerHealth(path) {
+  if (!existsSync(path)) return { path, chain: { ok: true }, warnings: [] };
+  let chain = verifyChainCached(path); const warnings = [];
+  if (!chain.ok) {
+    try {
+      const q = quarantineTail(path);
+      if (q.quarantined) {
+        chain = verifyChainCached(path);
+        warnings.push(`memory-pulse: quarantined ${q.rows} row${q.rows === 1 ? "" : "s"} from the tail of ${path} (${q.reason}): moved byte-for-byte to ${q.file}, recorded at t=${q.t}, nothing deleted; to re-adopt after review: ${cliPrefixFor(path)} repair${scopeFlagFor(path)} --adopt-quarantine ${q.file}`);
+      }
+    } catch { /* locked by another writer or read-only: verified as it stands */ }
+  }
+  return { path, chain, warnings };
+}
+const SIDECAR_RE = /(^|[\\/])\.memory-pulse([\\/]|$)/;
+const SIDECAR_NAMES = /^(seal\.rain|memory\.rain|telemetry\.rain|seal\.resume\.json|verify\.cache\.json|invariants\.jsonl)$/;
+/** Does this action write to a ledger or one of its sidecars? Reading never counts. */
+export function ledgerTargeted(action, ledgers) {
+  const cmd = typeof action?.command === "string" ? action.command : "";
+  if (cmd) {
+    const mentions = ledgers.some((l) => cmd.includes(l)) || /\.memory-pulse\b|events\.jsonl|seal\.rain|memory\.rain|telemetry\.rain/.test(cmd);
+    if (!mentions) return false;
+    const c = cmd.replace(/\d*>&?\s*\/dev\/null/g, "");
+    return /(^|[^<>&0-9])>>?|\bsed\s+(-[a-zA-Z]*i\b|--in-place)|\btee\b|\b(mv|cp|rm|truncate|dd|install|ln|touch)\b|writeFile|appendFile|\bopen\([^)]*["'][wa+]|\bperl\s+-[a-zA-Z]*i/.test(c);
+  }
+  const p = typeof action?.path === "string" && action.path ? resolvePath(action.path) : "";
+  if (!p) return false;
+  if (ledgers.includes(p) || SIDECAR_RE.test(p)) return true;
+  return ledgers.some((l) => dirname(p) === dirname(l) && (basename(p).startsWith(basename(l)) || SIDECAR_NAMES.test(basename(p))));
+}
+export function guardVerdict(action, { events, invariants = [], health = null } = {}) {
+  const proj = health?.project ?? ledgerHealth(ledgerPath());
   const ap = agentPath();
-  if (existsSync(ap)) {
-    const a = readEvents({ scope: "agent" });
-    const av = localCheck(a.events, action, [], { chain: verifyChain(ap), blockOnly: true });
+  const agent = health ? health.agent : existsSync(ap) ? ledgerHealth(ap) : null;
+  const targeted = ledgerTargeted(action, [proj.path, agent?.path].filter(Boolean));
+  const v = localCheck(events ?? guardRows(proj.path), action, invariants, { chain: !proj.chain.ok && targeted ? proj.chain : null, seal: sealCheckCached(proj.path, proj.chain), blockOnly: true });
+  if (agent) {
+    const av = localCheck(guardRows(agent.path), action, [], { chain: !agent.chain.ok && targeted ? agent.chain : null, blockOnly: true });
     if (av.verdict === "blocked") { v.verdict = "blocked"; v.reasons = [...av.reasons.filter((r) => !/no recorded event/.test(r)).map((r) => r.replace(/\bledger t(\d+)/g, "agent ledger t$1").replace(/at t(\d+)/g, "at agent ledger t$1")), ...v.reasons]; }
+  }
+  v.warnings = [...proj.warnings, ...(agent?.warnings ?? [])];
+  for (const h of [proj, agent]) {
+    if (h && !h.chain.ok && !targeted) v.warnings.push(`memory-pulse: ledger chain broken in ${h.path} (${h.chain.reason}); writes to that ledger are blocked until it is repaired, other work is not; run ${cliPrefixFor(h.path)} verify${scopeFlagFor(h.path)} for the fix`);
   }
   return v;
 }
@@ -737,14 +985,15 @@ export function handoffLine(events, { now = Date.now(), maxAgeMs = 7 * 86400e3 }
   const t = handoffTime(h); if (Number.isFinite(t) && now - t > maxAgeMs) return "";
   return `↩ last handoff (t=${h.t}${Number.isFinite(t) ? `, ${ago(now - t)}` : ""}): ${(h.note ?? h.effect).replace(/^handoff \S+: ?/, "")}`;
 }
-export function offlineBrief(led, events, { now = Date.now(), recent = 8 } = {}) {
-  const lines = [`memory-pulse: engine unreachable — local render from ${events.length} events (corrections and recency only; no salience ranking)`];
+export function offlineBrief(led, allEvents, { now = Date.now(), recent = 8 } = {}) {
+  const events = inForce(allEvents); const rolledBack = allEvents.length - events.length;
+  const lines = [`memory-pulse: engine unreachable — local render from ${events.length} events (corrections and recency only; no salience ranking)${rolledBack ? ` · ${rolledBack} row(s) rolled back, kept on record` : ""}`];
   if (currentMode() === "agent" && existsSync(agentPath())) { const ib = identityBlock(readEvents({ scope: "agent" })); if (ib) lines.push(ib); }
   const hl = handoffLine(events, { now }); if (hl) lines.push(hl);
   const retired = supersededSet(events);
   const corr = events.filter((e) => e.kind === "correction" && !retired.has(e.t)).reverse().slice(0, 20);
   lines.push(`CORRECTIONS (${corr.length}) — read before quoting any number:`);
-  for (const c of corr) lines.push(`  ! ${c.cause} -> ${c.effect} (t${c.t})${c.withdrawn?.length ? ` — withdrawn: ${c.withdrawn.join(", ")} → ${(c.replacement ?? []).join(", ") || "(no replacement recorded)"}` : ""}${c.note ? ` — ${String(c.note).slice(0, 120)}` : ""}`);
+  for (const c of corr) lines.push(`  ! ${c.cause} -> ${c.effect} (t${c.t})${c.withdrawn?.length ? ` — withdrawn: ${c.withdrawn.join(", ")} → ${(c.replacement ?? []).join(", ") || "(no replacement recorded)"}` : ""}${c.note ? ` — ${instructionLike(c.note).length ? HELD : String(c.note).slice(0, 120)}` : ""}`);
   if (!corr.length) lines.push("  (none recorded)");
   const rec = events.slice(-recent).reverse();
   lines.push(`RECENT (${rec.length}):`);
@@ -760,8 +1009,9 @@ export function offlineBrief(led, events, { now = Date.now(), recent = 8 } = {})
 export function readBlocks({ limit = 2000 } = {}) {
   try { return readFileSync(violationsPath(), "utf8").split("\n").filter(Boolean).slice(-limit).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter((b) => b && Array.isArray(b.hits)); } catch { return []; }
 }
-export function atRiskLines(events, { now = Date.now(), minBlocks = 2, blocks = readBlocks() } = {}) {
+export function atRiskLines(allEvents, { now = Date.now(), minBlocks = 2, blocks = readBlocks() } = {}) {
   if (!blocks.length) return "";
+  const events = inForce(allEvents);
   const retired = supersededSet(events);
   const byT = new Map(); const corr = new Map(events.filter((e) => e.kind === "correction").map((e) => [e.t, e]));
   const overrides = new Map(); for (const e of events) if (e.kind === "override" && e.override?.term) overrides.set(String(e.override.term).toLowerCase(), (overrides.get(String(e.override.term).toLowerCase()) ?? 0) + 1);
@@ -791,9 +1041,9 @@ async function cliBefore() {
   const path = opt("path") ?? ""; const text = opt("text") ?? "";
   if (!operation && !path && !text) { console.error('usage: memory-pulse before "<what you are about to do>" [--path <file>] [--text <edit>]'); process.exit(1); }
   const { events } = readEvents();
-  const retired = supersededSet(events);
+  const retired = supersededSet(inForce(events));
   const hay = `${operation} ${text}`.toLowerCase();
-  const exact = events.filter((e) => e.kind === "correction" && !retired.has(e.t) && (e.withdrawn ?? []).some((w) => w && hay.includes(String(w).toLowerCase())));
+  const exact = inForce(events).filter((e) => e.kind === "correction" && !retired.has(e.t) && (e.withdrawn ?? []).some((w) => w && hay.includes(String(w).toLowerCase())));
   const line = (c, why) => `  ! (t${c.t}) ${c.cause} -> ${c.effect}${c.withdrawn?.length ? ` — withdrawn ${c.withdrawn.map((w) => `"${w}"`).join(", ")}${c.replacement?.length ? ` → use ${c.replacement.join(", ")}` : ""}` : ""}${why ? ` · ${why}` : ""}`;
   if (exact.length) { console.log(`BEFORE "${operation || path}" · rung exact — the operation names a withdrawn term:`); for (const c of exact) console.log(line(c, "")); }
   try {
@@ -814,13 +1064,27 @@ async function cliBefore() {
 // PreCompact hook reads the transcript and records what the session was doing AS FACTS (asks, files, last error,
 // assistant state); the next session start prints it first, online or offline. Deterministic; no model.
 const partText = (c) => (typeof c === "string" ? c : Array.isArray(c) ? c.filter((p) => p?.type === "text").map((p) => p.text).join(" ") : "");
+// Claude Code writes harness text into the transcript as user entries: skill bodies (isMeta), compaction
+// summaries (isCompactSummary), task notifications and peer messages (origin.kind), tool results, a subagent's
+// brief (isSidechain). Only what a person typed may become a correction or a handoff ask. Replayed over 107
+// transcripts on 2026-10-12, ambient capture had recorded 18 corrections and none was real: 17 came from
+// these entries. The leading-text check covers transcripts written before the flags existed.
+const HARNESS_PREAMBLE = /^\s*(?:Base directory for this skill:|This session is being continued from a previous conversation|Caveat: The messages below|<command-|<local-command-|<task-notification>|<system-reminder>|<bash-|<user-prompt-submit-hook>)/;
+export function typedUserText(o) {
+  const m = o?.message; if (!m || !(o.type === "user" || m.role === "user")) return "";
+  if (o.isMeta || o.isCompactSummary || o.isVisibleInTranscriptOnly || o.isSidechain === true || o.toolUseResult !== undefined) return "";
+  if (o.origin && typeof o.origin === "object" && o.origin.kind !== "human") return "";
+  if (Array.isArray(m.content) && m.content.some((p) => p?.type === "tool_result")) return "";
+  const text = partText(m.content).trim();
+  return HARNESS_PREAMBLE.test(text) ? "" : text;
+}
 export function extractHandoff(transcriptText, { maxAsks = 3, maxFiles = 6 } = {}) {
   const asks = [], files = []; let lastError = "", state = "";
   for (const line of String(transcriptText).split("\n")) {
     if (!line.trim()) continue; let o; try { o = JSON.parse(line); } catch { continue; }
     const m = o?.message; if (!m) continue;
     if (o.type === "user" || m.role === "user") {
-      const txt = partText(m.content).trim(); if (txt) asks.push(txt.slice(0, 160));
+      const txt = typedUserText(o); if (txt) asks.push(txt.slice(0, 160));
       if (Array.isArray(m.content)) for (const p of m.content) if (p?.type === "tool_result" && p.is_error) { const e = partText(p.content) || String(p.content ?? ""); if (e.trim()) lastError = e.trim().slice(0, 160); }
     } else if (o.type === "assistant" || m.role === "assistant") {
       const txt = partText(m.content).trim(); if (txt) state = txt.slice(0, 200);
@@ -862,7 +1126,9 @@ const TERM = `(?:${TQ}|${TD}|${TN}|${TW})`;
 const TERM2 = `([\\w$.\\-/]+(?:\\s+[A-Za-z]+)?)`; // up to two tokens, for arrow forms
 const TNU = `(\\$?\\d[\\d.,]*[A-Za-z%]*(?:\\s+(?!not\\b|it\\b|and\\b|or\\b|but\\b)[a-z]{2,})?)`; // number with an optional unit word
 const TERMU = `(?:${TQ}|${TD}|${TNU}|${TW})`;
-const STOP = new Set(["a", "an", "the", "it", "its", "this", "that", "sure", "fine", "problem", "one", "thing", "same", "now", "here", "there", "yes", "no", "not", "just"]);
+// Pronouns name no value: "why are we not iterating this" was recorded as "use 'we', not 'iterating'" (2026-10-12).
+const STOP = new Set(["a", "an", "the", "it", "its", "this", "that", "sure", "fine", "problem", "one", "thing", "same", "now", "here", "there", "yes", "no", "not", "just",
+  "i", "me", "we", "us", "you", "he", "she", "they", "them", "our", "your", "their"]);
 const term = (g) => { const v = g.find((x) => x != null); return v == null ? "" : String(v).replace(/[.,;:!?]+$/, "").trim(); };
 const CORRECTION_SHAPES = [
   ["is-not", new RegExp(`\\b(?:is|are|was|were|be|called|named|=|:)\\s+${TERMU},?\\s+not\\s+${TERMU}`, "i"), (m) => ({ replacement: term(m.slice(1, 7)), withdrawn: term(m.slice(7, 13)) })],
@@ -935,7 +1201,7 @@ export function detectProhibition(prompt) {
 }
 
 export function detectCorrection(prompt) {
-  const p = String(prompt ?? ""); if (!p.trim()) return null;
+  const p = String(prompt ?? ""); if (!p.trim() || looksPasted(p)) return null;
   for (const [cue, re, pick] of CORRECTION_SHAPES) {
     const m = re.exec(p); if (!m) continue;
     const { withdrawn, replacement } = pick(m);
@@ -955,6 +1221,12 @@ export function correctionEvent(d, prompt) {
   const said = r ? `User corrected "${w}" to "${r}"` : `User prohibited "${w}"`;
   return { cause: `user-correction-${slug(w)}`, effect, kind: "correction", withdrawn: d.withdrawn, replacement: r ? d.replacement : [], tags: ["ambient", d.cue], note: `${said} — prompt: "${String(prompt).replace(/\s+/g, " ").slice(0, 140)}"` };
 }
+/** The correction a submitted prompt carries, or null when it carries none or is not something a person typed. */
+export function observeDecision(prompt) {
+  const p = String(prompt ?? "");
+  if (!p.trim() || instructionLike(p).length || HARNESS_PREAMBLE.test(p)) return null;
+  return detectCorrection(p) ?? detectProhibition(p);
+}
 async function cliObserve() {
   // UserPromptSubmit hook: silent unless --verbose; exit 0 on every path (a hook must never block a prompt).
   try {
@@ -964,9 +1236,8 @@ async function cliObserve() {
     // output as user-turn text, not something Travis typed. cliAmbient already screens the last user
     // turn this way; this hook fires on every submission and must too, or a "->" inside forwarded
     // agent output gets recorded as a binding correction (t898/t899, 2026-09-03).
-    if (instructionLike(hook.prompt ?? "").length) { if (process.argv.includes("--verbose")) console.log("memory-pulse: prompt looks synthetic/instruction-like, skipped"); return; }
-    const d = detectCorrection(hook.prompt ?? "") ?? detectProhibition(hook.prompt ?? "");
-    if (!d) { if (process.argv.includes("--verbose")) console.log("memory-pulse: no correction shape in this prompt"); return; }
+    const d = observeDecision(hook.prompt ?? "");
+    if (!d) { if (process.argv.includes("--verbose")) console.log("memory-pulse: no correction in this prompt (none found, or it reads as harness text or an instruction)"); return; }
     const r = appendEvent(correctionEvent(d, hook.prompt));
     if (process.argv.includes("--verbose") || r.written) console.log(r.written ? `memory-pulse: correction recorded (t=${r.t}) — "${d.withdrawn[0]}" withdrawn${d.replacement?.[0] ? `, "${d.replacement[0]}" replaces it` : ""}; the guard enforces it from now on` : `memory-pulse: correction not recorded (${r.reason})`);
   } catch { /* silent */ }
@@ -1130,7 +1401,9 @@ const compilePattern = (p) => {
  *   verified     recorded events bear on the text and none is contradicted
  *   no_evidence  nothing recorded bears on it — never reported as a pass
  */
-export function localCheck(events, action, invariants = [], opts = {}) {
+export function localCheck(allEvents, action, invariants = [], opts = {}) {
+  // A rolled-back row stays on the record but is out of force: it neither blocks nor counts as evidence.
+  const events = inForce(allEvents);
   const chain = opts.chain ?? null; const chainBroken = !!(chain && chain.ok === false);
   const sealCheck = opts.seal ?? null; const sealBroken = !!(sealCheck && sealCheck.ok === false);
   const text = typeof action?.text === "string" ? action.text : "";
@@ -1145,7 +1418,7 @@ export function localCheck(events, action, invariants = [], opts = {}) {
       if (c.kind !== "correction" || !Array.isArray(c.withdrawn) || retired.has(c.t)) continue;
       const disavowed = Array.isArray(c.replacement) && c.replacement.some((r) => r && text.includes(r));
       for (const term of c.withdrawn) {
-        if (!term || !text.includes(term)) continue;
+        if (!containsTerm(text, term)) continue;
         if (disavowed) { reasons.push(`"${term}" appears beside its replacement (comparison or disavowal) — allowed, per ledger t${c.t}`); continue; }
         const o = overridesFor.find((x) => x.override.term === term && (!x.override.path || (path && path.startsWith(x.override.path))));
         if (o) { overrides.push({ t: o.t, term }); reasons.push(`"${term}" is withdrawn at t${c.t} but overridden at t${o.t}${o.override.reason ? ` (${o.override.reason})` : ""}`); continue; }
@@ -1201,9 +1474,39 @@ export function localCheck(events, action, invariants = [], opts = {}) {
 }
 export const exitCodeFor = (verdict, { ci = false } = {}) => (verdict === "blocked" ? 2 : verdict === "no_evidence" && ci ? 1 : 0);
 
-export function findViolations(events, text, filePath = "") {
+// A withdrawn term matches as a token, never inside another word or a longer number (2026-10-12). Substring
+// matching blocked a withdrawn "ten" inside tenant/written/content and "$79" inside "$790M"; replayed over
+// 25,166 files on the estate, it flagged 14,049 against 2,345 for this rule, and every hit only it found was
+// false. An underscore separates words, so a snake_case name that restates the value still matches. A number
+// may carry a unit (6144px) but not run on into more digits (220, 3.1416); a word of five letters or more
+// keeps its inflections (embeddings); a shorter one may not run on (ten/tenant).
+const ALNUM = /[\p{L}\p{N}]/u, DIGIT = /\d/, LETTER = /\p{L}/u;
+function tokenAt(text, i, term) {
+  const j = i + term.length, first = term[0], last = term[term.length - 1];
+  if (ALNUM.test(first) && i > 0) {
+    const p = text[i - 1];
+    if (ALNUM.test(p)) return false;
+    if (DIGIT.test(first) && (p === "." || p === ",") && i > 1 && DIGIT.test(text[i - 2])) return false;
+  }
+  if (ALNUM.test(last) && j < text.length) {
+    const n = text[j];
+    if (DIGIT.test(last)) {
+      if (DIGIT.test(n)) return false;
+      if ((n === "." || n === ",") && j + 1 < text.length && DIGIT.test(text[j + 1])) return false;
+    } else if (ALNUM.test(n) && !(LETTER.test(last) && term.length >= 5)) return false;
+  }
+  return true;
+}
+export function containsTerm(text, term) {
+  if (!text || !term) return false;
+  for (let i = text.indexOf(term); i !== -1; i = text.indexOf(term, i + 1)) if (tokenAt(text, i, term)) return true;
+  return false;
+}
+
+export function findViolations(allEvents, text, filePath = "") {
   const hits = [];
   if (!text) return hits;
+  const events = inForce(allEvents);
   // The ledger and its sidecars are where corrections are RECORDED; guarding
   // them would block the act of correcting.
   if (/(^|[\\/])\.memory-pulse([\\/]|$)/.test(filePath)) return hits;
@@ -1216,7 +1519,7 @@ export function findViolations(events, text, filePath = "") {
     // a guard that fires on "the $49 figure is withdrawn" livelocks the agent.)
     const disavowed = Array.isArray(e.replacement) && e.replacement.some((r) => r && text.includes(r));
     if (disavowed) continue;
-    for (const term of e.withdrawn) if (term && text.includes(term)) hits.push({ term, t: e.t, cause: e.cause, effect: e.effect, note: e.note ?? "", replacement: e.replacement ?? [] });
+    for (const term of e.withdrawn) if (containsTerm(text, term)) hits.push({ term, t: e.t, cause: e.cause, effect: e.effect, note: e.note ?? "", replacement: e.replacement ?? [] });
   }
   return hits;
 }
@@ -1257,17 +1560,20 @@ async function cliGuard() {
   const actions = sections.length ? sections
     : shell.length ? shell
     : [{ path: payload.tool_input?.file_path ?? "", text: textOfToolInput(payload.tool_input) }];
-  const { events } = readEvents();
+  const command = typeof payload.tool_input?.command === "string" ? payload.tool_input.command : "";
   const invariants = readInvariants();
-  const blocked = [];
+  const health = { project: ledgerHealth(ledgerPath()), agent: existsSync(agentPath()) ? ledgerHealth(agentPath()) : null };
+  const blocked = []; const warnings = new Set();
   for (const a of actions) {
-    const v = guardVerdict({ kind: "edit", text: a.text, path: a.path }, { events, invariants });
+    const v = guardVerdict({ kind: "edit", text: a.text, path: a.path, ...(command ? { command } : {}) }, { invariants, health });
+    for (const w of v.warnings ?? []) warnings.add(w);
     // no_evidence and verified pass SILENTLY here: a hook that warns on every
     // edit the ledger has nothing to say about livelocks the agent. The loud
-    // form of no_evidence is `check --ci`.
+    // form of no_evidence is `check --ci`. A quarantine or a broken chain that
+    // does not touch this action is one line on stderr, and the action proceeds.
     if (v.verdict === "blocked") blocked.push({ file: a.path, v });
   }
-  if (!blocked.length) return;
+  if (!blocked.length) { if (warnings.size) process.stderr.write([...warnings].join("\n") + "\n"); return; }
   const lines = [];
   for (const { file, v } of blocked) {
     try { appendFileSync(violationsPath(), JSON.stringify({ at: new Date().toISOString(), file, hits: v.corrections.map((h) => ({ term: h.term, t: h.t })), invariants: v.invariants.map((i) => i.id) }) + "\n"); } catch { /* reporting is best effort */ }
@@ -1293,7 +1599,7 @@ async function cliGuard() {
   const sealStale = !chainBroken && allReasons.some((r) => /^sealed head mismatch/.test(r));
   const envPrefix = process.env.MEMORY_PULSE_LEDGER ? `MEMORY_PULSE_LEDGER=${process.env.MEMORY_PULSE_LEDGER} ` : "";
   const hint = chainBroken
-    ? "The ledger's own row chain is broken: a row was edited, removed or inserted, so every edit is blocked until the file is restored from a copy you trust (`memory-pulse verify` names the first broken row). Do not delete the ledger to clear this; the rows are the record. An override cannot repair a chain."
+    ? "The ledger's own row chain is broken mid-file: a row was edited, removed or inserted and rows after it still verify, so writes to the ledger and its sidecars are blocked until it is restored from a copy you trust (`memory-pulse verify` names the first broken row and lists backups that verify). Other work is not blocked. Do not delete the ledger to clear this; the rows are the record. An override cannot repair a chain."
     : sealStale
       ? `Your rows verify (chain OK) but the engine's last seal no longer matches them: either something rewrote the ledger and re-chained it, or the engine sealed a different view. \`memory-pulse verify --json\` shows both sides. If you trust the file as it stands: \`${envPrefix}memory-pulse seal accept "<why>"\` records that decision as a ledger row and sets the old seal aside; the next engine call issues a fresh one.`
       : 'Use the corrected value (mentioning both old and new in a comparison is fine), record a new correction if the old one is wrong, or `memory-pulse guard allow "<term>" --path <prefix> "<reason>"` if this is a false block.';
@@ -1374,7 +1680,7 @@ async function cliCheck() {
 // `npx memory-pulse report` — correction re-violation scoreboard, computed
 // on your machine from files you own. Nothing is sent anywhere.
 function cliReport() {
-  const { events } = readEvents();
+  const events = inForce(readEvents().events);
   const corrections = events.filter((e) => e.kind === "correction");
   const retired = supersededSet(events);
   let blocks = [];
@@ -1562,8 +1868,15 @@ Commands
                                       which corrections bear on the change you are about to make: the exact rung locally, the learned rung from the engine
   check [--ci] [--receipt] [--json] [--kind edit|publish|command|custom] [--path p] (--text "..." | --file f | --diff [base] | stdin)
                                       one of three verdicts: BLOCKED (exit 2), VERIFIED (0), NO_EVIDENCE (1 under --ci, never a pass)
-  verify [--json]                     walk the row chain and check the last engine seal; exit 2 if either fails
+  verify [--json] [--scope project|agent]
+                                      walk the row chain and check the last engine seal; on a break, name the first bad row and print the command that fixes it; exit 2 if either fails
+  append [--scope project|agent] (--json '<row>' | -)
+                                      the one way for another tool to write a row: takes the ledger lock and computes t, prev and hash; never write a ledger file directly
+  repair [--scope project|agent] (--quarantine-tail | --adopt-quarantine <file> [--yes])
+                                      move a tail of rows that fail on their own aside byte-for-byte (recorded, nothing deleted); re-append quarantined rows through the writer after a person reviews them
   seal accept "<why>"                 the recorded way out of a stale seal: appends the decision as a row and sets the old seal aside (never deleted); refused when the chain is broken
+  state [export|branch|import|merge|rollback|verify]
+                                      agent state as a .rain capsule: export it, cut a branch at a row, import or merge it elsewhere, roll back to a row as an appended row, verify a capsule; no argument prints where the ledger stands
   lint [--ci] [--json] [paths...]     the guard's check over CLAUDE.md, AGENTS.md, .claude/rules, .cursorrules and the other governance files a session loads
   guard [--verbose]                   PreToolUse hook: reads the tool call from stdin, exit 2 with the ledger line when an edit writes a withdrawn value back
   guard allow "<term>" [--path <prefix>] "<reason>"
@@ -1591,11 +1904,114 @@ Environment
   MEMORY_PULSE_SETTINGS_DIR           directory that receives settings.json or hooks.json for install-hook and mode (tests use it)
   MEMORY_PULSE_BRIEF_BUDGET           default for brief --budget, in tokens
   MEMORY_PULSE_BRIEF_TIER             tier for brief when no budget is given: index, brief (default), notes or full
+  MEMORY_PULSE_LOCK_TIMEOUT_MS        how long a writer waits for the ledger lock before refusing (default 5000); a lock whose holder has exited is broken at once
   NO_COLOR, TERM                      colour in the guard's block message only when NO_COLOR is unset, TERM is not dumb and stderr is a TTY
   HOME                                root for the agent ledger, ~/.claude/settings.json and ~/.codex/hooks.json
 
-Exit codes: 0 done; 1 usage or refused (remember, mode, lint --ci with nothing to check, check --ci with no evidence); 2 blocked (guard, check, lint) or verification failed (verify).
+Exit codes: 0 done; 1 usage or refused (remember, append, repair without --yes, mode, lint --ci with nothing to check, check --ci with no evidence); 2 blocked (guard, check, lint), verification failed (verify) or not a tail (repair --quarantine-tail).
 Guide: docs/GUIDE.md in the repository (https://github.com/t-crew/memory-pulse/blob/main/docs/GUIDE.md).`);
+}
+
+// ---- append, repair, verify (2026-10-02). `append` is the public way for any other tool to write a row: it takes
+// the ledger lock and computes t, prev and hash. A row written into the file by hand (the 2026-10-02 incident: a
+// Python json.dumps with the wrong separators and a reused t) breaks the chain for every session on the machine.
+const argValue = (argv, flag) => { const i = argv.indexOf(flag); return i >= 0 ? argv[i + 1] : undefined; };
+const scopeOf = (argv, cmd) => {
+  const scope = argValue(argv, "--scope") ?? "project";
+  if (!["project", "agent"].includes(scope)) { console.error(`memory-pulse ${cmd}: --scope must be project or agent`); process.exit(1); }
+  return scope;
+};
+async function cliAppend() {
+  const argv = process.argv.slice(3);
+  const scope = scopeOf(argv, "append");
+  let raw = argValue(argv, "--json");
+  if (raw === undefined && argv.includes("-")) { raw = ""; for await (const c of process.stdin) raw += c; }
+  if (raw === undefined) { console.error(`usage: memory-pulse append [--scope project|agent] (--json '{"cause":"...","effect":"..."}' | -)\n  the one way for another tool to write a row: t, prev and hash are computed here; never write a ledger file directly`); process.exit(1); }
+  let row; try { row = JSON.parse(raw); } catch (e) { console.error(`memory-pulse append: not JSON (${e.message})`); process.exit(1); }
+  if (!row || typeof row !== "object" || typeof row.cause !== "string" || typeof row.effect !== "string" || !row.cause.trim() || !row.effect.trim()) { console.error("memory-pulse append: the row needs string cause and effect"); process.exit(1); }
+  const fields = {}; for (const k of ROW_FIELDS) if (row[k] !== undefined) fields[k] = row[k];
+  const res = appendEvent({ cause: row.cause, effect: row.effect, note: row.note, kind: row.kind, tags: row.tags, pinned: row.pinned, withdrawn: row.withdrawn, replacement: row.replacement, supersedes: row.supersedes, override: row.override, scope, fields });
+  console.log(JSON.stringify(res));
+  process.exit(res.written ? 0 : 1);
+}
+
+// Copies beside the ledger (events.jsonl.bak-..., events.jsonl.orig) that verify on their own: restore candidates.
+function trustedBackups(ledger) {
+  let names = []; try { names = readdirSync(dirname(ledger)); } catch { return []; }
+  const base = basename(ledger);
+  return names.filter((n) => n.startsWith(`${base}.`) && !/\.(lock|quarantine|tmp)$/.test(n) && !n.endsWith(".verify.json"))
+    .map((n) => join(dirname(ledger), n)).filter((f) => { try { return statSync(f).isFile(); } catch { return false; } })
+    .map((file) => ({ file, ...verifyChain(file) })).filter((b) => b.ok && b.chained > 0)
+    .map((b) => ({ file: b.file, chained: b.chained, head: b.head }));
+}
+
+function cliVerify() {
+  const argv = process.argv.slice(3);
+  const scope = scopeOf(argv, "verify");
+  const ledger = scope === "agent" ? agentPath() : ledgerPath();
+  const chain = verifyChain(ledger); const seal = verifyLocalSeal(readEvents({ path: ledger }).events, readSeal(ledger), chain, ledger);
+  const info = chain.ok ? null : inspectChain(ledger);
+  const flag = scope === "agent" ? " --scope agent" : "";
+  const prefix = scope === "agent" ? "memory-pulse" : cliPrefixFor(ledger);
+  const backups = chain.ok || info?.tail?.allBad ? [] : trustedBackups(ledger);
+  const fix = chain.ok ? null : info?.tail?.allBad ? `${prefix} repair${flag} --quarantine-tail` : backups.length ? `cp "${backups[0].file}" "${ledger}"` : null;
+  if (argv.includes("--json")) {
+    console.log(JSON.stringify({ ledger, chain, firstBad: info?.firstBad ?? null, tail: info?.tail ? { rows: info.tail.rows, allBad: info.tail.allBad } : null, fix, backups, seal: { ok: seal.ok, reason: seal.reason ?? null, through: seal.seal?.through ?? null, events: seal.seal?.events ?? null, digest: seal.seal?.digest ?? null } }, null, 2));
+    process.exit(chain.ok && seal.ok !== false ? 0 : 2);
+  }
+  console.log(chain.ok ? `chain: OK — ${chain.chained} chained row(s)${chain.chained ? ` from t=${chain.from}` : ""}, ${chain.legacy} legacy row(s)${chain.sealed ? " sealed" : " (unsealed until the first chained write)"}${chain.head ? ` · head ${chain.head.slice(0, 12)}` : ""}${chain.unsealed ? ` · ${chain.unsealed} unsealed row(s) from an older writer (the next write seals them)` : ""}` : `chain: BROKEN — ${chain.reason}`);
+  if (info) {
+    console.log(`first bad row: t=${info.firstBad?.t ?? "?"} (line ${info.firstBad?.line ?? "?"})`);
+    if (info.tail?.allBad) {
+      console.log(`every row from line ${info.firstBad?.line ?? "?"} on fails on its own (${info.tail.rows} row(s)): a bad tail. Move it aside byte-for-byte, recorded, nothing deleted (the guard also does this on its next run):\n  ${fix}`);
+    } else {
+      console.log(`the rows after it verify on their own, so this is not a bad tail: a row at or before line ${info.firstBad?.line ?? "?"} was edited, removed or inserted. Writes to this ledger stay blocked; other work is not. Restore it from a copy you trust:`);
+      if (backups.length) for (const b of backups) console.log(`  ${b.file} verifies (${b.chained} chained row(s), head ${b.head.slice(0, 12)}): cp "${b.file}" "${ledger}"`);
+      else console.log("  no copy beside the ledger verifies; restore from version control or another machine's copy");
+    }
+  }
+  console.log(seal.ok === null ? `seal: none yet — ${seal.reason}` : seal.ok ? `seal: OK — engine-signed over ${seal.seal.events} row(s) through t=${seal.seal.through}${seal.seal.digest ? ` · ${seal.seal.digest.slice(0, 12)}` : ""}` : `seal: MISMATCH — ${seal.reason}`);
+  process.exit(chain.ok && seal.ok !== false ? 0 : 2);
+}
+
+async function cliRepair() {
+  const argv = process.argv.slice(3);
+  const scope = scopeOf(argv, "repair");
+  const ledger = scope === "agent" ? agentPath() : ledgerPath();
+  const flag = scope === "agent" ? " --scope agent" : "";
+  const prefix = scope === "agent" ? "memory-pulse" : cliPrefixFor(ledger);
+  const usage = `usage: memory-pulse repair [--scope project|agent] --quarantine-tail\n       memory-pulse repair [--scope project|agent] --adopt-quarantine <file> [--yes]`;
+  if (argv.includes("--quarantine-tail")) {
+    let q; try { q = quarantineTail(ledger); } catch (e) { console.error(`memory-pulse repair: ${e.message}`); process.exit(1); }
+    if (q.quarantined) { console.log(`quarantined ${q.rows} row(s) from the tail of ${ledger} (${q.reason}): moved byte-for-byte to ${q.file} (sha256 ${q.sha256.slice(0, 12)}), recorded at t=${q.t}; nothing deleted`); process.exit(0); }
+    if (q.notTail) { console.log(`refused: not a tail. The chain breaks at t=${q.firstBad?.t ?? "?"} (line ${q.firstBad?.line ?? "?"}) and rows after it verify on their own (${q.reason}); restore the ledger from a copy you trust (${prefix} verify${flag} lists copies that verify)`); process.exit(2); }
+    console.log(`nothing to quarantine: ${q.reason}`); process.exit(0);
+  }
+  const file = argValue(argv, "--adopt-quarantine");
+  if (file === undefined) { console.error(usage); process.exit(1); }
+  if (!file || !existsSync(file)) { console.error(`memory-pulse repair: no quarantine file at ${file}\n${usage}`); process.exit(1); }
+  const rows = [], skipped = [];
+  for (const [i, line] of readFileSync(file, "utf8").split("\n").entries()) {
+    if (!line.trim()) continue;
+    let r = null; try { r = JSON.parse(line); } catch { skipped.push(`line ${i + 1}: not JSON`); continue; }
+    if (!r || typeof r.cause !== "string" || typeof r.effect !== "string") { skipped.push(`line ${i + 1}: no cause/effect`); continue; }
+    if (instructionLike(r.note).length) { skipped.push(`line ${i + 1}: note reads like an instruction`); continue; }
+    rows.push({ r, line: i + 1 });
+  }
+  if (!argv.includes("--yes")) {
+    console.log(`would re-append ${rows.length} row(s) from ${file} to ${ledger} through the writer (new t, prev and hash; each keeps origin {quarantine, t, hash}):`);
+    for (const { r, line } of rows) console.log(`  line ${line}: t=${r.t ?? "?"} ${r.cause} -> ${r.effect}`);
+    for (const x of skipped) console.log(`  skipped ${x}`);
+    console.log(`Nothing written. A quarantined row is unverified: a person reviews it first, then runs:\n  ${prefix} repair${flag} --adopt-quarantine ${file} --yes`);
+    process.exit(1);
+  }
+  const done = [], refused = [];
+  for (const { r, line } of rows) {
+    const res = appendEvent({ cause: r.cause, effect: r.effect, note: r.note, kind: r.kind, tags: r.tags, pinned: r.pinned, withdrawn: r.withdrawn, replacement: r.replacement, scope, fields: { origin: { quarantine: file, t: r.t ?? null, hash: r.hash ?? null } } });
+    if (res.written) done.push(res.t); else refused.push(`line ${line}: ${res.reason}`);
+  }
+  console.log(`re-appended ${done.length} row(s) to ${ledger}${done.length ? ` at t=${done.join(", ")}` : ""}${skipped.length ? `; skipped ${skipped.join("; ")}` : ""}${refused.length ? `; refused ${refused.join("; ")}` : ""}`);
+  process.exit(refused.length && !done.length ? 1 : 0);
 }
 
 // ---- remember from the shell (2026-09-09). The Action's no-evidence comment told every reader to run
@@ -1637,6 +2053,280 @@ async function cliRemember() {
   process.exit(res?.written ? 0 : 1);
 }
 
+// ------------------------------------------------------------ agent state ----
+// Agent state travels as a `.rain` state capsule (2026-09-21): the ledger's rows verbatim, the row-chain head, the
+// order-free set head, the engine's last seal and the declared invariants, under one digest. A fresh machine
+// verifies the capsule before it trusts it, installs the rows byte-identical, and records where they came from as
+// a row. A branch is a capsule cut at a row. A rollback is a row that puts a range out of force without deleting
+// anything. A merge carries the other branch's rows across once, in chain order, and names every conflict. Nothing
+// here rewrites a row: the record only grows, and the same finding lands once however many branches carried it.
+export const STATE_SCHEMA = "catalyst.rain.state.v1";
+const STATE_TAGS = ["state", "merge", "rollback"];
+const isRollback = (e) => !!e && Array.isArray(e.tags) && e.tags.includes("rollback") && Number.isInteger(e.rollback_to);
+/**
+ * The row numbers (t) in force at the head. A rollback row restores the ledger as it stood at its target t and keeps
+ * everything recorded after itself, so rolling back past a rollback restores what that rollback removed. Rows without
+ * an integer t are never rolled back.
+ */
+export function inForceSet(events) {
+  const byT = new Map(); for (const e of events) if (Number.isInteger(e?.t) && !byT.has(e.t)) byT.set(e.t, e);
+  const ts = [...byT.keys()].sort((a, b) => a - b);
+  // the state at a target X is the state after the last row with t <= X; snapshots are kept at those rows only
+  const anchorOf = (X) => { let a = 0; for (const t of ts) { if (t > X) break; a = t; } return a; };
+  const anchors = new Set(); for (const t of ts) { const e = byT.get(t); if (isRollback(e) && e.rollback_to < t) anchors.add(anchorOf(e.rollback_to)); }
+  const snapshots = new Map([[0, new Set()]]);
+  let s = new Set();
+  for (const t of ts) {
+    const e = byT.get(t);
+    if (isRollback(e) && e.rollback_to < t) s = new Set(snapshots.get(anchorOf(e.rollback_to)) ?? []);
+    s.add(t);
+    if (anchors.has(t)) snapshots.set(t, new Set(s));
+  }
+  return s;
+}
+/** The rows in force: the whole list when no rollback was ever recorded (the common case costs nothing). */
+export function inForce(events) {
+  if (!Array.isArray(events) || !events.some(isRollback)) return events;
+  const s = inForceSet(events);
+  return events.filter((e) => !Number.isInteger(e?.t) || s.has(e.t));
+}
+/** What a finding IS, apart from where it sits: the key a merge dedupes on and the order-free content head folds. */
+const contentKey = (r) => canonicalJson({ cause: r.cause, effect: r.effect, kind: r.kind ?? "event", note: r.note ?? "", withdrawn: r.withdrawn ?? [], replacement: r.replacement ?? [], override: r.override ?? null });
+/** Order-free head over the findings in force, bookkeeping rows excluded: two ledgers that carried the same findings in any order fold to the same value. */
+export const contentHeadHex = (rows) => setHeadHex(inForce(rows).filter((r) => !(Array.isArray(r.tags) && r.tags.some((t) => STATE_TAGS.includes(t)))).map((r) => ({ content: contentKey(r) })));
+
+const ledgerFor = (scope) => (scope === "agent" ? agentPath() : ledgerPath());
+const linesOf = (path) => (existsSync(path) ? readFileSync(path, "utf8").split("\n").map((l) => l.trim()).filter(Boolean) : []);
+// A line that is not a row (a torn write, an older writer) is carried verbatim and never counted: the chain's gap
+// digests cover it, readEvents skips it, the engine's seal folds only rows. Same rule here, so the estate ledger
+// (three such lines) still exports. `malformed` lists their 1-based line numbers.
+const parseRows = (lines) => { const rows = [], malformed = []; for (const [i, l] of lines.entries()) { let r = null; try { r = JSON.parse(l); } catch { /* not JSON */ } if (r && typeof r === "object" && typeof r.cause === "string" && typeof r.effect === "string") rows.push(r); else malformed.push(i + 1); } return { rows, malformed }; };
+const maxT = (rows) => rows.reduce((m, r) => Math.max(m, Number.isInteger(r?.t) ? r.t : 0), 0);
+const short = (h) => (typeof h === "string" && h ? h.slice(0, 12) : "none");
+const commonPrefix = (a, b) => { let i = 0; while (i < a.length && i < b.length && a[i] === b[i]) i++; return i; };
+const capsuleDigest = (cap) => { const { digest, ...rest } = cap; return createHash("sha256").update(canonicalJson(rest)).digest("hex"); };
+function writeSealTo(ledger, seal) { if (!seal || typeof seal !== "object" || typeof seal.head !== "string") return; try { mkdirSync(dirname(ledger), { recursive: true }); writeFileSync(sealPathFor(ledger), JSON.stringify(seal, null, 2) + "\n"); } catch { /* read-only checkout */ } }
+
+/** Build a capsule from a ledger: every row (or every row through `at`, for a branch), verified before it is packed. */
+export function buildCapsule({ ledger = ledgerPath(), scope = "project", branch = null, at = null } = {}) {
+  let lines = linesOf(ledger);
+  if (!lines.length) return { error: `no ledger at ${ledger}` };
+  const all = parseRows(lines);
+  if (!all.rows.length) return { error: "no rows to pack (every line is malformed)" };
+  const parentHead = setHeadHex(all.rows);
+  if (at != null) {
+    if (!Number.isInteger(at) || at < 1) return { error: "--at must be a row number (t) of 1 or more" };
+    const cut = all.rows.findIndex((r) => Number.isInteger(r.t) && r.t > at);
+    if (cut === 0) return { error: `no row at or before t=${at}` };
+    if (cut > 0) lines = lines.slice(0, cut);
+  }
+  const chain = verifyChainLines(lines);
+  if (!chain.ok) return { error: `row chain broken: ${chain.reason}`, chain };
+  const rows = at != null ? parseRows(lines).rows : all.rows;
+  const head = setHeadHex(rows);
+  const force = inForceSet(rows); const inForceRows = rows.filter((r) => !Number.isInteger(r.t) || force.has(r.t));
+  const through = maxT(rows);
+  const seal0 = readSeal(ledger);
+  const seal = seal0 && typeof seal0.head === "string" && Number(seal0.through) <= through ? seal0 : null;
+  // the branch this ledger is on: the last import or merge named it, else main
+  const lastState = [...rows].reverse().find((r) => Array.isArray(r.tags) && r.tags.includes("state") && r.state?.branch);
+  const cap = {
+    schema: STATE_SCHEMA, issued: new Date().toISOString(), project: projectName(), scope,
+    branch: at != null || branch ? { id: branch || "main", parent: createHash("sha256").update(parentHead).digest("hex"), at } : { id: lastState?.state?.branch ?? "main", parent: lastState?.state?.head ?? null, at: null },
+    through, rows: rows.length, malformed: parseRows(lines).malformed.length, lines,
+    chain: { head: chain.head, chained: chain.chained, legacy: chain.legacy, from: chain.from, unsealed: chain.unsealed ?? 0 },
+    head, in_force: { rows: inForceRows.length, rolled_back: rows.length - inForceRows.length, head: setHeadHex(inForceRows) },
+    seal, invariants: readInvariants(join(dirname(ledger), "invariants.jsonl")),
+  };
+  cap.digest = capsuleDigest(cap);
+  return { capsule: cap };
+}
+
+/** Verify a capsule: digest, every row, the chain, the heads, and the seal's fold. Fails closed with the first reason. */
+export function verifyCapsule(cap) {
+  const fail = (reason) => ({ ok: false, reason });
+  if (!cap || typeof cap !== "object" || Array.isArray(cap)) return fail("not a state capsule");
+  if (cap.schema !== STATE_SCHEMA) return fail(`schema ${JSON.stringify(cap.schema ?? null)} is not ${STATE_SCHEMA}`);
+  if (!Array.isArray(cap.lines) || !cap.lines.every((l) => typeof l === "string")) return fail("the capsule carries no rows");
+  if (typeof cap.digest !== "string" || capsuleDigest(cap) !== cap.digest) return fail("digest does not match the capsule's content (edited or truncated in transit)");
+  const p = parseRows(cap.lines);
+  if (p.rows.length !== cap.rows) return fail(`capsule says ${cap.rows} row(s) and carries ${p.rows.length}`);
+  if (cap.malformed != null && p.malformed.length !== Number(cap.malformed)) return fail(`capsule says ${cap.malformed} malformed line(s) and carries ${p.malformed.length}`);
+  const chain = verifyChainLines(cap.lines); if (!chain.ok) return fail(`row chain broken inside the capsule: ${chain.reason}`);
+  if ((chain.head ?? null) !== (cap.chain?.head ?? null)) return fail("chain head does not match the rows");
+  if (setHeadHex(p.rows) !== cap.head) return fail("rows do not fold to the capsule's head");
+  const force = inForceSet(p.rows); const inF = p.rows.filter((r) => !Number.isInteger(r.t) || force.has(r.t));
+  if (!cap.in_force || setHeadHex(inF) !== cap.in_force.head) return fail("rows in force do not fold to the capsule's in-force head");
+  if (cap.seal != null) {
+    if (typeof cap.seal !== "object" || typeof cap.seal.head !== "string") return fail("the seal is malformed");
+    const covered = p.rows.filter((r) => (Number(r.t) || 0) <= Number(cap.seal.through));
+    if (covered.length !== Number(cap.seal.events)) return fail(`the seal covers ${cap.seal.events} row(s) through t=${cap.seal.through}; the capsule carries ${covered.length}`);
+    if (setHeadHex(covered) !== cap.seal.head) return fail(`rows through t=${cap.seal.through} do not fold to the sealed head`);
+  }
+  return { ok: true, rows: p.rows, malformed: p.malformed, chain, inForce: inF.length, rolledBack: p.rows.length - inF.length };
+}
+
+/**
+ * Install a capsule into an empty ledger, or fast-forward a ledger the capsule extends. A ledger that diverged is
+ * refused (that is a merge). The engine's seal and the declared invariants travel with the state; a row records
+ * where the state came from.
+ */
+export function importCapsule(cap, { scope = "project" } = {}) {
+  const ledger = ledgerFor(scope);
+  const v = verifyCapsule(cap); if (!v.ok) return { status: "refused", reason: v.reason, code: 2 };
+  const local = linesOf(ledger);
+  const prefix = commonPrefix(local, cap.lines);
+  let status, appended;
+  if (!local.length) { mkdirSync(dirname(ledger), { recursive: true }); withLedgerLock(ledger, () => writeFileSync(ledger, cap.lines.join("\n") + "\n")); status = "installed"; appended = cap.lines.length; }
+  else if (prefix === local.length && prefix === cap.lines.length) return { status: "unchanged", reason: "the ledger already holds this state", code: 0 };
+  else if (prefix === cap.lines.length) return { status: "unchanged", reason: `the ledger is ahead of this capsule by ${local.length - prefix} row(s); nothing to import`, code: 0 };
+  else if (prefix === local.length) { withLedgerLock(ledger, () => appendFileSync(ledger, cap.lines.slice(prefix).join("\n") + "\n")); status = "fast-forwarded"; appended = cap.lines.length - prefix; }
+  else return { status: "refused", reason: `the ledger and the capsule diverged after row ${prefix} (${local.length - prefix} local row(s) against ${cap.lines.length - prefix} in the capsule); \`memory-pulse state merge\` carries the capsule's rows across`, code: 1 };
+  const localSeal = readSeal(ledger);
+  if (cap.seal && (!localSeal || Number(localSeal.through) < Number(cap.seal.through))) writeSealTo(ledger, cap.seal);
+  const inv = join(dirname(ledger), "invariants.jsonl");
+  if (Array.isArray(cap.invariants) && cap.invariants.length && !existsSync(inv)) { try { writeFileSync(inv, cap.invariants.map((i) => JSON.stringify(i)).join("\n") + "\n"); } catch { /* read-only checkout */ } }
+  const id = cap.branch?.id ?? "main";
+  // Rows whose note reads like an instruction are installed (the record is the record) but named here, and every
+  // local render holds such a note back; the engine quarantines the same rows at read time.
+  const held = v.rows.filter((r) => instructionLike(r.note).length).map((r) => r.t);
+  const r = appendEvent({ cause: "state-resumed", effect: `from-${id}-${short(cap.head)}`, tags: ["state"], scope,
+    note: `resumed from .rain state capsule ${short(cap.digest)}: branch ${id}, ${cap.rows} row(s) through t=${cap.through}, issued ${cap.issued}${cap.seal ? `, engine seal through t=${cap.seal.through}` : ""}${held.length ? `; ${held.length} row(s) held back from every render, note reads like an instruction` : ""}`,
+    fields: { state: { capsule: cap.digest, head: short(cap.head), branch: id, parent: cap.branch?.parent ?? null, at: cap.branch?.at ?? null } } });
+  return { status, appended, rows: cap.rows, through: cap.through, head: cap.head, branch: id, held, t: r.t, code: 0 };
+}
+
+/**
+ * Merge a capsule into a ledger that diverged from it: every finding the branch holds in force and this ledger does
+ * not is appended once, in the branch's order, chained here, carrying its origin. Duplicates are skipped by content,
+ * an instruction-like note is held back, the branch's own rollbacks are applied at source and never carried, and a
+ * correction that withdraws a term this ledger withdraws with a different replacement is named as a conflict, not
+ * resolved. Merging the same capsule twice appends nothing.
+ */
+export function mergeCapsule(cap, { scope = "project" } = {}) {
+  const ledger = ledgerFor(scope);
+  const v = verifyCapsule(cap); if (!v.ok) return { status: "refused", reason: v.reason, code: 2 };
+  const local = linesOf(ledger);
+  if (!local.length) return importCapsule(cap, { scope });
+  const lchain = verifyChainLines(local); if (!lchain.ok) return { status: "refused", reason: `this ledger's row chain is broken: ${lchain.reason}`, code: 2 };
+  const prefix = commonPrefix(local, cap.lines);
+  if (prefix === cap.lines.length) return { status: "unchanged", reason: "every row in the capsule is already on this ledger", code: 0, carried: [] };
+  // A merge always carries row by row, even when this ledger is a prefix of the capsule: `import` is the verbatim
+  // fast-forward, `merge` is the one that dedupes, holds back and leaves the branch's bookkeeping with the branch.
+  const localRows = parseRows(local).rows;
+  const fork = prefix ? (localRows[prefix - 1].t ?? 0) : 0;
+  const branchForce = inForceSet(v.rows);
+  const foreign = v.rows.slice(prefix);
+  const have = new Set(localRows.map(contentKey));
+  const tMap = new Map(); for (const r of localRows) if (Number.isInteger(r.t) && r.t <= fork) tMap.set(r.t, r.t);
+  const localCorr = inForce(localRows).filter((e) => e.kind === "correction" && Array.isArray(e.withdrawn));
+  const id = cap.branch?.id ?? "main";
+  let next = maxT(localRows) + 1;
+  const carried = [], skipped = [], held = [], atSource = [], conflicts = [];
+  for (const r of foreign) {
+    const fromT = r.t;
+    if (isRollback(r) || (Array.isArray(r.tags) && r.tags.some((t) => STATE_TAGS.includes(t)))) { atSource.push(fromT); continue; }
+    if (Number.isInteger(fromT) && !branchForce.has(fromT)) { atSource.push(fromT); continue; }
+    const key = contentKey(r);
+    if (have.has(key)) { skipped.push(fromT); continue; }
+    if (instructionLike(r.note).length) { held.push(fromT); continue; }
+    const row = { ...r }; delete row.hash; delete row.prev; delete row.gap_digest; delete row.legacy_digest;
+    row.t = next++;
+    row.origin = { branch: id, t: fromT ?? null, capsule: short(cap.digest) };
+    if (Array.isArray(row.supersedes)) { const m = row.supersedes.map((t) => tMap.get(t)).filter((t) => Number.isInteger(t)); if (m.length) row.supersedes = m; else delete row.supersedes; }
+    if (r.kind === "correction" && Array.isArray(row.withdrawn)) for (const term of row.withdrawn) { const lc = localCorr.find((c) => c.withdrawn.includes(term) && canonicalJson(c.replacement ?? []) !== canonicalJson(row.replacement ?? [])); if (lc) conflicts.push({ term, local: lc.t, merged: row.t }); }
+    chainAppend(ledger, row); carried.push(row.t); have.add(key); if (Number.isInteger(fromT)) tMap.set(fromT, row.t);
+  }
+  if (!carried.length) return { status: "unchanged", reason: `nothing new to carry: ${skipped.length} duplicate(s)${held.length ? `, ${held.length} held back` : ""}${atSource.length ? `, ${atSource.length} applied at source` : ""}`, code: 0, carried, skipped, held, atSource };
+  const note = `merged ${carried.length} row(s) from branch ${id} (.rain state capsule ${short(cap.digest)}, head ${short(cap.head)}); fork after t=${fork}; ${skipped.length} duplicate(s) skipped${held.length ? `; ${held.length} row(s) held back, note reads like an instruction` : ""}${atSource.length ? `; ${atSource.length} row(s) applied at source, not carried` : ""}${conflicts.length ? `; ${conflicts.length} conflict(s): ${conflicts.map((c) => `"${c.term}" t${c.local} against t${c.merged}`).join(", ")}` : ""}`;
+  const m = appendEvent({ cause: "state-merged", effect: `from-${id}-${short(cap.head)}`, note, tags: ["merge"], scope, fields: { state: { capsule: cap.digest, head: short(cap.head), branch: id, fork, carried: carried.length, conflicts } } });
+  return { status: "merged", carried, skipped, held, atSource, conflicts, fork, t: m.t, code: 0 };
+}
+
+/** Roll the ledger back to how it stood at row `to`: one appended row; every row after `to` stays on record, out of force. */
+export function rollbackTo(to, why, { scope = "project" } = {}) {
+  const { events } = readEvents({ scope }); const head = maxT(events);
+  if (!events.length) return { written: false, reason: "nothing to roll back: the ledger is empty" };
+  if (!Number.isInteger(to) || to < 0) return { written: false, reason: "--to must be a row number (t); 0 rolls back every row" };
+  if (to >= head) return { written: false, reason: `--to must be below the head (t=${head})` };
+  if (!why || !String(why).trim()) return { written: false, reason: "a reason is required: the rollback is a row on the record" };
+  const before = inForceSet(events);
+  const out = events.filter((e) => Number.isInteger(e.t) && before.has(e.t) && e.t > to);
+  const r = appendEvent({ cause: "state-rollback", effect: `rolled-back-to-t${to}`, kind: "decision", note: String(why).trim(), tags: ["rollback"], scope, fields: { rollback_to: to } });
+  if (!r.written) return r;
+  return { ...r, to, outOfForce: out.map((e) => e.t), corrections: out.filter((e) => e.kind === "correction").length };
+}
+
+async function cliState() {
+  const argv = process.argv.slice(3);
+  const op = argv[0] && !argv[0].startsWith("--") ? argv[0] : "status";
+  const rest = op === "status" ? argv : argv.slice(1);
+  const flag = (n) => { const i = rest.indexOf(`--${n}`); return i >= 0 ? rest[i + 1] : undefined; };
+  const pos = rest.filter((a, i) => !a.startsWith("--") && !(rest[i - 1] ?? "").startsWith("--"));
+  const usage = () => { console.error(`usage: memory-pulse state                                    where this ledger stands: rows, in force, heads, seal, branch
+       memory-pulse state export [--out <file>] [--scope project|agent]      write the .rain state capsule (stdout by default)
+       memory-pulse state branch <id> [--at <t>] [--out <file>]     a capsule cut at row t (default: the head), named as a branch
+       memory-pulse state import <file|-> [--scope project|agent]  install into an empty ledger or fast-forward; refuses a diverged ledger
+       memory-pulse state merge <file|-> [--scope project|agent]   carry a diverged branch's rows across once; conflicts are named
+       memory-pulse state rollback --to <t> "<why>" [--scope ...]  one row that puts every row after t out of force; nothing is deleted
+       memory-pulse state verify <file|->                          verify a capsule without touching any ledger; exit 2 on failure`); process.exit(1); };
+  const scope = flag("scope") ?? "project"; if (!["project", "agent"].includes(scope)) usage();
+  const ledger = ledgerFor(scope);
+  const readCapsule = async (file) => {
+    if (!file) usage();
+    let text; try { if (file === "-") { text = ""; for await (const c of process.stdin) text += c; } else text = readFileSync(file, "utf8"); } catch (e) { console.error(`memory-pulse state ${op}: cannot read ${file} (${String(e?.message ?? e).split("\n")[0]})`); process.exit(2); }
+    try { return JSON.parse(text); } catch { console.error(`memory-pulse state ${op}: ${file === "-" ? "stdin" : file} is not a state capsule (not JSON)`); process.exit(2); }
+  };
+  if (op === "status") {
+    const lines = linesOf(ledger);
+    if (!lines.length) { console.log(`state: no ledger at ${relPath(ledger)} — nothing recorded yet`); return; }
+    const p = parseRows(lines); const chain = verifyChainLines(lines); const seal = readSeal(ledger);
+    const rows = p.rows; const force = inForceSet(rows); const inF = rows.filter((r) => !Number.isInteger(r.t) || force.has(r.t));
+    const last = [...rows].reverse().find((r) => Array.isArray(r.tags) && r.tags.some((t) => ["state", "merge"].includes(t)));
+    console.log(`state: ${relPath(ledger)} · ${rows.length} row(s) through t=${maxT(rows)}${p.malformed.length ? ` (+${p.malformed.length} malformed line(s) carried, not counted)` : ""} · ${inF.length} in force, ${rows.length - inF.length} rolled back · chain ${chain.ok ? `OK head ${short(chain.head)}` : `BROKEN (${chain.reason})`} · set head ${short(setHeadHex(rows))} · seal ${seal?.head ? `through t=${seal.through}` : "none yet"} · branch ${last?.state?.branch ?? "main"}${last ? ` · last ${last.cause === "state-merged" ? "merge" : "resume"} at t${last.t} from capsule ${last.state?.capsule ? short(last.state.capsule) : "?"}` : ""}`);
+    process.exit(chain.ok ? 0 : 2);
+  }
+  if (op === "export" || op === "branch") {
+    const id = op === "branch" ? pos[0] : (flag("branch") ?? null);
+    if (op === "branch" && !id) usage();
+    const at = op === "branch" && flag("at") != null ? Number(flag("at")) : null;
+    const b = buildCapsule({ ledger, scope, branch: id, at });
+    if (b.error) { console.error(`memory-pulse state ${op}: ${b.error}`); process.exit(2); }
+    const out = flag("out"); const text = JSON.stringify(b.capsule) + "\n";
+    if (!out || out === "-") process.stdout.write(text); else writeFileSync(out, text);
+    const c = b.capsule;
+    console.error(`state ${op}: ${c.rows} row(s) through t=${c.through}, head ${short(c.head)}, chain ${short(c.chain.head)}, ${c.in_force.rolled_back} rolled back, seal ${c.seal ? `through t=${c.seal.through}` : "none"}, branch ${c.branch.id}${c.branch.at != null ? ` cut at t=${c.branch.at}` : ""} → ${out && out !== "-" ? out : "stdout"} (capsule ${short(c.digest)})`);
+    return;
+  }
+  if (op === "verify") {
+    const cap = await readCapsule(pos[0]); const v = verifyCapsule(cap);
+    if (!v.ok) { console.log(`capsule: FAILED — ${v.reason}`); process.exit(2); }
+    console.log(`capsule: OK — ${v.rows.length} row(s) through t=${maxT(v.rows)}${v.malformed?.length ? ` (+${v.malformed.length} malformed line(s) carried)` : ""}, ${v.inForce} in force, ${v.rolledBack} rolled back, chain head ${short(v.chain.head)}, head ${short(cap.head)}, branch ${cap.branch?.id ?? "main"}${cap.seal ? `, engine seal through t=${cap.seal.through} folds (its tag is checked by the engine on the next call)` : ", no engine seal"}`);
+    return;
+  }
+  if (op === "import" || op === "merge") {
+    const cap = await readCapsule(pos[0]);
+    const r = op === "import" ? importCapsule(cap, { scope }) : mergeCapsule(cap, { scope });
+    if (r.status === "refused") { console.error(`memory-pulse state ${op}: refused — ${r.reason}`); process.exit(r.code); }
+    if (r.status === "unchanged") { console.log(`state ${op}: nothing to do — ${r.reason}`); process.exit(0); }
+    if (r.status === "merged") {
+      console.log(`state merge: ${r.carried.length} row(s) carried from branch ${cap.branch?.id ?? "main"} as t${r.carried[0]}..t${r.carried[r.carried.length - 1]}; fork after t=${r.fork}; ${r.skipped.length} duplicate(s) skipped${r.held.length ? `; ${r.held.length} held back` : ""}${r.atSource.length ? `; ${r.atSource.length} applied at source` : ""}; recorded at t${r.t}`);
+      for (const c of r.conflicts) console.log(`  ! conflict: "${c.term}" is withdrawn at t${c.local} and at t${c.merged} with different replacements — both bind until one is superseded`);
+      return;
+    }
+    console.log(`state import: ${r.status} — ${r.appended} row(s) from branch ${r.branch} (through t=${r.through}, head ${short(r.head)}); recorded at t${r.t}${r.held?.length ? `; ${r.held.length} row(s) held back from every render (note reads like an instruction): t${r.held.join(", t")}` : ""}`);
+    return;
+  }
+  if (op === "rollback") {
+    const to = flag("to") != null ? Number(flag("to")) : NaN; const why = pos.join(" ").trim();
+    const r = rollbackTo(to, why, { scope });
+    if (!r.written) { console.error(`memory-pulse state rollback: ${r.reason}`); process.exit(1); }
+    console.log(`state rollback: recorded at t${r.t} — ${r.outOfForce.length} row(s) after t=${r.to} are out of force (${r.corrections} correction(s) among them); every row stays on the record`);
+    return;
+  }
+  usage();
+}
+
 // Importable for tests; the transport runs only when this file is the entry
 // point. Compared by REALPATH, not by name: npm invokes the bin through a
 // .bin/memory-pulse symlink, and a basename comparison silently failed there —
@@ -1660,15 +2350,11 @@ if (isMain) {
   if (sub === "mode") { await cliMode(); process.exit(0); }
   if (sub === "identity") { await cliIdentity(); process.exit(0); }
   if (sub === "observe") { await cliObserve(); process.exit(0); }
-  if (sub === "verify") {
-    // walk the row chain and check the ledger against the last seal; exit 2 on either failure (fail closed, like check)
-    const chain = verifyChain(); const seal = verifyLocalSeal(readEvents().events, readSeal(), chain);
-    if (process.argv.includes("--json")) { console.log(JSON.stringify({ chain, seal: { ok: seal.ok, reason: seal.reason ?? null, through: seal.seal?.through ?? null, events: seal.seal?.events ?? null, digest: seal.seal?.digest ?? null } }, null, 2)); process.exit(chain.ok && seal.ok !== false ? 0 : 2); }
-    console.log(chain.ok ? `chain: OK — ${chain.chained} chained row(s)${chain.chained ? ` from t=${chain.from}` : ""}, ${chain.legacy} legacy row(s)${chain.sealed ? " sealed" : " (unsealed until the first chained write)"}${chain.head ? ` · head ${chain.head.slice(0, 12)}` : ""}${chain.unsealed ? ` · ${chain.unsealed} unsealed row(s) from an older writer (the next write seals them)` : ""}` : `chain: BROKEN — ${chain.reason}`);
-    console.log(seal.ok === null ? `seal: none yet — ${seal.reason}` : seal.ok ? `seal: OK — engine-signed over ${seal.seal.events} row(s) through t=${seal.seal.through}${seal.seal.digest ? ` · ${seal.seal.digest.slice(0, 12)}` : ""}` : `seal: MISMATCH — ${seal.reason}`);
-    process.exit(chain.ok && seal.ok !== false ? 0 : 2);
-  }
+  if (sub === "verify") cliVerify();
+  if (sub === "append") { await cliAppend(); process.exit(0); }
+  if (sub === "repair") { await cliRepair(); process.exit(0); }
   if (sub === "seal") { await cliSeal(); process.exit(0); }
+  if (sub === "state") { await cliState(); process.exit(0); }
   if (sub === "lint") { await cliLint(); process.exit(0); }
   if (sub === "report") { cliReport(); process.exit(0); }
   if (sub === "bench") { await cliBench(); process.exit(0); }
@@ -1676,7 +2362,7 @@ if (isMain) {
   if (sub === "badge") { cliBadge(); process.exit(0); }
   if (sub && sub !== "serve") { console.error(`unknown command: ${sub} (run memory-pulse help for the list)`); process.exit(1); }
   process.stderr.write(`memory-pulse: ledger ${ledgerPath()} — api ${API}\n`);
-  const rl = readline.createInterface({ input: process.stdin, terminal: false });
+  const rl = builtin("readline").createInterface({ input: process.stdin, terminal: false });
   // In-flight calls are drained before exit. Exiting the moment stdin closes
   // would kill network requests mid-flight and swallow their responses — found
   // by piping a scripted session rather than assuming the happy path.
