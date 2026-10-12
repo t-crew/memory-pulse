@@ -112,7 +112,9 @@ test("every manifest opens the pitch with the same sentence, in the product voic
 test("npm pack ships lib/scaffold.mjs beside server.mjs", async () => {
   const { execFileSync } = await import("node:child_process");
   const out = JSON.parse(execFileSync("npm", ["pack", "--dry-run", "--json"], { cwd: new URL("..", import.meta.url).pathname, encoding: "utf8" }));
-  const files = out[0].files.map((f) => f.path);
+  // npm 10 prints an array; newer npm may print an object keyed by package (seen on the release runner, 2026-10-12)
+  const entry = Array.isArray(out) ? out[0] : out.files ? out : Object.values(out)[0];
+  const files = entry.files.map((f) => f.path);
   assert.ok(files.includes("server.mjs"), files.join(" "));
   assert.ok(files.includes("lib/scaffold.mjs"), files.join(" "));
 });
