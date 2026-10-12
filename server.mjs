@@ -41,6 +41,7 @@ import { basename, dirname, isAbsolute, join, resolve as resolvePath } from "nod
 import { fileURLToPath } from "node:url";
 import { renderScaffold as renderScaffoldWith, DEFAULT_BUDGETS, SECTIONS } from "./lib/scaffold.mjs";
 import { promptSlice as promptSliceWith, editSlice as editSliceWith } from "./lib/slices.mjs";
+import { recordUsage, consentState, setConsent, hasConsentAnswer, resetInstall, usagePayload, maybeSendUsage } from "./lib/usage.mjs";
 
 const API = (process.env.MEMORY_PULSE_API ?? "https://pulse.strategic-innovations.ai").replace(/\/$/, "");
 const KEY = process.env.MEMORY_PULSE_KEY ?? null;
@@ -1006,6 +1007,14 @@ export function capBrief(text, scaffoldText, cap = BRIEF_CAP) {
   if (text.length <= cap) return text;
   return `memory-pulse: the engine brief was ${text.length.toLocaleString("en-US")} chars, over the ${cap.toLocaleString("en-US")} the hosts take whole; this is the scaffold instead.\n${scaffoldText}`;
 }
+// The one network call usage counts make: POST /v1/usage, two seconds at most, never on the session's critical path for longer.
+async function postUsage(payload) {
+  const timeout = new Promise((resolve) => setTimeout(() => resolve({ status: 0, body: {} }), 2000).unref());
+  const send = postJson(`${API}/v1/usage`, { "content-type": "application/json" }, JSON.stringify(payload))
+    .then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) })).catch(() => ({ status: 0, body: {} }));
+  return Promise.race([send, timeout]);
+}
+export async function sendUsageQuietly() { await maybeSendUsage({ post: postUsage, version: PKG_VERSION }); }
 function scaffoldFor(led, opts = {}) {
   const agentEvents = currentMode() === "agent" && existsSync(agentPath()) ? readEvents({ scope: "agent" }).events : [];
   const chain = verifyChain(led.path);
@@ -1282,7 +1291,7 @@ async function cliBrief() {
   const mode = process.env.MEMORY_PULSE_BRIEF;
   const engine = mode !== "scaffold" && !process.argv.includes("--scaffold") &&
     (mode === "engine" || process.argv.includes("--engine") || bi >= 0 || process.env.MEMORY_PULSE_BRIEF_BUDGET || process.env.MEMORY_PULSE_BRIEF_TIER || process.env.MEMORY_PULSE_KEY);
-  if (!engine) { const { text } = scaffoldFor(led); if (text) process.stdout.write(text + "\n"); return; }
+  if (!engine) { const { text } = scaffoldFor(led); if (text) { process.stdout.write(text + "\n"); recordUsage("scaffold"); } return; }
   try {
     const out = await callApi("/v1/pulse", { events, ...(tier ? { tier } : {}), ...(budget ? { budget } : {}) });
     const parts = [loadedLine(led, events, { keyStatus: out.keyStatus, tier: out.tier ?? tier, chars: out.text?.length, budget })];
@@ -1305,6 +1314,17 @@ async function cliBrief() {
   }
 }
 
+// `memory-pulse telemetry show|on|off|reset` — the opt-in usage counts (0.7.0). `show` prints exactly what would be sent.
+async function cliTelemetry() {
+  const op = process.argv[3] ?? "show";
+  if (op === "on") { setConsent(true); console.log("usage counts on: once a day, eight counts, the version, the host and a random install id; `memory-pulse telemetry show` prints the payload"); return; }
+  if (op === "off") { setConsent(false); console.log("usage counts off; nothing will be sent"); return; }
+  if (op === "reset") { resetInstall(); console.log("new install id; counts zeroed"); return; }
+  if (op !== "show") { console.error("usage: memory-pulse telemetry [show|on|off|reset]"); process.exit(1); }
+  const p = usagePayload({ version: PKG_VERSION });
+  console.log(p ? JSON.stringify(p, null, 2) : `off: ${consentState().reason}`);
+}
+
 // `memory-pulse scaffold [--section <name>] [--all]` — the organized memory the session starts from; --all lifts the budgets.
 async function cliScaffold() {
   const si = process.argv.indexOf("--section"); const only = si >= 0 ? process.argv[si + 1] : null;
@@ -1312,7 +1332,7 @@ async function cliScaffold() {
   const all = process.argv.includes("--all");
   const budgets = all ? Object.fromEntries(SECTIONS.map((x) => [x, Infinity])) : undefined;
   const { text } = scaffoldFor(readEvents(), { only, ...(budgets ? { budgets } : {}) });
-  if (text) process.stdout.write(text + "\n");
+  if (text) { process.stdout.write(text + "\n"); recordUsage("scaffold"); }
 }
 
 // UserPromptSubmit hook: inject the slice of the memory that bears on this prompt. Silent when nothing does; exit 0 always.
@@ -1322,7 +1342,7 @@ async function cliPrompt() {
     let hook = {}; try { hook = raw.trim() ? JSON.parse(raw) : {}; } catch { return; }
     if (typeof hook.prompt !== "string") return;
     const slice = promptSlice(readEvents().events, hook.prompt, { blocks: readBlocks() });
-    if (slice) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: slice } }));
+    if (slice) { process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: slice } })); recordUsage("prompt_slice"); }
   } catch { /* a hook must never block a prompt */ }
 }
 
@@ -1627,6 +1647,7 @@ async function cliGuard() {
     // does not touch this action is one line on stderr, and the action proceeds.
     if (v.verdict === "blocked") blocked.push({ file: a.path, v });
   }
+  recordUsage("guard_check");
   if (!blocked.length) {
     if (warnings.size) process.stderr.write([...warnings].join("\n") + "\n");
     // Allowed: add the memory that bears on this file as context. Never a permissionDecision — "allow" would skip the
@@ -1639,10 +1660,11 @@ async function cliGuard() {
         for (const line of sl.split("\n")) if (line && !seen.has(line)) { seen.add(line); parts.push(line); }
       }
       const ctx = parts.join("\n").slice(0, 2000);
-      if (ctx) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: ctx } }));
+      if (ctx) { process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: ctx } })); recordUsage("edit_slice"); }
     } catch { /* context is a convenience; the verdict above is what the hook is for */ }
     return;
   }
+  recordUsage("guard_block");
   const lines = [];
   for (const { file, v } of blocked) {
     try { appendFileSync(violationsPath(), JSON.stringify({ at: new Date().toISOString(), file, hits: v.corrections.map((h) => ({ term: h.term, t: h.t })), invariants: v.invariants.map((i) => i.id) }) + "\n"); } catch { /* reporting is best effort */ }
@@ -1708,6 +1730,7 @@ async function cliSeal() {
 // (exit 1: never green on an empty evidence set); --receipt asks the engine
 // for the signed, keyless-verifiable form and its integrity view.
 async function cliCheck() {
+  recordUsage("check_local");
   const argv = process.argv.slice(3);
   const flag = (n) => { const i = argv.indexOf(`--${n}`); return i >= 0 ? argv[i + 1] : undefined; };
   const has = (n) => argv.includes(`--${n}`);
@@ -1806,7 +1829,7 @@ async function cliBench() {
 
 // `npx memory-pulse install-hook` — make re-entry automatic: a Claude Code
 // SessionStart hook that runs the brief. Idempotent; merges, never clobbers.
-function cliInstallHook() {
+async function cliInstallHook() {
   // --project writes to <repo>/.claude/settings.json so the hooks TRAVEL WITH
   // THE REPO: a teammate who clones is guarded without installing anything.
   // (Adversarial review, 2026-08-31: a user-scope hook does not spread.)
@@ -1857,6 +1880,17 @@ function cliInstallHook() {
   if (codex) console.log(`Codex runs no hook it has not been shown: open Codex, run /hooks, and trust the ${changed} memory-pulse entries (once per definition).`);
   console.log(project ? `Project-scoped: commit ${dirName}/${codex ? "hooks.json" : "settings.json"} and every clone is guarded.` : "Tip: `install-hook --project` writes the hooks into this repo so teammates inherit them.");
   console.log("Remove either by deleting the memory-pulse entries from hooks.");
+  await askUsageConsent();
+}
+// Asked once, only on a terminal and never in CI. Default no.
+async function askUsageConsent() {
+  if (!process.stdin.isTTY || process.env.CI || hasConsentAnswer()) return;
+  const rl = builtin("readline").createInterface({ input: process.stdin, output: process.stdout });
+  const answer = await new Promise((resolve) => rl.question("Send anonymous usage counts (command names and counts, version, host — never ledger text, paths, terms or prompts)? [y/N] ", resolve));
+  rl.close();
+  const yes = /^y(es)?$/i.test(String(answer).trim());
+  setConsent(yes);
+  console.log(yes ? "usage counts on; `memory-pulse telemetry off` turns them off" : "usage counts off");
 }
 
 
@@ -1881,6 +1915,7 @@ function lintTargets(args) {
   return [...new Set(out)];
 }
 async function cliLint() {
+  recordUsage("lint");
   const argv = process.argv.slice(3);
   const ci = argv.includes("--ci"), asJson = argv.includes("--json");
   const paths = argv.filter((a) => !a.startsWith("--"));
@@ -1937,6 +1972,7 @@ Commands
   brief [--engine] [--budget N] [--offline]
                                       the SessionStart re-entry: the scaffold by default; with a key, --engine or --budget the engine brief (tier fitting N tokens), replaced by the scaffold when over 9,500 chars; --offline is the plain local list
   scaffold [--section S] [--all]      the organized memory: identity and rules, corrections in force, project state, recent findings, open threads; every line cites its row
+  telemetry [show|on|off|reset]       the opt-in usage counts: show prints exactly what would be sent once a day, or why nothing is
   prompt                              UserPromptSubmit hook: the corrections and decisions that bear on the prompt, as context; silent when none do
   remember <cause> <effect> [--kind event|correction] [--note "..."] [--withdrawn T]... [--replacement T]... [--supersedes N]... [--tags a]... [--pinned] [--scope project|agent]
                                       record a finding or a correction from the shell; same rules as the remember tool; prints the stored row as JSON; exit 1 when refused
@@ -1978,6 +2014,11 @@ Environment
   MEMORY_PULSE_MEMORY_KEY             off disables the signed memory key (.memory-pulse/memory.rain, requested at 500+ events)
   MEMORY_PULSE_MODE                   agent or deliberate for this invocation, overriding ~/.memory-pulse/agent/config.json
   MEMORY_PULSE_SETTINGS_DIR           directory that receives settings.json or hooks.json for install-hook and mode (tests use it)
+  MEMORY_PULSE_TELEMETRY              0 or off: never send usage counts, whatever the consent
+  MEMORY_PULSE_TELEMETRY_DEBUG        1: print the usage payload instead of sending it
+  DO_NOT_TRACK                        1: never send usage counts
+  CI                                  set: install-hook never asks about usage counts
+  CLAUDECODE, CLAUDE_PROJECT_DIR      read only to report the host (claude) in the usage counts
   MEMORY_PULSE_BRIEF                  scaffold or engine: which re-entry brief prints (default: scaffold without a key, engine brief with one)
   MEMORY_PULSE_BRIEF_BUDGET           default for brief --budget, in tokens
   MEMORY_PULSE_BRIEF_TIER             tier for brief when no budget is given: index, brief (default), notes or full
@@ -2095,6 +2136,7 @@ async function cliRepair() {
 // `memory-pulse remember`, which did not exist, and the "any MCP client" route had no way to record the first
 // correction without driving JSON-RPC by hand. Same appendEvent/bindCorrection path as the tool.
 async function cliRemember() {
+  recordUsage("remember");
   const argv = process.argv.slice(3);
   const multi = new Set(["withdrawn", "replacement", "supersedes", "tags"]);
   const single = new Set(["note", "kind", "scope"]);
@@ -2417,11 +2459,12 @@ if (isMain) {
   const sub = process.argv[2];
   if (sub === "help" || sub === "--help" || sub === "-h" || process.argv.slice(2).some((a) => a === "--help" || a === "-h")) { cliHelp(); process.exit(0); }
   if (sub === "remember") { await cliRemember(); process.exit(0); }
-  if (sub === "brief") { await cliBrief(); process.exit(0); }
+  if (sub === "brief") { await cliBrief(); await sendUsageQuietly(); process.exit(0); }
+  if (sub === "telemetry") { await cliTelemetry(); process.exit(0); }
   if (sub === "scaffold") { await cliScaffold(); process.exit(0); }
   if (sub === "prompt") { await cliPrompt(); process.exit(0); }
   if (sub === "before") { await cliBefore(); process.exit(0); }
-  if (sub === "install-hook") { cliInstallHook(); process.exit(0); }
+  if (sub === "install-hook") { await cliInstallHook(); process.exit(0); }
   if (sub === "guard") { await cliGuard(); process.exit(0); }
   if (sub === "check") { await cliCheck(); process.exit(0); }
   if (sub === "handoff") { await cliHandoff(); process.exit(0); }

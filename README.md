@@ -268,6 +268,7 @@ npx memory-pulse help           # every command and environment variable; also -
 npx memory-pulse serve          # the MCP server on stdio (the default with no command)
 npx memory-pulse brief          # the SessionStart re-entry: the organized memory (scaffold) by default; with a key, --engine or --budget the engine brief
 npx memory-pulse scaffold       # the organized memory: identity and rules, corrections in force, project state, recent findings, open threads; --section S, --all
+npx memory-pulse telemetry show # the opt-in usage counts: exactly what would be sent once a day (on, off, reset)
 npx memory-pulse prompt         # UserPromptSubmit hook: the corrections and decisions that bear on the prompt, injected as context
 npx memory-pulse brief --budget 2000   # the richest tier that fits 2000 tokens, corrections first and whole
 npx memory-pulse brief --offline  # local render when the engine is unreachable (automatic on any engine error)
@@ -529,6 +530,11 @@ What that turns on:
 | `MEMORY_PULSE_MODE` | from `~/.memory-pulse/agent/config.json`, else `deliberate` | `agent` or `deliberate` for one invocation |
 | `MEMORY_PULSE_SETTINGS_DIR` | unset | directory that receives `settings.json` or `hooks.json` for `install-hook` and `mode`; the tests use it |
 | `MEMORY_PULSE_BRIEF_BUDGET` | unset | default for `brief --budget`, in tokens |
+| `MEMORY_PULSE_TELEMETRY` | unset | `0` or `off`: never send usage counts, whatever the consent |
+| `MEMORY_PULSE_TELEMETRY_DEBUG` | unset | `1`: print the usage payload instead of sending it |
+| `DO_NOT_TRACK` | unset | `1`: never send usage counts |
+| `CI` | unset | set: `install-hook` never asks about usage counts |
+| `CLAUDECODE`, `CLAUDE_PROJECT_DIR` | set by Claude Code | read only to report the host as `claude` in the usage counts |
 | `MEMORY_PULSE_BRIEF` | unset | `scaffold` or `engine`: which re-entry `brief` prints, overriding the default (scaffold without a key, engine brief with one) |
 | `MEMORY_PULSE_BRIEF_TIER` | `brief` | tier for `brief` when no budget is given: `index`, `brief`, `notes`, `full` |
 | `MEMORY_PULSE_LOCK_TIMEOUT_MS` | `5000` | how long a writer waits for the ledger lock before refusing; a lock whose holder has exited is broken at once |
