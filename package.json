@@ -9,6 +9,7 @@
   },
   "files": [
     "server.mjs",
+    "lib/*.mjs",
     "README.md",
     "LICENSE",
     "python/*.py"

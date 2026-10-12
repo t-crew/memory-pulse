@@ -39,6 +39,7 @@ const PKG_VERSION = (() => {
 import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync, realpathSync, readdirSync, statSync, renameSync, unlinkSync, openSync, closeSync, writeSync, truncateSync} from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
+import { renderScaffold as renderScaffoldWith, DEFAULT_BUDGETS } from "./lib/scaffold.mjs";
 
 const API = (process.env.MEMORY_PULSE_API ?? "https://pulse.strategic-innovations.ai").replace(/\/$/, "");
 const KEY = process.env.MEMORY_PULSE_KEY ?? null;
@@ -984,6 +985,11 @@ export function handoffLine(events, { now = Date.now(), maxAgeMs = 7 * 86400e3 }
   if (!h) return "";
   const t = handoffTime(h); if (Number.isFinite(t) && now - t > maxAgeMs) return "";
   return `↩ last handoff (t=${h.t}${Number.isFinite(t) ? `, ${ago(now - t)}` : ""}): ${(h.note ?? h.effect).replace(/^handoff \S+: ?/, "")}`;
+}
+// 0.7.0: the scaffolded prompt memory (lib/scaffold.mjs), with this file's ledger helpers injected.
+export { DEFAULT_BUDGETS };
+export function renderScaffold(allEvents, opts = {}) {
+  return renderScaffoldWith(allEvents, { ...opts, deps: { inForce, supersededSet, instructionLike, handoffLine, held: HELD } });
 }
 export function offlineBrief(led, allEvents, { now = Date.now(), recent = 8 } = {}) {
   const events = inForce(allEvents); const rolledBack = allEvents.length - events.length;

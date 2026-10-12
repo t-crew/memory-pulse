@@ -105,3 +105,13 @@ test("every manifest opens the pitch with the same sentence, in the product voic
     assert.ok(text.length <= cap, `${file} description is ${text.length} chars, over its ${cap} limit`);
   }
 });
+
+// 0.7.0 moved plain-code modules into lib/. A module missing from the tarball is the 0.1.0 failure again (it shipped
+// a bin that served nothing), so the packed file list is checked, not package.json alone.
+test("npm pack ships lib/scaffold.mjs beside server.mjs", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const out = JSON.parse(execFileSync("npm", ["pack", "--dry-run", "--json"], { cwd: new URL("..", import.meta.url).pathname, encoding: "utf8" }));
+  const files = out[0].files.map((f) => f.path);
+  assert.ok(files.includes("server.mjs"), files.join(" "));
+  assert.ok(files.includes("lib/scaffold.mjs"), files.join(" "));
+});
