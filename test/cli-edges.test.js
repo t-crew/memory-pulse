@@ -120,6 +120,6 @@ test("install-hook --codex tells the user to trust as many entries as it wrote",
   const { run } = mk();
   const r = run(["install-hook", "--codex"]);
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /installed 3 hook\(s\)/);
-  assert.match(r.stdout, /trust the 3 memory-pulse entries/);
+  assert.match(r.stdout, /installed 4 hook\(s\)/); // 0.7.0 adds UserPromptSubmit prompt
+  assert.match(r.stdout, /trust the 4 memory-pulse entries/);
 });

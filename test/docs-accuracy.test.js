@@ -91,7 +91,7 @@ test("the README Install note names every 0.5.9-only behaviour the docs describe
     if (fence !== null && /^sh/.test(fence) && /\|\s*npx\b/.test(l)) piped.push(l);
   }
   assert.ok(piped.length >= 6, `six piped npx lines in the guide, found ${piped.length}`);
-  for (const l of piped) assert.match(l, /\|\s*npx -y memory-pulse@\d+\.\d+\.\d+ (guard|handoff)\b/, `pinned: ${l}`);
+  for (const l of piped) assert.match(l, /\|\s*npx -y memory-pulse@\d+\.\d+\.\d+ (guard|handoff|prompt)\b/, `pinned: ${l}`); // 0.7.0 adds the piped prompt hook
 });
 
 test("the local brief render opens with the engine-unreachable line, no sha256, and the docs say exactly that", () => {

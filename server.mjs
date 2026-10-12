@@ -19,7 +19,7 @@
  *   MEMORY_PULSE_API     override the API base (default: hosted service)
  *   MEMORY_PULSE_LEDGER  override the ledger path (default: ./.memory-pulse/events.jsonl)
  *   MEMORY_PULSE_AGENT, MEMORY_PULSE_PROJECT, MEMORY_PULSE_MEMORY_KEY, MEMORY_PULSE_MODE,
- *   MEMORY_PULSE_SETTINGS_DIR, MEMORY_PULSE_BRIEF_BUDGET, MEMORY_PULSE_BRIEF_TIER, NO_COLOR, HOME
+ *   MEMORY_PULSE_SETTINGS_DIR, MEMORY_PULSE_BRIEF, MEMORY_PULSE_BRIEF_BUDGET, MEMORY_PULSE_BRIEF_TIER, NO_COLOR, HOME
  */
 import { createHash, createCipheriv } from "node:crypto";
 // http, https, zlib and readline load on first use: the guard runs as a fresh process on every tool call and never
@@ -39,6 +39,9 @@ const PKG_VERSION = (() => {
 import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync, realpathSync, readdirSync, statSync, renameSync, unlinkSync, openSync, closeSync, writeSync, truncateSync} from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
+import { renderScaffold as renderScaffoldWith, DEFAULT_BUDGETS, SECTIONS } from "./lib/scaffold.mjs";
+import { promptSlice as promptSliceWith, editSlice as editSliceWith } from "./lib/slices.mjs";
+import { recordUsage, consentState, setConsent, hasConsentAnswer, resetInstall, usagePayload, maybeSendUsage } from "./lib/usage.mjs";
 
 const API = (process.env.MEMORY_PULSE_API ?? "https://pulse.strategic-innovations.ai").replace(/\/$/, "");
 const KEY = process.env.MEMORY_PULSE_KEY ?? null;
@@ -983,7 +986,60 @@ export function handoffLine(events, { now = Date.now(), maxAgeMs = 7 * 86400e3 }
   const h = [...events].reverse().find((e) => Array.isArray(e.tags) && e.tags.includes("handoff"));
   if (!h) return "";
   const t = handoffTime(h); if (Number.isFinite(t) && now - t > maxAgeMs) return "";
-  return `↩ last handoff (t=${h.t}${Number.isFinite(t) ? `, ${ago(now - t)}` : ""}): ${(h.note ?? h.effect).replace(/^handoff \S+: ?/, "")}`;
+  return `↩ last handoff (t=${h.t}${Number.isFinite(t) ? `, ${ago(now - t)}` : ""}): ${String(h.note ?? h.effect ?? "").replace(/^handoff \S+: ?/, "")}`;
+}
+// 0.7.0: the scaffolded prompt memory (lib/scaffold.mjs), with this file's ledger helpers injected.
+export { DEFAULT_BUDGETS };
+export function renderScaffold(allEvents, opts = {}) {
+  return renderScaffoldWith(allEvents, { ...opts, deps: { inForce, supersededSet, instructionLike, handoffLine, held: HELD } });
+}
+export function promptSlice(allEvents, prompt, opts = {}) {
+  return promptSliceWith(allEvents, prompt, { ...opts, deps: { inForce, supersededSet, instructionLike, containsTerm, held: HELD } });
+}
+export function editSlice(rows, invariants, action, opts = {}) {
+  return editSliceWith(rows, invariants, action, { ...opts, deps: { supersededSet, instructionLike, containsTerm, held: HELD } });
+}
+// Claude Code saves a hook's injected text over 10,000 chars to a file and shows the model a 2,000-char preview
+// (docs/HOST_FACTS.md; the estate's 16,933-char brief was cut that way). When a brief will not arrive whole, only the
+// engine's text gives way: the provenance line, the agent identity, the handoff, AT RISK, quarantine, seal drift and the
+// footer stay, and the organized corrections fill the room that is left. If the identity block itself crowds the room,
+// its preferences and lessons are the first thing dropped (they stay on the agent ledger).
+export const BRIEF_CAP = 9500;
+const trimIdentity = (block) => {
+  if (!String(block).startsWith("AGENT IDENTITY")) return block;
+  const lines = String(block).split("\n"); const kept = lines.filter((l) => !/^\s+(preference|lesson): /.test(l) && !/^\s+(preferences|lessons carried) \(/.test(l));
+  const dropped = lines.length - kept.length;
+  return dropped ? [...kept, `  (${dropped} preference and lesson lines left out to fit the host's cap; they stay on the agent ledger)`].join("\n") : block;
+};
+export function composeBrief({ head = [], text = "", tail = [] }, scaffoldForRoom, cap = BRIEF_CAP) {
+  const join = (a) => a.filter(Boolean).join("\n");
+  const whole = join([...head, text, ...tail]);
+  if (whole.length <= cap) return whole;
+  const note = `memory-pulse: the engine brief was ${text.length.toLocaleString("en-US")} chars, over the ${cap.toLocaleString("en-US")} the hosts take whole; the organized corrections stand in for it.`;
+  let h = [...head], room = cap - join([...h, note, ...tail]).length - 1;
+  if (room < 1500) { h = h.map(trimIdentity); room = cap - join([...h, note, ...tail]).length - 1; }
+  let sub = room > 0 ? String(scaffoldForRoom(room) ?? "") : "";
+  if (sub.length > room) sub = sub.slice(0, Math.max(0, sub.lastIndexOf("\n", room)));
+  return join([...h, note, sub, ...tail]).slice(0, cap);
+}
+// The one network call usage counts make: POST /v1/usage, two seconds at most, never on the session's critical path for longer.
+async function postUsage(payload) {
+  const timeout = new Promise((resolve) => setTimeout(() => resolve({ status: 0, body: {} }), 2000).unref());
+  const send = postJson(`${API}/v1/usage`, { "content-type": "application/json" }, JSON.stringify(payload))
+    .then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) })).catch(() => ({ status: 0, body: {} }));
+  return Promise.race([send, timeout]);
+}
+export async function sendUsageQuietly() { await maybeSendUsage({ post: postUsage, version: PKG_VERSION }); }
+// Agent-ledger corrections bind in every project (the guard enforces them), so they are listed whenever that ledger exists;
+// the identity and rules section is agent mode's. A render that fails says so in one line and never fails the session.
+function scaffoldFor(led, opts = {}) {
+  try {
+    const agentEvents = existsSync(agentPath()) ? readEvents({ scope: "agent" }).events : [];
+    const chain = verifyChain(led.path);
+    return renderScaffold(led.events, { agentEvents, withIdentity: currentMode() === "agent", blocks: readBlocks(), chain: chain.ok ? null : chain, ...opts });
+  } catch (e) {
+    return { text: `memory-pulse: the local memory could not be rendered (${String(e?.message ?? e).split("\n")[0]}); run memory-pulse verify`, sections: [] };
+  }
 }
 export function offlineBrief(led, allEvents, { now = Date.now(), recent = 8 } = {}) {
   const events = inForce(allEvents); const rolledBack = allEvents.length - events.length;
@@ -1252,24 +1308,63 @@ async function cliBrief() {
   if (budget !== undefined && !(Number.isFinite(budget) && budget >= 1)) { console.error("brief --budget takes a positive number of tokens"); process.exit(1); }
   const tier = process.env.MEMORY_PULSE_BRIEF_TIER || (budget ? undefined : "brief");
   if (process.argv.includes("--offline")) { process.stdout.write(offlineBrief(led, events) + "\n"); return; }
+  // 0.7.0: the free default is the local scaffold. The engine brief is asked for by a key, --engine, a budget or a tier.
+  const mode = process.env.MEMORY_PULSE_BRIEF;
+  const engine = mode !== "scaffold" && !process.argv.includes("--scaffold") &&
+    (mode === "engine" || process.argv.includes("--engine") || bi >= 0 || process.env.MEMORY_PULSE_BRIEF_BUDGET || process.env.MEMORY_PULSE_BRIEF_TIER || process.env.MEMORY_PULSE_KEY);
+  if (!engine) { const { text } = scaffoldFor(led); if (text) { process.stdout.write(text + "\n"); recordUsage("scaffold"); } return; }
   try {
     const out = await callApi("/v1/pulse", { events, ...(tier ? { tier } : {}), ...(budget ? { budget } : {}) });
-    process.stdout.write(loadedLine(led, events, { keyStatus: out.keyStatus, tier: out.tier ?? tier, chars: out.text?.length, budget }) + "\n");
-    if (currentMode() === "agent" && existsSync(agentPath())) { const ib = identityBlock(readEvents({ scope: "agent" })); if (ib) process.stdout.write(ib + "\n"); }
-    const hl = handoffLine(events); if (hl) process.stdout.write(hl + "\n");
-    if (out.text) process.stdout.write(out.text + "\n");
-    const risk = atRiskLines(events); if (risk) process.stdout.write(risk + "\n");
+    const head = [loadedLine(led, events, { keyStatus: out.keyStatus, tier: out.tier ?? tier, chars: out.text?.length, budget })];
+    if (currentMode() === "agent" && existsSync(agentPath())) { const ib = identityBlock(readEvents({ scope: "agent" })); if (ib) head.push(ib); }
+    const hl = handoffLine(events); if (hl) head.push(hl);
+    const tail = [];
+    const risk = atRiskLines(events); if (risk) tail.push(risk);
     if (Array.isArray(out.quarantined) && out.quarantined.length) {
-      process.stdout.write(`⚠ ${out.quarantined.length} note(s) quarantined — instruction-like content was not rendered (t=${out.quarantined.map((q) => q.t).join(", ")})\n`);
+      tail.push(`⚠ ${out.quarantined.length} note(s) quarantined — instruction-like content was not rendered (t=${out.quarantined.map((q) => q.t).join(", ")})`);
     }
-    const sd = sealDriftLine(out); if (sd) process.stdout.write(sd + "\n");
+    const sd = sealDriftLine(out); if (sd) tail.push(sd);
     const foot = telemetryFooter(out.telemetry);
-    if (foot) process.stdout.write(foot + "\n");
+    if (foot) tail.push(foot);
+    const forRoom = (room) => scaffoldFor(led, { withIdentity: false, budgets: { identity: 0, corrections: Math.floor(room * 0.6), state: Math.floor(room * 0.15), findings: Math.floor(room * 0.15), threads: Math.floor(room * 0.1) } }).text;
+    process.stdout.write(composeBrief({ head, text: out.text ?? "", tail }, forRoom) + "\n");
   } catch (e) {
-    // A dead network must not break session start — and must not hand it nothing: local render, labelled as such.
+    // A dead network must not break session start — and must not hand it nothing: the local scaffold, labelled as such.
     process.stdout.write(`memory-pulse: brief unavailable (${String(e?.message ?? e).split(".")[0]})\n`);
-    process.stdout.write(offlineBrief(led, events) + "\n");
+    const { text } = scaffoldFor(led); if (text) process.stdout.write(text + "\n");
   }
+}
+
+// `memory-pulse telemetry show|on|off|reset` — the opt-in usage counts (0.7.0). `show` prints exactly what would be sent.
+async function cliTelemetry() {
+  const op = process.argv[3] ?? "show";
+  if (op === "on") { setConsent(true); console.log("usage counts on: once a day, eight counts, the version, the host and a random install id; `memory-pulse telemetry show` prints the payload"); return; }
+  if (op === "off") { setConsent(false); console.log("usage counts off; nothing will be sent"); return; }
+  if (op === "reset") { resetInstall(); console.log("new install id; counts zeroed"); return; }
+  if (op !== "show") { console.error("usage: memory-pulse telemetry [show|on|off|reset]"); process.exit(1); }
+  const p = usagePayload({ version: PKG_VERSION });
+  console.log(p ? JSON.stringify(p, null, 2) : `off: ${consentState().reason}`);
+}
+
+// `memory-pulse scaffold [--section <name>] [--all]` — the organized memory the session starts from; --all lifts the budgets.
+async function cliScaffold() {
+  const si = process.argv.indexOf("--section"); const only = si >= 0 ? process.argv[si + 1] : null;
+  if (only && !SECTIONS.includes(only)) { console.error(`unknown section "${only}" — one of ${SECTIONS.join(", ")}`); process.exit(1); }
+  const all = process.argv.includes("--all");
+  const budgets = all ? Object.fromEntries(SECTIONS.map((x) => [x, Infinity])) : undefined;
+  const { text } = scaffoldFor(readEvents(), { only, ...(budgets ? { budgets } : {}) });
+  if (text) { process.stdout.write(text + "\n"); recordUsage("scaffold"); }
+}
+
+// UserPromptSubmit hook: inject the slice of the memory that bears on this prompt. Silent when nothing does; exit 0 always.
+async function cliPrompt() {
+  try {
+    let raw = ""; try { raw = readFileSync(0, "utf8"); } catch { /* no stdin */ }
+    let hook = {}; try { hook = raw.trim() ? JSON.parse(raw) : {}; } catch { return; }
+    if (typeof hook.prompt !== "string") return;
+    const slice = promptSlice(readEvents().events, hook.prompt, { blocks: readBlocks(), agentEvents: existsSync(agentPath()) ? readEvents({ scope: "agent" }).events : [] });
+    if (slice) { process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: slice } })); recordUsage("prompt_slice"); }
+  } catch { /* a hook must never block a prompt */ }
 }
 
 // `npx memory-pulse stats` — the signed telemetry capsule, verified keylessly
@@ -1573,7 +1668,24 @@ async function cliGuard() {
     // does not touch this action is one line on stderr, and the action proceeds.
     if (v.verdict === "blocked") blocked.push({ file: a.path, v });
   }
-  if (!blocked.length) { if (warnings.size) process.stderr.write([...warnings].join("\n") + "\n"); return; }
+  recordUsage("guard_check");
+  if (!blocked.length) {
+    if (warnings.size) process.stderr.write([...warnings].join("\n") + "\n");
+    // Allowed: add the memory that bears on this file as context. Never a permissionDecision — "allow" would skip the
+    // user's permission prompt (docs/HOST_FACTS.md); the guard only blocks or informs.
+    try {
+      const rows = guardRows(ledgerPath()), agentRows = existsSync(agentPath()) ? guardRows(agentPath()) : [];
+      const seen = new Set(); const parts = [];
+      for (const a of actions) {
+        const sl = editSlice(rows, invariants, { path: a.path ?? "", text: a.text ?? "" }, { agentRows });
+        for (const line of sl.split("\n")) if (line && !seen.has(line)) { seen.add(line); parts.push(line); }
+      }
+      const ctx = parts.join("\n").slice(0, 2000);
+      if (ctx) { process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: ctx } })); recordUsage("edit_slice"); }
+    } catch { /* context is a convenience; the verdict above is what the hook is for */ }
+    return;
+  }
+  recordUsage("guard_block");
   const lines = [];
   for (const { file, v } of blocked) {
     try { appendFileSync(violationsPath(), JSON.stringify({ at: new Date().toISOString(), file, hits: v.corrections.map((h) => ({ term: h.term, t: h.t })), invariants: v.invariants.map((i) => i.id) }) + "\n"); } catch { /* reporting is best effort */ }
@@ -1639,6 +1751,7 @@ async function cliSeal() {
 // (exit 1: never green on an empty evidence set); --receipt asks the engine
 // for the signed, keyless-verifiable form and its integrity view.
 async function cliCheck() {
+  recordUsage("check_local");
   const argv = process.argv.slice(3);
   const flag = (n) => { const i = argv.indexOf(`--${n}`); return i >= 0 ? argv[i + 1] : undefined; };
   const has = (n) => argv.includes(`--${n}`);
@@ -1737,7 +1850,7 @@ async function cliBench() {
 
 // `npx memory-pulse install-hook` — make re-entry automatic: a Claude Code
 // SessionStart hook that runs the brief. Idempotent; merges, never clobbers.
-function cliInstallHook() {
+async function cliInstallHook() {
   // --project writes to <repo>/.claude/settings.json so the hooks TRAVEL WITH
   // THE REPO: a teammate who clones is guarded without installing anything.
   // (Adversarial review, 2026-08-31: a user-scope hook does not spread.)
@@ -1765,6 +1878,9 @@ function cliInstallHook() {
   const GUARD = "npx -y memory-pulse guard";
   const pre = (settings.hooks.PreToolUse = settings.hooks.PreToolUse || []);
   if (!JSON.stringify(pre).includes(GUARD)) { pre.push({ matcher: codex ? "Edit|Write|apply_patch" : "Edit|Write|MultiEdit|Bash", hooks: [{ type: "command", command: GUARD }] }); changed++; }
+  const PROMPT = "npx -y memory-pulse prompt";
+  const upsP = (settings.hooks.UserPromptSubmit = settings.hooks.UserPromptSubmit || []);
+  if (!JSON.stringify(upsP).includes(PROMPT)) { upsP.push({ hooks: [{ type: "command", command: PROMPT }] }); changed++; }
   const HANDOFF = "npx -y memory-pulse handoff";
   const pc = (settings.hooks.PreCompact = settings.hooks.PreCompact || []);
   if (!JSON.stringify(pc).includes(HANDOFF)) { pc.push({ hooks: [{ type: "command", command: HANDOFF }] }); changed++; }
@@ -1779,11 +1895,23 @@ function cliInstallHook() {
   console.log(`installed ${changed} hook(s) in ${file}`);
   console.log("SessionStart: every session re-enters through the ledger automatically.");
   console.log(`PreToolUse (${codex ? "apply_patch" : "Edit/Write"}): an edit that writes back a withdrawn value is blocked and explained.`);
+  console.log("UserPromptSubmit: the corrections and decisions that bear on each prompt ride along with it.");
   console.log("PreCompact: what the session was doing is recorded before compaction and printed first at the next start.");
   if (process.argv.includes("--ambient")) console.log("UserPromptSubmit: a prompt shaped like a correction (\"X not Y\", \"change X to Y\", \"X -> Y\") is recorded with both terms; the guard enforces it.");
   if (codex) console.log(`Codex runs no hook it has not been shown: open Codex, run /hooks, and trust the ${changed} memory-pulse entries (once per definition).`);
   console.log(project ? `Project-scoped: commit ${dirName}/${codex ? "hooks.json" : "settings.json"} and every clone is guarded.` : "Tip: `install-hook --project` writes the hooks into this repo so teammates inherit them.");
   console.log("Remove either by deleting the memory-pulse entries from hooks.");
+  await askUsageConsent();
+}
+// Asked once, only on a terminal and never in CI. Default no.
+async function askUsageConsent() {
+  if (!process.stdin.isTTY || process.env.CI || hasConsentAnswer()) return;
+  const rl = builtin("readline").createInterface({ input: process.stdin, output: process.stdout });
+  const answer = await new Promise((resolve) => rl.question("Send anonymous usage counts (command names and counts, version, host — never ledger text, paths, terms or prompts)? [y/N] ", resolve));
+  rl.close();
+  const yes = /^y(es)?$/i.test(String(answer).trim());
+  setConsent(yes);
+  console.log(yes ? "usage counts on; `memory-pulse telemetry off` turns them off" : "usage counts off");
 }
 
 
@@ -1808,6 +1936,7 @@ function lintTargets(args) {
   return [...new Set(out)];
 }
 async function cliLint() {
+  recordUsage("lint");
   const argv = process.argv.slice(3);
   const ci = argv.includes("--ci"), asJson = argv.includes("--json");
   const paths = argv.filter((a) => !a.startsWith("--"));
@@ -1861,7 +1990,11 @@ usage: memory-pulse <command> [options]        (npx -y memory-pulse <command> wi
 Commands
   serve                               start the MCP server on stdio (the default with no command); tools: pulse, recall, remember, execute
   help                                this text (also --help, -h, or --help after any command)
-  brief [--budget N] [--offline]      the re-entry brief the SessionStart hook prints; --budget picks the richest tier that fits N tokens; --offline skips the engine
+  brief [--engine] [--budget N] [--offline]
+                                      the SessionStart re-entry: the scaffold by default; with a key, --engine or --budget the engine brief (tier fitting N tokens), replaced by the scaffold when over 9,500 chars; --offline is the plain local list
+  scaffold [--section S] [--all]      the organized memory: identity and rules, corrections in force, project state, recent findings, open threads; every line cites its row
+  telemetry [show|on|off|reset]       the opt-in usage counts: show prints exactly what would be sent once a day, or why nothing is
+  prompt                              UserPromptSubmit hook: the corrections and decisions that bear on the prompt, as context; silent when none do
   remember <cause> <effect> [--kind event|correction] [--note "..."] [--withdrawn T]... [--replacement T]... [--supersedes N]... [--tags a]... [--pinned] [--scope project|agent]
                                       record a finding or a correction from the shell; same rules as the remember tool; prints the stored row as JSON; exit 1 when refused
   before "<what you are about to do>" [--path <file>] [--text <edit>]
@@ -1902,6 +2035,12 @@ Environment
   MEMORY_PULSE_MEMORY_KEY             off disables the signed memory key (.memory-pulse/memory.rain, requested at 500+ events)
   MEMORY_PULSE_MODE                   agent or deliberate for this invocation, overriding ~/.memory-pulse/agent/config.json
   MEMORY_PULSE_SETTINGS_DIR           directory that receives settings.json or hooks.json for install-hook and mode (tests use it)
+  MEMORY_PULSE_TELEMETRY              0 or off: never send usage counts, whatever the consent
+  MEMORY_PULSE_TELEMETRY_DEBUG        1: print the usage payload instead of sending it
+  DO_NOT_TRACK                        1: never send usage counts
+  CI                                  set: install-hook never asks about usage counts
+  CLAUDECODE, CLAUDE_PROJECT_DIR      read only to report the host (claude) in the usage counts
+  MEMORY_PULSE_BRIEF                  scaffold or engine: which re-entry brief prints (default: scaffold without a key, engine brief with one)
   MEMORY_PULSE_BRIEF_BUDGET           default for brief --budget, in tokens
   MEMORY_PULSE_BRIEF_TIER             tier for brief when no budget is given: index, brief (default), notes or full
   MEMORY_PULSE_LOCK_TIMEOUT_MS        how long a writer waits for the ledger lock before refusing (default 5000); a lock whose holder has exited is broken at once
@@ -2018,6 +2157,7 @@ async function cliRepair() {
 // `memory-pulse remember`, which did not exist, and the "any MCP client" route had no way to record the first
 // correction without driving JSON-RPC by hand. Same appendEvent/bindCorrection path as the tool.
 async function cliRemember() {
+  recordUsage("remember");
   const argv = process.argv.slice(3);
   const multi = new Set(["withdrawn", "replacement", "supersedes", "tags"]);
   const single = new Set(["note", "kind", "scope"]);
@@ -2340,9 +2480,12 @@ if (isMain) {
   const sub = process.argv[2];
   if (sub === "help" || sub === "--help" || sub === "-h" || process.argv.slice(2).some((a) => a === "--help" || a === "-h")) { cliHelp(); process.exit(0); }
   if (sub === "remember") { await cliRemember(); process.exit(0); }
-  if (sub === "brief") { await cliBrief(); process.exit(0); }
+  if (sub === "brief") { await cliBrief(); await sendUsageQuietly(); process.exit(0); }
+  if (sub === "telemetry") { await cliTelemetry(); process.exit(0); }
+  if (sub === "scaffold") { await cliScaffold(); process.exit(0); }
+  if (sub === "prompt") { await cliPrompt(); process.exit(0); }
   if (sub === "before") { await cliBefore(); process.exit(0); }
-  if (sub === "install-hook") { cliInstallHook(); process.exit(0); }
+  if (sub === "install-hook") { await cliInstallHook(); process.exit(0); }
   if (sub === "guard") { await cliGuard(); process.exit(0); }
   if (sub === "check") { await cliCheck(); process.exit(0); }
   if (sub === "handoff") { await cliHandoff(); process.exit(0); }

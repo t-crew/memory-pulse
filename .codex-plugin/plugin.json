@@ -1,7 +1,7 @@
 {
   "name": "memory-pulse",
-  "version": "0.6.0",
-  "description": "Corrections that outlive the session. Surfaces a correction first in every session. A PreToolUse guard blocks an edit that writes the old value back and cites the ledger line that retired it. The ledger is a local file you own.",
+  "version": "0.7.0",
+  "description": "Give any agent self-improving memory you can trust in production. Every correction is kept, shown to your agent when it matters and enforced on Claude Code and Codex. Built-in memory security: notes cannot instruct the agent, and any edit to the record shows.",
   "author": {
     "name": "Travis Crew",
     "url": "https://github.com/t-crew"
@@ -23,7 +23,7 @@
   "hooks": "./hooks/hooks.json",
   "interface": {
     "displayName": "Memory Pulse",
-    "shortDescription": "Project memory whose corrections surface first \u2014 and are enforced.",
+    "shortDescription": "Project memory whose corrections surface first — and are enforced.",
     "longDescription": "Re-enter a project through its causal ledger at session start, recall what caused what, record decisions and corrections with withdrawn terms, and let the guard block any edit that reintroduces a withdrawn value. Reads cost ~900 tokens of tool definitions; the ledger is a local file in your repo and writes work offline.",
     "developerName": "Travis Crew",
     "category": "Developer Tools",

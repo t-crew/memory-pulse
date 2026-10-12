@@ -6,7 +6,9 @@
 
 **Site:** [pulse.strategic-innovations.ai](https://pulse.strategic-innovations.ai/), where the guard runs in the browser. [Compare with Mem0, Zep, Letta and CLAUDE.md](https://pulse.strategic-innovations.ai/compare). **Guide:** [docs/GUIDE.md](docs/GUIDE.md), the day-to-day protocol with runnable examples.
 
-**Corrections that outlive the session.**
+**Give any agent self-improving memory you can trust in production.**
+
+Every correction is kept, put in front of your agent when it matters, and enforced. Memory security is built in: a stored note that reads like an instruction never reaches your agent, every row is hash-chained so any edit to the record shows, and a guard blocks the edit that writes a retired value back.
 
 Your agent acknowledged the correction, then wrote the old value back next
 session. memory-pulse records it once, puts it at the top of every session,
@@ -53,8 +55,8 @@ Six routes. Pick the row for your agent. Node 18 or newer (`package.json`
 engines); the test suite runs on 22 and 24.
 
 `remember` and `help` from the shell arrive in 0.5.9. npm served 0.5.8 on
-2026-09-09, where both exit 1 with `unknown command`. Once 0.6.0 is published,
-run `npx -y memory-pulse@0.6.0` until your npx cache catches up; before that,
+2026-09-09, where both exit 1 with `unknown command`. Once 0.7.0 is published,
+run `npx -y memory-pulse@0.7.0` until your npx cache catches up; before that,
 run `node server.mjs` from a checkout. Four more things in this README are
 0.5.9 behaviour and differ on 0.5.8: `guard --verbose` names non-JSON stdin
 on stderr (0.5.8 prints nothing), `handoff` with no transcript writes nothing
@@ -104,13 +106,14 @@ codex plugin marketplace add t-crew/memory-pulse
 codex plugin add memory-pulse@memory-pulse
 ```
 
-Then, inside Codex, run `/hooks` and trust the two `memory-pulse` entries.
+Then, inside Codex, run `/hooks` and trust the three `memory-pulse` entries
+(session start, prompt and guard).
 Codex runs no hook it has not shown you, and installing a plugin does not
 trust its hooks. That is Codex's rule and a good one.
 
-**npm, global install.** `install-hook` writes three hooks into
-`~/.claude/settings.json`: SessionStart brief, PreToolUse guard and PreCompact
-handoff. `--codex` targets `~/.codex/hooks.json` instead, `--project` writes
+**npm, global install.** `install-hook` writes four hooks into
+`~/.claude/settings.json`: SessionStart brief, UserPromptSubmit prompt,
+PreToolUse guard and PreCompact handoff. `--codex` targets `~/.codex/hooks.json` instead, `--project` writes
 them into the repository, and `--ambient` adds the UserPromptSubmit observer.
 
 ```
@@ -151,7 +154,7 @@ from Cursor's documented shape, not yet verified in Cursor on 2026-09-09.
 A rule file at `.cursor/rules/memory-pulse.mdc` tells the agent to call
 `pulse` before answering about prior work; the guide has the text.
 
-**From source.** One file, zero dependencies:
+**From source.** `server.mjs` plus the plain modules in `lib/`, zero dependencies:
 
 ```
 git clone https://github.com/t-crew/memory-pulse.git
@@ -181,7 +184,7 @@ and exits 0. The first `remember` creates `.memory-pulse/events.jsonl`, from a
 tool call or from the shell:
 
 ```
-npx -y memory-pulse@0.6.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
+npx -y memory-pulse@0.7.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 # before 0.6.0 is on npm, the same command from a checkout:
 git clone https://github.com/t-crew/memory-pulse.git && node memory-pulse/server.mjs remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 ```
@@ -266,9 +269,12 @@ is how you tell a miswired hook from "no evidence".
 ```
 npx memory-pulse help           # every command and environment variable; also --help, -h
 npx memory-pulse serve          # the MCP server on stdio (the default with no command)
-npx memory-pulse brief          # the re-entry brief (what the SessionStart hook prints)
+npx memory-pulse brief          # the SessionStart re-entry: the organized memory (scaffold) by default; with a key, --engine or --budget the engine brief
+npx memory-pulse scaffold       # the organized memory: identity and rules, corrections in force, project state, recent findings, open threads; --section S, --all
+npx memory-pulse telemetry show # the opt-in usage counts: exactly what would be sent once a day (on, off, reset)
+npx memory-pulse prompt         # UserPromptSubmit hook: the corrections and decisions that bear on the prompt, injected as context
 npx memory-pulse brief --budget 2000   # the richest tier that fits 2000 tokens, corrections first and whole
-npx memory-pulse brief --offline  # local render when the engine is unreachable (automatic on any engine error)
+npx memory-pulse brief --offline  # the plain local list; an engine error falls back to the organized memory instead
 npx memory-pulse remember <cause> <effect> [--kind correction] [--withdrawn T]... [--replacement T]... [--supersedes N] [--note "..."] [--tags a] [--pinned] [--scope agent]
 npx memory-pulse before "<what you are about to do>"   # which corrections bear on the change; exact rung local, learned rung from the engine
 npx memory-pulse guard          # PreToolUse hook: blocks edits that reintroduce withdrawn terms (exit 2); --verbose names a non-JSON stdin
@@ -291,7 +297,7 @@ npx memory-pulse report         # correction re-violation scoreboard, computed l
 npx memory-pulse bench          # instant measured metrics on YOUR ledger
 npx memory-pulse stats          # your telemetry capsule, signature verified by the engine
 npx memory-pulse badge          # README badge markdown from your own signed numbers
-npx memory-pulse install-hook   # three hooks (idempotent); --codex targets Codex; --project commits them; --ambient adds the observer
+npx memory-pulse install-hook   # four hooks (idempotent); --codex targets Codex; --project commits them; --ambient adds the observer
 npx memory-pulse mode [agent|deliberate]   # show or set the mode
 npx memory-pulse identity "<name>, <role>; <stance>"   # pin the agent's self on the agent ledger
 npx memory-pulse handoff        # PreCompact hook: record what the session was doing, from the transcript on stdin
@@ -512,7 +518,21 @@ What that turns on:
   signed capsule also raises a **drift alert** when a ledger loses corrections,
   shrinks, or its usage shape jumps, and the brief footer shows it. Both checks
   are deterministic lists you can read.
-- This client is the entire client: one file, zero dependencies, readable in one sitting.
+- This client is the entire client: `server.mjs` and three plain modules in `lib/`, zero dependencies, readable in one sitting.
+
+## Usage counts
+
+Usage counts are off by default. Nothing is counted until you say yes: `install-hook` asks once on a terminal, the one-line installer asks through the terminal, and `memory-pulse telemetry on` turns them on at any time. Neither ever asks in CI. When they are on, the client sends at most once a day, to `/v1/usage`:
+
+| Field | What it holds |
+|---|---|
+| `install` | a random 128-bit id made when you said yes; the engine stores only a hash of it; `memory-pulse telemetry reset` makes a new one |
+| `version` | the client version |
+| `host` | `claude`, `codex` or `other` |
+| `counts` | eight integers since the last send: `guard_check`, `guard_block`, `remember`, `lint`, `check_local`, `scaffold`, `prompt_slice`, `edit_slice` |
+| `capsule` | the signed `.rain` capsule the engine returned last time, so the counts add up without a database on our side |
+
+No ledger text, path, term or prompt is in it, and none can be: the client accepts only those eight names. `memory-pulse telemetry show` prints exactly what would be sent. `memory-pulse telemetry off`, `MEMORY_PULSE_TELEMETRY=0` or `DO_NOT_TRACK=1` stops it.
 
 ## Environment
 
@@ -527,6 +547,12 @@ What that turns on:
 | `MEMORY_PULSE_MODE` | from `~/.memory-pulse/agent/config.json`, else `deliberate` | `agent` or `deliberate` for one invocation |
 | `MEMORY_PULSE_SETTINGS_DIR` | unset | directory that receives `settings.json` or `hooks.json` for `install-hook` and `mode`; the tests use it |
 | `MEMORY_PULSE_BRIEF_BUDGET` | unset | default for `brief --budget`, in tokens |
+| `MEMORY_PULSE_TELEMETRY` | unset | `0` or `off`: never send usage counts, whatever the consent |
+| `MEMORY_PULSE_TELEMETRY_DEBUG` | unset | `1`: print the usage payload instead of sending it |
+| `DO_NOT_TRACK` | unset | `1`: never send usage counts |
+| `CI` | unset | set: `install-hook` never asks about usage counts |
+| `CLAUDECODE`, `CLAUDE_PROJECT_DIR` | set by Claude Code | read only to report the host as `claude` in the usage counts |
+| `MEMORY_PULSE_BRIEF` | unset | `scaffold` or `engine`: which re-entry `brief` prints, overriding the default (scaffold without a key, engine brief with one) |
 | `MEMORY_PULSE_BRIEF_TIER` | `brief` | tier for `brief` when no budget is given: `index`, `brief`, `notes`, `full` |
 | `MEMORY_PULSE_LOCK_TIMEOUT_MS` | `5000` | how long a writer waits for the ledger lock before refusing; a lock whose holder has exited is broken at once |
 | `NO_COLOR`, `TERM` | unset | colour in the guard's block message only on a TTY with `NO_COLOR` unset and `TERM` not `dumb` |
@@ -538,6 +564,8 @@ What that turns on:
   (`worker/api.js`, read 2026-09-09). A session start is one read; past the
   limit the brief falls back to the offline render and says why. No account,
   no key.
+- **Starter, $7/mo.** Ledgers to 5,000 events, 1,000 hosted reads a day, the
+  hosted memory (ranked brief, recall, code mode) and the memory-pulse skill.
 - **Pro, $19/mo.** Ledgers to 20,000 events, unlimited reads, signed check
   receipts. One environment variable, `MEMORY_PULSE_KEY`.
 - **Enterprise, $79/mo.** Ledgers to 250,000 events, ten revocable seat keys on

@@ -43,3 +43,10 @@ test("prose obeys the copy rules: no banned words, no em dashes", () => {
   const hit = BANNED.exec(p); assert.equal(hit, null, `banned word "${hit?.[0]}" near: ${p.slice(Math.max(0, (hit?.index ?? 0) - 60), (hit?.index ?? 0) + 60)}`);
   const dash = p.indexOf("—"); assert.equal(dash, -1, `em dash in prose near: ${p.slice(Math.max(0, dash - 60), dash + 60)}`);
 });
+
+// Review 9 (0.7.0): the opt-in usage payload is stated field by field where a user reads it, before anything is sent.
+test("the README states the usage counts payload field by field", () => {
+  const sec = README.slice(README.indexOf("## Usage counts"));
+  assert.ok(README.includes("## Usage counts"), "a Usage counts section exists");
+  for (const f of ["`install`", "`version`", "`host`", "`counts`", "`capsule`", "guard_check", "guard_block", "remember", "lint", "check_local", "scaffold", "prompt_slice", "edit_slice", "DO_NOT_TRACK", "telemetry show", "off by default"]) assert.ok(sec.includes(f), `Usage counts section names ${f}`);
+});

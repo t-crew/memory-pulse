@@ -52,7 +52,8 @@ test("the Codex manifest points at the same skill, MCP and hook files Claude Cod
 
 test("hooks.json: one SessionStart brief and one guarded PreToolUse edit matcher, both run from the plugin root", () => {
   const h = read("hooks/hooks.json").hooks;
-  assert.deepEqual(Object.keys(h).sort(), ["PreToolUse", "SessionStart"]);
+  assert.deepEqual(Object.keys(h).sort(), ["PreToolUse", "SessionStart", "UserPromptSubmit"]); // 0.7.0: the prompt slice
+  assert.deepEqual(h.UserPromptSubmit.flatMap((g) => g.hooks.map((x) => x.command)), ['node "${CLAUDE_PLUGIN_ROOT}/server.mjs" prompt']);
   const cmds = (ev) => h[ev].flatMap((g) => g.hooks.map((x) => [g.matcher, x.type, x.command]));
   assert.deepEqual(cmds("SessionStart"), [[undefined, "command", 'node "${CLAUDE_PLUGIN_ROOT}/server.mjs" brief']]);
   assert.deepEqual(cmds("PreToolUse"), [["Edit|Write|MultiEdit|apply_patch|Bash", "command", 'node "${CLAUDE_PLUGIN_ROOT}/server.mjs" guard']]);
@@ -80,7 +81,7 @@ test("the server reports the package version to MCP clients", async () => {
 });
 
 test("every manifest opens the pitch with the same sentence, in the product voice", () => {
-  const LEAD = "Corrections that outlive the session.";
+  const LEAD = "Give any agent self-improving memory you can trust in production."; // positioning set by Travis, 2026-10-12
   // Each registry enforces its own ceiling. The MCP registry rejects a publish
   // with 422 "expected length <= 100" on body.description, which failed the
   // v0.5.2 release after npm had already published. The others truncate in the
@@ -104,4 +105,14 @@ test("every manifest opens the pitch with the same sentence, in the product voic
     }
     assert.ok(text.length <= cap, `${file} description is ${text.length} chars, over its ${cap} limit`);
   }
+});
+
+// 0.7.0 moved plain-code modules into lib/. A module missing from the tarball is the 0.1.0 failure again (it shipped
+// a bin that served nothing), so the packed file list is checked, not package.json alone.
+test("npm pack ships lib/scaffold.mjs beside server.mjs", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const out = JSON.parse(execFileSync("npm", ["pack", "--dry-run", "--json"], { cwd: new URL("..", import.meta.url).pathname, encoding: "utf8" }));
+  const files = out[0].files.map((f) => f.path);
+  assert.ok(files.includes("server.mjs"), files.join(" "));
+  assert.ok(files.includes("lib/scaffold.mjs"), files.join(" "));
 });
