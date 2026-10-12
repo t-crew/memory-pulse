@@ -93,3 +93,9 @@ test("several withdrawn terms on one correction read as plural", async () => {
   const { text } = renderScaffold([corr(1, ["ten qubits", "10 qubits"], ["8 qubits"])]);
   assert.match(text, /"ten qubits", "10 qubits" were withdrawn; use 8 qubits \(t1\)/);
 });
+
+test("the header counts rows in the singular when there is one", async () => {
+  const { renderScaffold } = await load("one");
+  assert.match(renderScaffold([corr(1, ["$49"], ["$29"])]).text, /^memory-pulse: memory from 1 ledger row; each line cites its row\./);
+  assert.match(renderScaffold([corr(1, ["$49"], ["$29"]), corr(2, ["x1"], ["x2"])]).text, /from 2 ledger rows;/);
+});
