@@ -19,7 +19,7 @@
  *   MEMORY_PULSE_API     override the API base (default: hosted service)
  *   MEMORY_PULSE_LEDGER  override the ledger path (default: ./.memory-pulse/events.jsonl)
  *   MEMORY_PULSE_AGENT, MEMORY_PULSE_PROJECT, MEMORY_PULSE_MEMORY_KEY, MEMORY_PULSE_MODE,
- *   MEMORY_PULSE_SETTINGS_DIR, MEMORY_PULSE_BRIEF_BUDGET, MEMORY_PULSE_BRIEF_TIER, NO_COLOR, HOME
+ *   MEMORY_PULSE_SETTINGS_DIR, MEMORY_PULSE_BRIEF, MEMORY_PULSE_BRIEF_BUDGET, MEMORY_PULSE_BRIEF_TIER, NO_COLOR, HOME
  */
 import { createHash, createCipheriv } from "node:crypto";
 // http, https, zlib and readline load on first use: the guard runs as a fresh process on every tool call and never
@@ -39,7 +39,8 @@ const PKG_VERSION = (() => {
 import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync, realpathSync, readdirSync, statSync, renameSync, unlinkSync, openSync, closeSync, writeSync, truncateSync} from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
-import { renderScaffold as renderScaffoldWith, DEFAULT_BUDGETS } from "./lib/scaffold.mjs";
+import { renderScaffold as renderScaffoldWith, DEFAULT_BUDGETS, SECTIONS } from "./lib/scaffold.mjs";
+import { promptSlice as promptSliceWith, editSlice as editSliceWith } from "./lib/slices.mjs";
 
 const API = (process.env.MEMORY_PULSE_API ?? "https://pulse.strategic-innovations.ai").replace(/\/$/, "");
 const KEY = process.env.MEMORY_PULSE_KEY ?? null;
@@ -991,6 +992,25 @@ export { DEFAULT_BUDGETS };
 export function renderScaffold(allEvents, opts = {}) {
   return renderScaffoldWith(allEvents, { ...opts, deps: { inForce, supersededSet, instructionLike, handoffLine, held: HELD } });
 }
+export function promptSlice(allEvents, prompt, opts = {}) {
+  return promptSliceWith(allEvents, prompt, { ...opts, deps: { inForce, supersededSet, instructionLike, containsTerm, held: HELD } });
+}
+export function editSlice(rows, invariants, action, opts = {}) {
+  return editSliceWith(rows, invariants, action, { ...opts, deps: { supersededSet, instructionLike, containsTerm } });
+}
+// Claude Code saves a hook's injected text over 10,000 chars to a file and shows the model a 2,000-char preview
+// (docs/HOST_FACTS.md; the estate's 16,933-char brief was cut that way). A brief that will not arrive whole is
+// replaced by the scaffold, which is built to fit.
+export const BRIEF_CAP = 9500;
+export function capBrief(text, scaffoldText, cap = BRIEF_CAP) {
+  if (text.length <= cap) return text;
+  return `memory-pulse: the engine brief was ${text.length.toLocaleString("en-US")} chars, over the ${cap.toLocaleString("en-US")} the hosts take whole; this is the scaffold instead.\n${scaffoldText}`;
+}
+function scaffoldFor(led, opts = {}) {
+  const agentEvents = currentMode() === "agent" && existsSync(agentPath()) ? readEvents({ scope: "agent" }).events : [];
+  const chain = verifyChain(led.path);
+  return renderScaffold(led.events, { agentEvents, blocks: readBlocks(), chain: chain.ok ? null : chain, ...opts });
+}
 export function offlineBrief(led, allEvents, { now = Date.now(), recent = 8 } = {}) {
   const events = inForce(allEvents); const rolledBack = allEvents.length - events.length;
   const lines = [`memory-pulse: engine unreachable — local render from ${events.length} events (corrections and recency only; no salience ranking)${rolledBack ? ` · ${rolledBack} row(s) rolled back, kept on record` : ""}`];
@@ -1258,24 +1278,52 @@ async function cliBrief() {
   if (budget !== undefined && !(Number.isFinite(budget) && budget >= 1)) { console.error("brief --budget takes a positive number of tokens"); process.exit(1); }
   const tier = process.env.MEMORY_PULSE_BRIEF_TIER || (budget ? undefined : "brief");
   if (process.argv.includes("--offline")) { process.stdout.write(offlineBrief(led, events) + "\n"); return; }
+  // 0.7.0: the free default is the local scaffold. The engine brief is asked for by a key, --engine, a budget or a tier.
+  const mode = process.env.MEMORY_PULSE_BRIEF;
+  const engine = mode !== "scaffold" && !process.argv.includes("--scaffold") &&
+    (mode === "engine" || process.argv.includes("--engine") || bi >= 0 || process.env.MEMORY_PULSE_BRIEF_BUDGET || process.env.MEMORY_PULSE_BRIEF_TIER || process.env.MEMORY_PULSE_KEY);
+  if (!engine) { const { text } = scaffoldFor(led); if (text) process.stdout.write(text + "\n"); return; }
   try {
     const out = await callApi("/v1/pulse", { events, ...(tier ? { tier } : {}), ...(budget ? { budget } : {}) });
-    process.stdout.write(loadedLine(led, events, { keyStatus: out.keyStatus, tier: out.tier ?? tier, chars: out.text?.length, budget }) + "\n");
-    if (currentMode() === "agent" && existsSync(agentPath())) { const ib = identityBlock(readEvents({ scope: "agent" })); if (ib) process.stdout.write(ib + "\n"); }
-    const hl = handoffLine(events); if (hl) process.stdout.write(hl + "\n");
-    if (out.text) process.stdout.write(out.text + "\n");
-    const risk = atRiskLines(events); if (risk) process.stdout.write(risk + "\n");
+    const parts = [loadedLine(led, events, { keyStatus: out.keyStatus, tier: out.tier ?? tier, chars: out.text?.length, budget })];
+    if (currentMode() === "agent" && existsSync(agentPath())) { const ib = identityBlock(readEvents({ scope: "agent" })); if (ib) parts.push(ib); }
+    const hl = handoffLine(events); if (hl) parts.push(hl);
+    if (out.text) parts.push(out.text);
+    const risk = atRiskLines(events); if (risk) parts.push(risk);
     if (Array.isArray(out.quarantined) && out.quarantined.length) {
-      process.stdout.write(`⚠ ${out.quarantined.length} note(s) quarantined — instruction-like content was not rendered (t=${out.quarantined.map((q) => q.t).join(", ")})\n`);
+      parts.push(`⚠ ${out.quarantined.length} note(s) quarantined — instruction-like content was not rendered (t=${out.quarantined.map((q) => q.t).join(", ")})`);
     }
-    const sd = sealDriftLine(out); if (sd) process.stdout.write(sd + "\n");
+    const sd = sealDriftLine(out); if (sd) parts.push(sd);
     const foot = telemetryFooter(out.telemetry);
-    if (foot) process.stdout.write(foot + "\n");
+    if (foot) parts.push(foot);
+    const brief = parts.join("\n");
+    process.stdout.write(capBrief(brief, brief.length > BRIEF_CAP ? scaffoldFor(led).text : "") + "\n");
   } catch (e) {
-    // A dead network must not break session start — and must not hand it nothing: local render, labelled as such.
+    // A dead network must not break session start — and must not hand it nothing: the local scaffold, labelled as such.
     process.stdout.write(`memory-pulse: brief unavailable (${String(e?.message ?? e).split(".")[0]})\n`);
-    process.stdout.write(offlineBrief(led, events) + "\n");
+    const { text } = scaffoldFor(led); if (text) process.stdout.write(text + "\n");
   }
+}
+
+// `memory-pulse scaffold [--section <name>] [--all]` — the organized memory the session starts from; --all lifts the budgets.
+async function cliScaffold() {
+  const si = process.argv.indexOf("--section"); const only = si >= 0 ? process.argv[si + 1] : null;
+  if (only && !SECTIONS.includes(only)) { console.error(`unknown section "${only}" — one of ${SECTIONS.join(", ")}`); process.exit(1); }
+  const all = process.argv.includes("--all");
+  const budgets = all ? Object.fromEntries(SECTIONS.map((x) => [x, Infinity])) : undefined;
+  const { text } = scaffoldFor(readEvents(), { only, ...(budgets ? { budgets } : {}) });
+  if (text) process.stdout.write(text + "\n");
+}
+
+// UserPromptSubmit hook: inject the slice of the memory that bears on this prompt. Silent when nothing does; exit 0 always.
+async function cliPrompt() {
+  try {
+    let raw = ""; try { raw = readFileSync(0, "utf8"); } catch { /* no stdin */ }
+    let hook = {}; try { hook = raw.trim() ? JSON.parse(raw) : {}; } catch { return; }
+    if (typeof hook.prompt !== "string") return;
+    const slice = promptSlice(readEvents().events, hook.prompt, { blocks: readBlocks() });
+    if (slice) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: slice } }));
+  } catch { /* a hook must never block a prompt */ }
 }
 
 // `npx memory-pulse stats` — the signed telemetry capsule, verified keylessly
@@ -1579,7 +1627,22 @@ async function cliGuard() {
     // does not touch this action is one line on stderr, and the action proceeds.
     if (v.verdict === "blocked") blocked.push({ file: a.path, v });
   }
-  if (!blocked.length) { if (warnings.size) process.stderr.write([...warnings].join("\n") + "\n"); return; }
+  if (!blocked.length) {
+    if (warnings.size) process.stderr.write([...warnings].join("\n") + "\n");
+    // Allowed: add the memory that bears on this file as context. Never a permissionDecision — "allow" would skip the
+    // user's permission prompt (docs/HOST_FACTS.md); the guard only blocks or informs.
+    try {
+      const rows = [...guardRows(ledgerPath()), ...(existsSync(agentPath()) ? guardRows(agentPath()) : [])];
+      const seen = new Set(); const parts = [];
+      for (const a of actions) {
+        const sl = editSlice(rows, invariants, { path: a.path ?? "", text: a.text ?? "" });
+        for (const line of sl.split("\n")) if (line && !seen.has(line)) { seen.add(line); parts.push(line); }
+      }
+      const ctx = parts.join("\n").slice(0, 2000);
+      if (ctx) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: ctx } }));
+    } catch { /* context is a convenience; the verdict above is what the hook is for */ }
+    return;
+  }
   const lines = [];
   for (const { file, v } of blocked) {
     try { appendFileSync(violationsPath(), JSON.stringify({ at: new Date().toISOString(), file, hits: v.corrections.map((h) => ({ term: h.term, t: h.t })), invariants: v.invariants.map((i) => i.id) }) + "\n"); } catch { /* reporting is best effort */ }
@@ -1771,6 +1834,9 @@ function cliInstallHook() {
   const GUARD = "npx -y memory-pulse guard";
   const pre = (settings.hooks.PreToolUse = settings.hooks.PreToolUse || []);
   if (!JSON.stringify(pre).includes(GUARD)) { pre.push({ matcher: codex ? "Edit|Write|apply_patch" : "Edit|Write|MultiEdit|Bash", hooks: [{ type: "command", command: GUARD }] }); changed++; }
+  const PROMPT = "npx -y memory-pulse prompt";
+  const upsP = (settings.hooks.UserPromptSubmit = settings.hooks.UserPromptSubmit || []);
+  if (!JSON.stringify(upsP).includes(PROMPT)) { upsP.push({ hooks: [{ type: "command", command: PROMPT }] }); changed++; }
   const HANDOFF = "npx -y memory-pulse handoff";
   const pc = (settings.hooks.PreCompact = settings.hooks.PreCompact || []);
   if (!JSON.stringify(pc).includes(HANDOFF)) { pc.push({ hooks: [{ type: "command", command: HANDOFF }] }); changed++; }
@@ -1785,6 +1851,7 @@ function cliInstallHook() {
   console.log(`installed ${changed} hook(s) in ${file}`);
   console.log("SessionStart: every session re-enters through the ledger automatically.");
   console.log(`PreToolUse (${codex ? "apply_patch" : "Edit/Write"}): an edit that writes back a withdrawn value is blocked and explained.`);
+  console.log("UserPromptSubmit: the corrections and decisions that bear on each prompt ride along with it.");
   console.log("PreCompact: what the session was doing is recorded before compaction and printed first at the next start.");
   if (process.argv.includes("--ambient")) console.log("UserPromptSubmit: a prompt shaped like a correction (\"X not Y\", \"change X to Y\", \"X -> Y\") is recorded with both terms; the guard enforces it.");
   if (codex) console.log(`Codex runs no hook it has not been shown: open Codex, run /hooks, and trust the ${changed} memory-pulse entries (once per definition).`);
@@ -1867,7 +1934,10 @@ usage: memory-pulse <command> [options]        (npx -y memory-pulse <command> wi
 Commands
   serve                               start the MCP server on stdio (the default with no command); tools: pulse, recall, remember, execute
   help                                this text (also --help, -h, or --help after any command)
-  brief [--budget N] [--offline]      the re-entry brief the SessionStart hook prints; --budget picks the richest tier that fits N tokens; --offline skips the engine
+  brief [--engine] [--budget N] [--offline]
+                                      the SessionStart re-entry: the scaffold by default; with a key, --engine or --budget the engine brief (tier fitting N tokens), replaced by the scaffold when over 9,500 chars; --offline is the plain local list
+  scaffold [--section S] [--all]      the organized memory: identity and rules, corrections in force, project state, recent findings, open threads; every line cites its row
+  prompt                              UserPromptSubmit hook: the corrections and decisions that bear on the prompt, as context; silent when none do
   remember <cause> <effect> [--kind event|correction] [--note "..."] [--withdrawn T]... [--replacement T]... [--supersedes N]... [--tags a]... [--pinned] [--scope project|agent]
                                       record a finding or a correction from the shell; same rules as the remember tool; prints the stored row as JSON; exit 1 when refused
   before "<what you are about to do>" [--path <file>] [--text <edit>]
@@ -1908,6 +1978,7 @@ Environment
   MEMORY_PULSE_MEMORY_KEY             off disables the signed memory key (.memory-pulse/memory.rain, requested at 500+ events)
   MEMORY_PULSE_MODE                   agent or deliberate for this invocation, overriding ~/.memory-pulse/agent/config.json
   MEMORY_PULSE_SETTINGS_DIR           directory that receives settings.json or hooks.json for install-hook and mode (tests use it)
+  MEMORY_PULSE_BRIEF                  scaffold or engine: which re-entry brief prints (default: scaffold without a key, engine brief with one)
   MEMORY_PULSE_BRIEF_BUDGET           default for brief --budget, in tokens
   MEMORY_PULSE_BRIEF_TIER             tier for brief when no budget is given: index, brief (default), notes or full
   MEMORY_PULSE_LOCK_TIMEOUT_MS        how long a writer waits for the ledger lock before refusing (default 5000); a lock whose holder has exited is broken at once
@@ -2347,6 +2418,8 @@ if (isMain) {
   if (sub === "help" || sub === "--help" || sub === "-h" || process.argv.slice(2).some((a) => a === "--help" || a === "-h")) { cliHelp(); process.exit(0); }
   if (sub === "remember") { await cliRemember(); process.exit(0); }
   if (sub === "brief") { await cliBrief(); process.exit(0); }
+  if (sub === "scaffold") { await cliScaffold(); process.exit(0); }
+  if (sub === "prompt") { await cliPrompt(); process.exit(0); }
   if (sub === "before") { await cliBefore(); process.exit(0); }
   if (sub === "install-hook") { cliInstallHook(); process.exit(0); }
   if (sub === "guard") { await cliGuard(); process.exit(0); }

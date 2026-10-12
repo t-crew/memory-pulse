@@ -212,7 +212,7 @@ test("findViolations only matches explicit withdrawn terms on corrections", asyn
 test("install-hook installs both hooks and stays idempotent", () => {
   const dir = mkdtempSync(join(tmpdir(), "mp-hook2-"));
   const run = () => execFileSync(process.execPath, [SERVER, "install-hook"], { env: { ...process.env, MEMORY_PULSE_SETTINGS_DIR: dir }, encoding: "utf8" });
-  assert.match(run(), /installed 3 hook/);
+  assert.match(run(), /installed 4 hook/); // 0.7.0 adds UserPromptSubmit prompt
   assert.match(run(), /already installed/);
   const s = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8"));
   // Bash joined the matcher when the guard learned to read a heredoc: a shell
@@ -454,7 +454,7 @@ test("install-hook --codex writes Codex's hooks.json (user or --project), same e
   const dir = mkdtempSync(join(tmpdir(), "mp-codex-hook-"));
   const run = (...a) => execFileSync(process.execPath, [SERVER, "install-hook", "--codex", ...a], { env: { ...process.env, MEMORY_PULSE_SETTINGS_DIR: dir }, encoding: "utf8" });
   const first = run();
-  assert.match(first, /installed 3 hook\(s\) in .*hooks\.json/);
+  assert.match(first, /installed 4 hook\(s\) in .*hooks\.json/); // 0.7.0 adds UserPromptSubmit prompt
   assert.match(first, /run \/hooks, and trust/, "Codex will not run an untrusted hook; the user has to be told");
   assert.match(run(), /already installed/);
   const h = JSON.parse(readFileSync(join(dir, "hooks.json"), "utf8")).hooks;

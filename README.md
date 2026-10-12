@@ -266,7 +266,9 @@ is how you tell a miswired hook from "no evidence".
 ```
 npx memory-pulse help           # every command and environment variable; also --help, -h
 npx memory-pulse serve          # the MCP server on stdio (the default with no command)
-npx memory-pulse brief          # the re-entry brief (what the SessionStart hook prints)
+npx memory-pulse brief          # the SessionStart re-entry: the organized memory (scaffold) by default; with a key, --engine or --budget the engine brief
+npx memory-pulse scaffold       # the organized memory: identity and rules, corrections in force, project state, recent findings, open threads; --section S, --all
+npx memory-pulse prompt         # UserPromptSubmit hook: the corrections and decisions that bear on the prompt, injected as context
 npx memory-pulse brief --budget 2000   # the richest tier that fits 2000 tokens, corrections first and whole
 npx memory-pulse brief --offline  # local render when the engine is unreachable (automatic on any engine error)
 npx memory-pulse remember <cause> <effect> [--kind correction] [--withdrawn T]... [--replacement T]... [--supersedes N] [--note "..."] [--tags a] [--pinned] [--scope agent]
@@ -291,7 +293,7 @@ npx memory-pulse report         # correction re-violation scoreboard, computed l
 npx memory-pulse bench          # instant measured metrics on YOUR ledger
 npx memory-pulse stats          # your telemetry capsule, signature verified by the engine
 npx memory-pulse badge          # README badge markdown from your own signed numbers
-npx memory-pulse install-hook   # three hooks (idempotent); --codex targets Codex; --project commits them; --ambient adds the observer
+npx memory-pulse install-hook   # four hooks (idempotent); --codex targets Codex; --project commits them; --ambient adds the observer
 npx memory-pulse mode [agent|deliberate]   # show or set the mode
 npx memory-pulse identity "<name>, <role>; <stance>"   # pin the agent's self on the agent ledger
 npx memory-pulse handoff        # PreCompact hook: record what the session was doing, from the transcript on stdin
@@ -527,6 +529,7 @@ What that turns on:
 | `MEMORY_PULSE_MODE` | from `~/.memory-pulse/agent/config.json`, else `deliberate` | `agent` or `deliberate` for one invocation |
 | `MEMORY_PULSE_SETTINGS_DIR` | unset | directory that receives `settings.json` or `hooks.json` for `install-hook` and `mode`; the tests use it |
 | `MEMORY_PULSE_BRIEF_BUDGET` | unset | default for `brief --budget`, in tokens |
+| `MEMORY_PULSE_BRIEF` | unset | `scaffold` or `engine`: which re-entry `brief` prints, overriding the default (scaffold without a key, engine brief with one) |
 | `MEMORY_PULSE_BRIEF_TIER` | `brief` | tier for `brief` when no budget is given: `index`, `brief`, `notes`, `full` |
 | `MEMORY_PULSE_LOCK_TIMEOUT_MS` | `5000` | how long a writer waits for the ledger lock before refusing; a lock whose holder has exited is broken at once |
 | `NO_COLOR`, `TERM` | unset | colour in the guard's block message only on a TTY with `NO_COLOR` unset and `TERM` not `dumb` |

@@ -15,10 +15,15 @@ is in `docs/GUIDE.md`.
 
 Before answering anything about prior work, decisions, numbers, or history in
 this project, call `pulse` (tier `brief`). If a SessionStart hook is
-installed, the brief is already in your context. Read its CORRECTIONS block
-first and treat every entry there as binding. An `AT RISK` block names the
-corrections the guard has had to block twice or more; read it before editing
-the paths it names.
+installed, the memory is already in your context. Since 0.7.0 it arrives
+organized in five sections (identity and rules, corrections in force, project
+state, recent findings, open threads), and every line cites its ledger row
+`(tN)`. A `+N more` line names the command that shows the rest
+(`memory-pulse scaffold --section <name>`). Read CORRECTIONS IN FORCE first and
+treat every entry there as binding; a correction marked `blocked N times` is
+one the guard keeps having to stop. With the prompt and guard hooks
+installed, the corrections that bear on each prompt and each edited file are
+added to your context as well; they are the same rows, not new instructions.
 
 Do not re-derive something the ledger already settled. If a question is about
 a specific entity, call `recall` with `op: "effects"` or `op: "causes"` on it

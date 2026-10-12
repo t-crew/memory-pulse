@@ -52,7 +52,8 @@ test("the Codex manifest points at the same skill, MCP and hook files Claude Cod
 
 test("hooks.json: one SessionStart brief and one guarded PreToolUse edit matcher, both run from the plugin root", () => {
   const h = read("hooks/hooks.json").hooks;
-  assert.deepEqual(Object.keys(h).sort(), ["PreToolUse", "SessionStart"]);
+  assert.deepEqual(Object.keys(h).sort(), ["PreToolUse", "SessionStart", "UserPromptSubmit"]); // 0.7.0: the prompt slice
+  assert.deepEqual(h.UserPromptSubmit.flatMap((g) => g.hooks.map((x) => x.command)), ['node "${CLAUDE_PLUGIN_ROOT}/server.mjs" prompt']);
   const cmds = (ev) => h[ev].flatMap((g) => g.hooks.map((x) => [g.matcher, x.type, x.command]));
   assert.deepEqual(cmds("SessionStart"), [[undefined, "command", 'node "${CLAUDE_PLUGIN_ROOT}/server.mjs" brief']]);
   assert.deepEqual(cmds("PreToolUse"), [["Edit|Write|MultiEdit|apply_patch|Bash", "command", 'node "${CLAUDE_PLUGIN_ROOT}/server.mjs" guard']]);
