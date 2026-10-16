@@ -67,6 +67,9 @@ jobs:
         run: |
           v="$(node -p 'require("./package.json").version')"
           if curl -sf "https://registry.modelcontextprotocol.io/v0/servers?search=io.github.t-crew/memory-pulse" | grep -q "\"version\":\"${v}\""; then echo "registry already has ${v} — skipping"; exit 0; fi
+          # npm now answers "Your package is being processed" and serves a new version minutes later; the registry validates
+          # against npm, so wait for it (measured 2026-10-16: about 6 minutes for 0.8.0) instead of failing and re-running.
+          for i in $(seq 1 60); do npm view "memory-pulse@${v}" version >/dev/null 2>&1 && break; echo "waiting for npm to serve ${v} ($i)"; sleep 15; done
           curl -sSL -o mp.tgz https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz
           tar xzf mp.tgz mcp-publisher
           ./mcp-publisher login github-oidc
