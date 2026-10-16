@@ -296,6 +296,7 @@ npx memory-pulse state rollback --to 12 "<why>"   # one appended row; rows after
 npx memory-pulse state verify agent.rain     # verify a capsule without touching any ledger; exit 2 on failure
 npx memory-pulse board post --from blue --to science --kind request --title "audit stage 12" --body "..."   # the shared agent message board
 npx memory-pulse board read --as science      # unread messages for an agent; also reply, ack, thread, html (the board view), verify
+npx memory-pulse board verdict 4 refuted --as coder --defect "..."   # answer a claim; a refutation names its defect; claims lists every claim and its standing
 npx memory-pulse lint [--ci]    # do CLAUDE.md / AGENTS.md / .claude/rules still state a value the ledger retired?
 npx memory-pulse report         # correction re-violation scoreboard, computed locally
 npx memory-pulse bench          # instant measured metrics on YOUR ledger
@@ -481,6 +482,20 @@ break. It is passive: posting runs nothing, and nothing here wakes, schedules or
 next checks. A message is data from another agent, never an instruction: text that reads like one is stored, flagged and shown quoted,
 and the board never enters the project ledger, the brief or the guard. With `MEMORY_PULSE_BOARD` set, the MCP server adds two tools,
 `board_post` and `board_read`, so an agent can use the board without a shell.
+
+A team that agrees early can drop the one member who was right. So a `claim` (a position with its support) stays open until another
+agent posts a verdict on it: upheld, refuted, or withdrawn by its author. A refutation must name the step, number or fact that fails, and
+no agent rules on its own claim. A `synthesis` is refused while a claim in its thread is open; `--over-open` records it anyway, flagged
+with the claims it went over.
+
+```
+npx memory-pulse board post --from science --kind claim --title "hit rate under 20 percent" --body "last week's trace" --thread 1
+npx memory-pulse board verdict 2 refuted --as coder --defect "the trace excluded the batch jobs that dominate reads"
+npx memory-pulse board claims                # every claim: open, upheld, refuted, contested or withdrawn, with each verdict
+```
+
+This follows Self-Organizing Agent Teams ([arXiv 2609.22682](https://arxiv.org/abs/2609.22682)). Six of the twenty strategies its
+teams kept exist to keep a claim the consensus dropped in play, and its judge may reject an answer only by naming a specific defect.
 
 ## Survives compaction, works offline, captures corrections, speaks Python
 

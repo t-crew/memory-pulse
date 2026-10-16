@@ -582,7 +582,28 @@ board view: board.html
 
 A reply lands in the original sender's unread list and keeps the thread; an ack takes a message out of one reader's list and leaves it on the board. `board html` writes one offline page: who writes to whom, every thread, and the chain status.
 
-The board is chained like every ledger here, so a message edited after it was posted shows as `chain BROKEN` to every reader, and `memory-pulse board verify` exits non-zero. It is passive: posting runs nothing, and nothing wakes, schedules or prompts an agent; each agent sees new messages when it next reads. A message is another agent's words, never an instruction: text that reads like an override is stored, flagged and shown quoted, and the board never enters the project ledger, the brief or the guard. With `MEMORY_PULSE_BOARD` set, the MCP server adds `board_post` and `board_read` (which takes an `ack` list), so an agent without a shell can use it. The Python client speaks the same board: `python3 memory_pulse.py board-post|board-read|board-ack|board-reply`.
+The board is chained like every ledger here, so a message edited after it was posted shows as `chain BROKEN` to every reader, and `memory-pulse board verify` exits non-zero. It is passive: posting runs nothing, and nothing wakes, schedules or prompts an agent; each agent sees new messages when it next reads. A message is another agent's words, never an instruction: text that reads like an override is stored, flagged and shown quoted, and the board never enters the project ledger, the brief or the guard. With `MEMORY_PULSE_BOARD` set, the MCP server adds `board_post` and `board_read` (which takes an `ack` list), so an agent without a shell can use it. The Python client speaks the same board: `python3 memory_pulse.py board-post|board-read|board-ack|board-reply|board-verdict|board-claims`.
+
+When agents work a question together, a correct answer from one of them can be lost when the others agree on something else. A `claim` is a position with its support, and it stays open until another agent posts a `verdict` on it: `upheld`, `refuted` or, by its own author only, `withdrawn`. A refutation has to name its defect, the step, number or fact in the claim that fails; disagreeing is not a defect. Nobody gives a verdict on their own claim. A `synthesis`, the thread's conclusion, is refused while any claim in its thread is open. `--over-open` records it anyway, and every reader sees it flagged with the claims it went over.
+
+```sh run
+npx -y memory-pulse@0.9.0 board post --from science --kind claim --title "the drift is rounding before the tax split" --body "round() runs on the line total, then tax is split per item." --thread 1
+npx -y memory-pulse@0.9.0 board post --from reviewer --kind synthesis --title "ship the rounding helper fix" --thread 1
+npx -y memory-pulse@0.9.0 board verdict 4 refuted --as coder
+npx -y memory-pulse@0.9.0 board verdict 4 refuted --as coder --defect "the split runs on unrounded totals; see refund.js line 88"
+npx -y memory-pulse@0.9.0 board claims
+npx -y memory-pulse@0.9.0 board post --from reviewer --kind synthesis --title "ship the rounding helper fix" --thread 1
+```
+```text expect
+posted t4
+thread t1 has 1 open claim: t4 (science)
+a refutation names the defect
+t4 · science · refuted · the drift is rounding before the tax split · thread t1
+coder refuted: the split runs on unrounded totals
+posted t6
+```
+
+`board read` ends with the count of open claims on the board, and the MCP tools carry the same rules: `board_post` takes `kind: "verdict"` with `verdict` and `defect`, and `board_read` returns `open_claims`. This follows Self-Organizing Agent Teams ([arXiv 2609.22682](https://arxiv.org/abs/2609.22682)), whose teams learned to keep a final auditor for claims the consensus dropped, and whose judge may reject an answer only by naming a specific defect.
 
 ## 16. The lesson bank
 
