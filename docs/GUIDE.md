@@ -1,12 +1,12 @@
 # How to use memory-pulse properly
 
-The ledger is a file in your repository, `.memory-pulse/events.jsonl`. Corrections are the point: a value you withdrew is printed first in every session and the guard blocks the edit that writes it back. This guide walks the protocol end to end, measured against the client source that ships as 0.5.9 on 2026-09-09.
+The ledger is a file in your repository, `.memory-pulse/events.jsonl`. Corrections are the point: a value you withdrew is printed first in every session and the guard blocks the edit that writes it back. This guide walks the protocol end to end against memory-pulse 0.8.0.
 
 `remember` and `help` from the shell arrive in 0.5.9. npm served 0.5.8 on 2026-09-09, where both exit 1 with `unknown command`; the command blocks below pin `npx -y memory-pulse@0.8.0`, the version this guide is measured against, so they run it once it is published, whatever your npx cache holds. Before it is published, run `node server.mjs` from a checkout; the first correction from one is `git clone https://github.com/t-crew/memory-pulse.git && node memory-pulse/server.mjs remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'`. The two `sh run` blocks that pipe into `guard --verbose` (section 1) and `handoff` (section 8) also print 0.5.9 lines that 0.5.8 does not.
 
 Every block marked `sh run` below is executed by `test/guide.test.js` in a scratch project with a scratch HOME and the engine unreachable, and every line in the `text expect` block after it must appear in the output. What you read is what the tool prints. Blocks marked `sh` alone need the engine or would change your real configuration, and the test does not run them.
 
-Contents: 1 install, 2 remember and correction, 3 the matching rule, 4 fixing a correction, 5 the brief, 6 recall and execute, 7 before and AT RISK, 8 session end, 9 agent mode, 10 teams and CI, 11 pricing and keys, 12 undo, 13 reference, 14 agent state.
+Contents: 1 install, 2 remember and correction, 3 the matching rule, 4 fixing a correction, 5 the brief, 6 recall and execute, 7 before and AT RISK, 8 session end, 9 agent mode, 10 teams and CI, 11 pricing and keys, 12 undo, 13 reference, 14 agent state, 15 the message board for several agents.
 
 ## 1. Install and confirm the wiring
 
