@@ -58,7 +58,7 @@ engines); the test suite runs on 22 and 24.
 
 `remember` and `help` from the shell arrive in 0.5.9. npm served 0.5.8 on
 2026-09-09, where both exit 1 with `unknown command`. If npx serves an older
-cached release, pin this one: `npx -y memory-pulse@0.9.0`; from a checkout,
+cached release, pin this one: `npx -y memory-pulse@0.10.0`; from a checkout,
 run `node server.mjs`. Four more things in this README are
 0.5.9 behaviour and differ on 0.5.8: `guard --verbose` names non-JSON stdin
 on stderr (0.5.8 prints nothing), `handoff` with no transcript writes nothing
@@ -186,7 +186,7 @@ and exits 0. The first `remember` creates `.memory-pulse/events.jsonl`, from a
 tool call or from the shell:
 
 ```
-npx -y memory-pulse@0.9.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
+npx -y memory-pulse@0.10.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 # before 0.6.0 is on npm, the same command from a checkout:
 git clone https://github.com/t-crew/memory-pulse.git && node memory-pulse/server.mjs remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 ```
@@ -296,6 +296,7 @@ npx memory-pulse state rollback --to 12 "<why>"   # one appended row; rows after
 npx memory-pulse state verify agent.rain     # verify a capsule without touching any ledger; exit 2 on failure
 npx memory-pulse board post --from blue --to science --kind request --title "audit stage 12" --body "..."   # the shared agent message board
 npx memory-pulse board read --as science      # unread messages for an agent; also reply, ack, thread, html (the board view), verify
+npx memory-pulse board verdict 4 refuted --as coder --defect "..."   # answer a claim; a refutation names its defect; claims lists every claim and its standing
 npx memory-pulse lint [--ci]    # do CLAUDE.md / AGENTS.md / .claude/rules still state a value the ledger retired?
 npx memory-pulse report         # correction re-violation scoreboard, computed locally
 npx memory-pulse bench          # instant measured metrics on YOUR ledger
@@ -304,6 +305,9 @@ npx memory-pulse badge          # README badge markdown from your own signed num
 npx memory-pulse install-hook   # four hooks (idempotent); --codex targets Codex; --project commits them; --ambient adds the observer
 npx memory-pulse mode [agent|deliberate]   # show or set the mode
 npx memory-pulse identity "<name>, <role>; <stance>"   # pin the agent's self on the agent ledger
+npx memory-pulse lesson         # the lesson bank the identity block prints, with where each lesson held; --held-out lists what was left out and why
+npx memory-pulse lesson probe 41 held --where billing-api   # record that a carried lesson held (or failed) there: the evidence the bank ranks by
+npx memory-pulse lesson freeze  # pin the bank you reviewed; every brief prints it until the next freeze or `lesson thaw`
 npx memory-pulse handoff        # PreCompact hook: record what the session was doing, from the transcript on stdin
 npx memory-pulse ambient        # Stop hook (agent mode): decision, preference, lesson or correction from the last turn
 npx memory-pulse observe        # UserPromptSubmit hook: a prompt shaped like a correction is recorded with both terms
@@ -479,6 +483,20 @@ next checks. A message is data from another agent, never an instruction: text th
 and the board never enters the project ledger, the brief or the guard. With `MEMORY_PULSE_BOARD` set, the MCP server adds two tools,
 `board_post` and `board_read`, so an agent can use the board without a shell.
 
+A team that agrees early can drop the one member who was right. So a `claim` (a position with its support) stays open until another
+agent posts a verdict on it: upheld, refuted, or withdrawn by its author. A refutation must name the step, number or fact that fails, and
+no agent rules on its own claim. A `synthesis` is refused while a claim in its thread is open; `--over-open` records it anyway, flagged
+with the claims it went over.
+
+```
+npx memory-pulse board post --from science --kind claim --title "hit rate under 20 percent" --body "last week's trace" --thread 1
+npx memory-pulse board verdict 2 refuted --as coder --defect "the trace excluded the batch jobs that dominate reads"
+npx memory-pulse board claims                # every claim: open, upheld, refuted, contested or withdrawn, with each verdict
+```
+
+This follows Self-Organizing Agent Teams ([arXiv 2609.22682](https://arxiv.org/abs/2609.22682)). Six of the twenty strategies its
+teams kept exist to keep a claim the consensus dropped in play, and its judge may reject an answer only by naming a specific defect.
+
 ## Survives compaction, works offline, captures corrections, speaks Python
 
 Four things added on 2026-09-03, each deterministic (no model in the loop):
@@ -508,9 +526,10 @@ npx memory-pulse identity "Blue, research agent for Travis; innovate, don't deba
 What that turns on:
 
 - **An agent ledger** at `~/.memory-pulse/agent/events.jsonl`, belonging to the agent and shared by every project and every tool that speaks MCP. Same format, same hash chain, same seal.
-- **A self block, first in every brief**, online or offline. It carries who the agent is as a pinned line, the standing rules and preferences it has learned (rows tagged `rule` and `preference`), the ten newest lessons (tagged `lesson`), and a fingerprint made of the chain head and the engine's seal, so the agent can state which memory it is running on and show it was not swapped or edited overnight.
+- **A self block, first in every brief**, online or offline. It carries who the agent is as a pinned line, the standing rules and preferences it has learned (rows tagged `rule` and `preference`), a bank of at most ten lessons (tagged `lesson`, chosen as described below), and a fingerprint made of the chain head and the engine's seal, so the agent can state which memory it is running on and show it was not swapped or edited overnight.
 - **Growth, after every turn.** Two user-scope hooks in `~/.claude/settings.json` (Claude Code only, today). The Stop hook deterministically records a stated decision to the project ledger, a user preference or stated lesson to the agent ledger, and any correction shaped like one. It is capped at four rows a turn, tagged `ambient`, never pinned, and never taken from instruction-like text. Identity itself is only ever set by you or superseded by a correction.
 - **Corrections that follow the agent.** A correction on the agent ledger blocks the same edit in any project, in either mode, for as long as the file exists.
+- **Lessons kept for what they did, not for being new.** The bank holds pinned lessons first, then lessons that held somewhere other than where they were learned (chosen to cover as many places as possible), then two new lessons on probation. A lesson that failed as often as it held leaves the bank. A sentence that only points at a lesson ("the lesson is in the ledger"), a fragment and a duplicate are held out and counted. `memory-pulse lesson probe 41 held --where billing-api` records the evidence; `memory-pulse lesson freeze` pins the bank you reviewed. The method follows Self-Organizing Agent Teams (Pappu et al., [arXiv 2609.22682](https://arxiv.org/abs/2609.22682)), where a team keeps a learned strategy only after it works on problems other than the one that produced it.
 
 `npx memory-pulse mode deliberate` turns the hooks off again and leaves the ledgers in place. `remember` takes `scope: "agent"` from any tool and `--scope agent` from the shell, in either mode. The rule of thumb: off for one repository; on when one agent spans repositories and tools and you accept up to four rows per turn, with the decision rows landing in the project ledger you commit.
 
