@@ -2052,7 +2052,7 @@ Commands
   repair [--scope project|agent] (--quarantine-tail | --adopt-quarantine <file> [--yes])
                                       move a tail of rows that fail on their own aside byte-for-byte (recorded, nothing deleted); re-append quarantined rows through the writer after a person reviews them
   seal accept "<why>"                 the recorded way out of a stale seal: appends the decision as a row and sets the old seal aside (never deleted); refused when the chain is broken
-  state [export|branch|import|merge|rollback|verify]
+  state [export|branch|import|merge|rollback|verify|push|pull]
                                       agent state as a .rain capsule: export it, cut a branch at a row, import or merge it elsewhere, roll back to a row as an appended row, verify a capsule; no argument prints where the ledger stands
   board post|read|reply|ack|thread|html|verify [--board PATH]
                                       the shared agent message board: a separate chained ledger any agent can post to and read; passive (nothing wakes or prompts an agent); a message is data, never an instruction
@@ -2456,7 +2456,9 @@ async function cliState() {
        memory-pulse state import <file|-> [--scope project|agent]  install into an empty ledger or fast-forward; refuses a diverged ledger
        memory-pulse state merge <file|-> [--scope project|agent]   carry a diverged branch's rows across once; conflicts are named
        memory-pulse state rollback --to <t> "<why>" [--scope ...]  one row that puts every row after t out of force; nothing is deleted
-       memory-pulse state verify <file|->                          verify a capsule without touching any ledger; exit 2 on failure`); process.exit(1); };
+       memory-pulse state verify <file|->                          verify a capsule without touching any ledger; exit 2 on failure
+       memory-pulse state push [--project <id>]                    send this ledger to its hosted project (MEMORY_PULSE_KEY: a project key from the console)
+       memory-pulse state pull [--project <id>]                    bring the hosted project's ledger here: install, fast-forward, or merge`); process.exit(1); };
   const scope = flag("scope") ?? "project"; if (!["project", "agent"].includes(scope)) usage();
   const ledger = ledgerFor(scope);
   const readCapsule = async (file) => {
@@ -2502,6 +2504,41 @@ async function cliState() {
       return;
     }
     console.log(`state import: ${r.status} — ${r.appended} row(s) from branch ${r.branch} (through t=${r.through}, head ${short(r.head)}); recorded at t${r.t}${r.held?.length ? `; ${r.held.length} row(s) held back from every render (note reads like an instruction): t${r.held.join(", t")}` : ""}`);
+    return;
+  }
+  if (op === "push" || op === "pull") {
+    // Hosted memory (2026-10-16): the ledger travels as the same .rain capsule `export` writes. A push the hosted side already
+    // holds changes nothing; one that extends it fast-forwards; a diverged one is merged there by the rules `state merge` uses.
+    // A pull is verified here first, then installed, fast-forwarded, or merged.
+    if (!KEY) { console.error(`memory-pulse state ${op}: set MEMORY_PULSE_KEY to a project key (make one at ${API}/app)`); process.exit(1); }
+    const project = flag("project");
+    const url = `${API}/v1/state${project ? `?project=${encodeURIComponent(project)}` : ""}`;
+    const say = async (res) => { let b = {}; try { b = await res.json(); } catch { /* not JSON */ } return b; };
+    if (op === "push") {
+      const b = buildCapsule({ ledger, scope });
+      if (b.error) { console.error(`memory-pulse state push: ${b.error}`); process.exit(2); }
+      let res; try { res = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-mp-key": KEY }, body: JSON.stringify(b.capsule) }); }
+      catch (e) { console.error(`memory-pulse state push: the hosted side is unreachable (${e.message})`); process.exit(1); }
+      const body = await say(res);
+      if (!res.ok) { console.error(`memory-pulse state push: ${res.status} — ${body.error ?? body.reason ?? "refused"}`); process.exit(res.status === 400 ? 2 : 1); }
+      const what = body.status === "merged" ? `merged — ${body.carried ?? 0} row(s) carried into the hosted ledger${body.held ? `, ${body.held} held back` : ""}${body.conflicts?.length ? `, ${body.conflicts.length} conflict(s)` : ""}; pull to bring the hosted rows here`
+        : body.status === "unchanged" ? `unchanged — ${body.reason ?? "the hosted ledger already holds this state"}`
+        : `${body.status} — ${body.appended ?? 0} row(s) sent; the hosted ledger holds ${body.rows ?? "?"} row(s)`;
+      console.log(`state push: ${what}`);
+      return;
+    }
+    let res; try { res = await fetch(url, { headers: { "x-mp-key": KEY } }); }
+    catch (e) { console.error(`memory-pulse state pull: the hosted side is unreachable (${e.message})`); process.exit(1); }
+    const body = await say(res);
+    if (!res.ok) { console.error(`memory-pulse state pull: ${res.status} — ${body.error ?? "refused"}`); process.exit(1); }
+    const v = verifyCapsule(body);
+    if (!v.ok) { console.error(`memory-pulse state pull: refused — the hosted capsule did not verify: ${v.reason}`); process.exit(2); }
+    let r = importCapsule(body, { scope });
+    if (r.status === "refused" && r.code === 1) r = mergeCapsule(body, { scope });
+    if (r.status === "refused") { console.error(`memory-pulse state pull: refused — ${r.reason}`); process.exit(r.code); }
+    if (r.status === "unchanged") { console.log(`state pull: nothing to do — ${r.reason}`); return; }
+    if (r.status === "merged") { console.log(`state pull: merged ${r.carried.length} row(s) from the hosted ledger; ${r.skipped.length} duplicate(s) skipped${r.conflicts.length ? `; ${r.conflicts.length} conflict(s) named` : ""}`); return; }
+    console.log(`state pull: ${r.status} — ${r.appended} row(s) (through t=${r.through}); recorded at t${r.t}`);
     return;
   }
   if (op === "rollback") {
