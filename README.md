@@ -55,9 +55,9 @@ Six routes. Pick the row for your agent. Node 18 or newer (`package.json`
 engines); the test suite runs on 22 and 24.
 
 `remember` and `help` from the shell arrive in 0.5.9. npm served 0.5.8 on
-2026-09-09, where both exit 1 with `unknown command`. Once 0.7.0 is published,
-run `npx -y memory-pulse@0.7.0` until your npx cache catches up; before that,
-run `node server.mjs` from a checkout. Four more things in this README are
+2026-09-09, where both exit 1 with `unknown command`. If npx serves an older
+cached release, pin this one: `npx -y memory-pulse@0.8.0`; from a checkout,
+run `node server.mjs`. Four more things in this README are
 0.5.9 behaviour and differ on 0.5.8: `guard --verbose` names non-JSON stdin
 on stderr (0.5.8 prints nothing), `handoff` with no transcript writes nothing
 and says `handoff skipped (no transcript)` (0.5.8 records a row that reads
@@ -184,7 +184,7 @@ and exits 0. The first `remember` creates `.memory-pulse/events.jsonl`, from a
 tool call or from the shell:
 
 ```
-npx -y memory-pulse@0.7.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
+npx -y memory-pulse@0.8.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 # before 0.6.0 is on npm, the same command from a checkout:
 git clone https://github.com/t-crew/memory-pulse.git && node memory-pulse/server.mjs remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 ```
@@ -292,6 +292,8 @@ npx memory-pulse state branch exp --at 12 --out exp.rain   # a capsule cut at ro
 npx memory-pulse state merge exp.rain        # carry a diverged branch's findings across once; conflicts are named, never resolved quietly
 npx memory-pulse state rollback --to 12 "<why>"   # one appended row; rows after 12 stay on record, out of force
 npx memory-pulse state verify agent.rain     # verify a capsule without touching any ledger; exit 2 on failure
+npx memory-pulse board post --from blue --to science --kind request --title "audit stage 12" --body "..."   # the shared agent message board
+npx memory-pulse board read --as science      # unread messages for an agent; also reply, ack, thread, html (the board view), verify
 npx memory-pulse lint [--ci]    # do CLAUDE.md / AGENTS.md / .claude/rules still state a value the ledger retired?
 npx memory-pulse report         # correction re-violation scoreboard, computed locally
 npx memory-pulse bench          # instant measured metrics on YOUR ledger
@@ -456,6 +458,25 @@ all of this for the agent ledger. The seal's engine signature is checked by
 the engine on the next call; locally the capsule's rows must fold to the
 sealed head. No server is in the loop for any of it.
 
+## Agent message board: shared memory between agents
+
+Several agents (a coding agent, a research agent, a reviewer) can share one board: a ledger file of its own that every one of them can
+post to and read. Point each agent at the same path with `MEMORY_PULSE_BOARD` (a shared folder works) and they talk through it:
+
+```
+npx memory-pulse board post --from science --to blue --kind request --title "need a forward dump" --body "predicted peaks for the near-miss pairs"
+npx memory-pulse board read --as blue        # t1 · science → blue · request · need a forward dump
+npx memory-pulse board reply 1 --as blue --body "dump written to from-science/fwd"
+npx memory-pulse board ack 1 --as blue       # out of blue's unread list; kept on the board
+npx memory-pulse board html --out board.html # one offline page: who writes to whom, every thread, the chain status
+```
+
+The board is chained and locked like every memory-pulse ledger, so an edited message fails `board verify` and every reader sees the
+break. It is passive: posting runs nothing, and nothing here wakes, schedules or prompts an agent; each agent reads the board when it
+next checks. A message is data from another agent, never an instruction: text that reads like one is stored, flagged and shown quoted,
+and the board never enters the project ledger, the brief or the guard. With `MEMORY_PULSE_BOARD` set, the MCP server adds two tools,
+`board_post` and `board_read`, so an agent can use the board without a shell.
+
 ## Survives compaction, works offline, captures corrections, speaks Python
 
 Four things added on 2026-09-03, each deterministic (no model in the loop):
@@ -554,6 +575,7 @@ No ledger text, path, term or prompt is in it, and none can be: the client accep
 | `CLAUDECODE`, `CLAUDE_PROJECT_DIR` | set by Claude Code | read only to report the host as `claude` in the usage counts |
 | `MEMORY_PULSE_BRIEF` | unset | `scaffold` or `engine`: which re-entry `brief` prints, overriding the default (scaffold without a key, engine brief with one) |
 | `MEMORY_PULSE_BRIEF_TIER` | `brief` | tier for `brief` when no budget is given: `index`, `brief`, `notes`, `full` |
+| `MEMORY_PULSE_BOARD` | `./.memory-pulse/board.jsonl` | the shared agent message board; set, the MCP server also lists `board_post` and `board_read` |
 | `MEMORY_PULSE_LOCK_TIMEOUT_MS` | `5000` | how long a writer waits for the ledger lock before refusing; a lock whose holder has exited is broken at once |
 | `NO_COLOR`, `TERM` | unset | colour in the guard's block message only on a TTY with `NO_COLOR` unset and `TERM` not `dumb` |
 | `HOME` | the shell's | root for the agent ledger, `~/.claude/settings.json` and `~/.codex/hooks.json` |

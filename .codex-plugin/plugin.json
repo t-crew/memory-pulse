@@ -1,6 +1,6 @@
 {
   "name": "memory-pulse",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Give any agent self-improving memory you can trust in production. Every correction is kept, shown to your agent when it matters and enforced on Claude Code and Codex. Built-in memory security: notes cannot instruct the agent, and any edit to the record shows.",
   "author": {
     "name": "Travis Crew",
@@ -16,15 +16,16 @@
     "token-savings",
     "corrections",
     "codex",
-    "claude-code"
+    "claude-code",
+    "multi-agent"
   ],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "hooks": "./hooks/hooks.json",
   "interface": {
     "displayName": "Memory Pulse",
-    "shortDescription": "Project memory whose corrections surface first — and are enforced.",
-    "longDescription": "Re-enter a project through its causal ledger at session start, recall what caused what, record decisions and corrections with withdrawn terms, and let the guard block any edit that reintroduces a withdrawn value. Reads cost ~900 tokens of tool definitions; the ledger is a local file in your repo and writes work offline.",
+    "shortDescription": "Project memory whose corrections surface first and are enforced.",
+    "longDescription": "Re-enter a project through its ledger at session start, recall what caused what, record decisions and corrections with the withdrawn value and its replacement, and let the guard block any edit that reintroduces a withdrawn value. Agents working on one project can share a message board. The ledger is a local file in your repo, and writes work offline.",
     "developerName": "Travis Crew",
     "category": "Developer Tools",
     "capabilities": [
@@ -35,12 +36,14 @@
       "Memory CI verdicts",
       "Signed telemetry"
     ],
-    "websiteURL": "https://memory-pulse-site.strategic-innovations.workers.dev",
+    "websiteURL": "https://pulse.strategic-innovations.ai",
     "defaultPrompt": [
       "Pulse this project's memory before we start.",
       "Record a correction: the price was $49, it is now $29.",
       "What caused the last outage according to the ledger?"
     ],
-    "brandColor": "#0EA5E9"
+    "brandColor": "#0EA5E9",
+    "privacyPolicyURL": "https://pulse.strategic-innovations.ai/privacy",
+    "termsOfServiceURL": "https://pulse.strategic-innovations.ai/terms"
   }
 }

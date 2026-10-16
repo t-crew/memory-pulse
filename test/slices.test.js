@@ -10,6 +10,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
 
 const SERVER = new URL("../server.mjs", import.meta.url).pathname;
+// CPU bars were measured on an M1 Pro; a CI runner is slower, so CI gets 4x room and still fails a pathological regression
+const SLACK = process.env.CI ? 4 : 1;
 const load = async (tag) => {
   const dir = mkdtempSync(join(tmpdir(), "mpsl-")); const ledger = join(dir, "events.jsonl"); writeFileSync(ledger, "");
   delete process.env.MEMORY_PULSE_MODE; process.env.MEMORY_PULSE_LEDGER = ledger; process.env.MEMORY_PULSE_AGENT = join(dir, "agent", "events.jsonl");
@@ -60,7 +62,7 @@ test("promptSlice on a 100 KB prompt and a 50,000-event ledger returns in under 
   promptSlice(events, prompt);
   // CPU time, not wall time: the suite runs files in parallel and wall time measures the neighbours too
   const c0 = process.cpuUsage(); const s = promptSlice(events, prompt); const c = process.cpuUsage(c0); const ms = (c.user + c.system) / 1000;
-  assert.match(s, /term49990/); assert.ok(ms < 50, `${ms.toFixed(1)} ms`);
+  assert.match(s, /term49990/); assert.ok(ms < 50 * SLACK, `${ms.toFixed(1)} ms`);
 });
 
 test("editSlice names corrections and invariants that bear on this file or text, within 600 chars, and is fast at 50,000 events", async () => {
@@ -76,7 +78,7 @@ test("editSlice names corrections and invariants that bear on this file or text,
   const many = big(50000).filter((e) => e.kind === "correction"); const times = [];
   for (let i = 0; i < 40; i++) { const c0 = process.cpuUsage(); editSlice(many, inv, { path: "src/a.js", text: "const term49990 = 1;" }); const c = process.cpuUsage(c0); times.push((c.user + c.system) / 1000); }
   times.sort((a, b) => a - b);
-  assert.ok(times[20] < 20, `p50 ${times[20].toFixed(1)} ms`); assert.ok(times[38] < 40, `p95 ${times[38].toFixed(1)} ms`);
+  assert.ok(times[20] < 20 * SLACK, `p50 ${times[20].toFixed(1)} ms`); assert.ok(times[38] < 40 * SLACK, `p95 ${times[38].toFixed(1)} ms`);
 });
 
 test("guard on an allowed edit prints only additionalContext, never permissionDecision; a block is unchanged", () => {

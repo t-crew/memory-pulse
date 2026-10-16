@@ -43,7 +43,7 @@ jobs:
         run: |
           v="$(node -p 'require("./package.json").version')"
           [ "${GITHUB_REF_NAME}" = "v${v}" ] || { echo "tag ${GITHUB_REF_NAME} != package version v${v}"; exit 1; }
-          for f in server.json .claude-plugin/plugin.json .codex-plugin/plugin.json; do
+          for f in server.json .claude-plugin/plugin.json .codex-plugin/plugin.json mcpb/manifest.json; do
             m="$(node -p "require('./$f').version")"
             [ "$m" = "$v" ] || { echo "$f says $m, package.json says $v"; exit 1; }
           done
@@ -71,3 +71,26 @@ jobs:
           tar xzf mp.tgz mcp-publisher
           ./mcp-publisher login github-oidc
           ./mcp-publisher publish
+
+  # The Claude Desktop extension (.mcpb) is attached to the GitHub release for this tag. A job of its own, so only it holds
+  # contents: write; it runs after npm and the registry have the version, and re-runs replace the asset (--clobber).
+  desktop-extension:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: build the .mcpb from mcpb/manifest.json (validated by the official CLI before packing)
+        run: node scripts/build-mcpb.mjs
+      - name: attach it to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="$(node -p 'require("./package.json").version')"
+          f="dist/memory-pulse-${v}.mcpb"
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then gh release upload "${GITHUB_REF_NAME}" "$f" --clobber
+          else gh release create "${GITHUB_REF_NAME}" "$f" --title "memory-pulse ${v}" --notes "npm: memory-pulse@${v} · MCP registry: io.github.t-crew/memory-pulse ${v} · Claude Desktop: open memory-pulse-${v}.mcpb to install."; fi

@@ -6,11 +6,11 @@
     "url": "https://github.com/t-crew/memory-pulse",
     "source": "github"
   },
-  "version": "0.7.0",
+  "version": "0.8.0",
   "packages": [
     {
       "identifier": "memory-pulse",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "transport": {
         "type": "stdio"
       },
@@ -21,6 +21,18 @@
           "description": "License key (optional; free tier without one)",
           "isRequired": false,
           "isSecret": true
+        },
+        {
+          "name": "MEMORY_PULSE_LEDGER",
+          "description": "Ledger file path (default ./.memory-pulse/events.jsonl)",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "MEMORY_PULSE_BOARD",
+          "description": "Shared agent message board file; set it to add board_post and board_read",
+          "isRequired": false,
+          "isSecret": false
         }
       ]
     }

@@ -112,7 +112,19 @@ test("every manifest opens the pitch with the same sentence, in the product voic
 test("npm pack ships lib/scaffold.mjs beside server.mjs", async () => {
   const { execFileSync } = await import("node:child_process");
   const out = JSON.parse(execFileSync("npm", ["pack", "--dry-run", "--json"], { cwd: new URL("..", import.meta.url).pathname, encoding: "utf8" }));
-  const files = out[0].files.map((f) => f.path);
+  // npm 10 prints an array; newer npm may print an object keyed by package (seen on the release runner, 2026-10-12)
+  const entry = Array.isArray(out) ? out[0] : out.files ? out : Object.values(out)[0];
+  const files = entry.files.map((f) => f.path);
   assert.ok(files.includes("server.mjs"), files.join(" "));
   assert.ok(files.includes("lib/scaffold.mjs"), files.join(" "));
+});
+
+test("the docs pin the package version: a reader who copies a command gets the release it describes", () => {
+  // 2026-10-16: GUIDE.md pinned memory-pulse@0.7.0 while the board section needed 0.8.0; release.sh bumps these pins with the manifests.
+  const { version } = read("package.json");
+  for (const f of ["README.md", "docs/GUIDE.md"]) {
+    const pins = [...readFileSync(new URL(`../${f}`, import.meta.url), "utf8").matchAll(/memory-pulse@(\d+\.\d+\.\d+)/g)].map((m) => m[1]);
+    const stale = pins.filter((v) => v !== version);
+    assert.deepEqual([...new Set(stale)], [], `${f} pins ${[...new Set(stale)].join(", ")} but package.json is ${version}`);
+  }
 });
