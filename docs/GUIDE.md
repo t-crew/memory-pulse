@@ -545,6 +545,15 @@ state merge: 1 row(s) carried from branch experiment
 nothing to do
 ```
 
+Hosted memory moves the same capsule between your machines. Turn it on for a project in the console, make a key for that project, and set it as `MEMORY_PULSE_KEY`. These two need the engine, so the test suite does not run them:
+
+```sh
+npx -y memory-pulse@0.8.0 state push
+npx -y memory-pulse@0.8.0 state pull
+```
+
+`push` sends this ledger. A push the hosted copy already holds changes nothing; one that extends it fast-forwards; one from a machine that diverged is merged there by the rules `state merge` uses (each finding lands once, the branch's bookkeeping stays with the branch, a conflicting correction is named, not resolved). `pull` verifies the hosted capsule here before it touches anything, then installs it, fast-forwards, or merges. Turning hosted memory off in the console erases the hosted copy; the local ledger is never touched.
+
 `--scope agent` runs every one of these against the agent ledger instead. A correction that withdraws a term the other side withdraws with a different replacement is carried and named as a conflict; both bind until one is superseded (section 4).
 
 ## 15. Several agents: the message board
