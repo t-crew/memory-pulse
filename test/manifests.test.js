@@ -122,7 +122,7 @@ test("npm pack ships lib/scaffold.mjs beside server.mjs", async () => {
 test("the docs pin the package version: a reader who copies a command gets the release it describes", () => {
   // 2026-10-16: GUIDE.md pinned memory-pulse@0.7.0 while the board section needed 0.8.0; release.sh bumps these pins with the manifests.
   const { version } = read("package.json");
-  for (const f of ["README.md", "docs/GUIDE.md"]) {
+  for (const f of ["README.md", "docs/GUIDE.md", "docs/INSTALL.md"]) {
     const pins = [...readFileSync(new URL(`../${f}`, import.meta.url), "utf8").matchAll(/memory-pulse@(\d+\.\d+\.\d+)/g)].map((m) => m[1]);
     const stale = pins.filter((v) => v !== version);
     assert.deepEqual([...new Set(stale)], [], `${f} pins ${[...new Set(stale)].join(", ")} but package.json is ${version}`);

@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { dispatched } from "./_helpers.mjs";
 
 const ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "..");
-const DOCS = ["README.md", "docs/GUIDE.md", "skills/memory-pulse/SKILL.md", "action/run.mjs"].map((p) => join(ROOT, p));
+const DOCS = ["README.md", "docs/GUIDE.md", "docs/INSTALL.md", "skills/memory-pulse/SKILL.md", "action/run.mjs"].map((p) => join(ROOT, p));
 
 // Commands named inline in backticks, plus command lines inside fenced blocks that are not `text` blocks.
 export function commandsIn(md) {
@@ -52,4 +52,12 @@ test("every memory-pulse command named in the docs exists in server.mjs's dispat
 test("the guide exists and is linked from the README", () => {
   assert.ok(existsSync(join(ROOT, "docs", "GUIDE.md")), "docs/GUIDE.md missing");
   assert.match(readFileSync(join(ROOT, "README.md"), "utf8"), /docs\/GUIDE\.md/);
+});
+
+test("docs/INSTALL.md (rendered at /install on the site) obeys the copy rules and is linked from the README", async () => {
+  const { prose, BANNED } = await import("./_helpers.mjs");
+  const md = readFileSync(join(ROOT, "docs", "INSTALL.md"), "utf8"); const p = prose(md);
+  const hit = BANNED.exec(p); assert.equal(hit, null, `banned word "${hit?.[0]}"`);
+  assert.equal(p.indexOf("—"), -1, "em dash in prose");
+  assert.match(readFileSync(join(ROOT, "README.md"), "utf8"), /docs\/INSTALL\.md/);
 });
