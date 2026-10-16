@@ -36,7 +36,7 @@ Download `memory-pulse-0.8.0.mcpb` from the [latest release](https://github.com/
 | Licence key | Leave blank for the free tier. |
 | Agent message board file | Leave blank, or name a board file shared with other agents to add `board_post` and `board_read`. |
 
-Claude Desktop runs no hooks, so there is no session-start brief and no guard there: the agent reads and records memory through the tools. The extension is built and validated with the official MCPB tool and its server was run from the unpacked bundle on 2026-10-16; it has not yet been tested inside Claude Desktop itself.
+Claude Desktop runs no hooks, so there is no session-start brief and no guard there: the agent reads and records memory through the tools. The extension is built and validated with the official MCPB tool and its server was run from the unpacked extension on 2026-10-16; it has not yet been tested inside Claude Desktop itself.
 
 ## Cursor and other MCP clients
 
