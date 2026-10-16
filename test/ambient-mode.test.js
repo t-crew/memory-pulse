@@ -35,7 +35,7 @@ test("identity block: the agent's pinned self, standing rules and preferences pr
   assert.match(text, /rule: Commits are attributed to Travis only/); assert.match(text, /preference: prefers test-first/);
   assert.doesNotMatch(text, /some project-ish/, "untagged rows are not identity");
   appendEvent({ cause: "ambient-lesson", effect: "fail-closed-on-edits", note: "Lesson: fail closed on edits, not on the coexistence of writers", tags: ["ambient", "lesson"], scope: "agent" });
-  const grown = identityBlock(readEvents({ scope: "agent" })); assert.match(grown, /lessons carried \(1\)/); assert.match(grown, /fail closed on edits/);
+  const grown = identityBlock(readEvents({ scope: "agent" })); assert.match(grown, /lessons carried \(bank of 1 from 1\)/); assert.match(grown, /fail closed on edits/);
   assert.equal(identityBlock({ events: [], path: "/nowhere" }), "", "no workspace, no block");
 });
 

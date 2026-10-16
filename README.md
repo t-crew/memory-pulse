@@ -304,6 +304,9 @@ npx memory-pulse badge          # README badge markdown from your own signed num
 npx memory-pulse install-hook   # four hooks (idempotent); --codex targets Codex; --project commits them; --ambient adds the observer
 npx memory-pulse mode [agent|deliberate]   # show or set the mode
 npx memory-pulse identity "<name>, <role>; <stance>"   # pin the agent's self on the agent ledger
+npx memory-pulse lesson         # the lesson bank the identity block prints, with where each lesson held; --held-out lists what was left out and why
+npx memory-pulse lesson probe 41 held --where billing-api   # record that a carried lesson held (or failed) there: the evidence the bank ranks by
+npx memory-pulse lesson freeze  # pin the bank you reviewed; every brief prints it until the next freeze or `lesson thaw`
 npx memory-pulse handoff        # PreCompact hook: record what the session was doing, from the transcript on stdin
 npx memory-pulse ambient        # Stop hook (agent mode): decision, preference, lesson or correction from the last turn
 npx memory-pulse observe        # UserPromptSubmit hook: a prompt shaped like a correction is recorded with both terms
@@ -508,9 +511,10 @@ npx memory-pulse identity "Blue, research agent for Travis; innovate, don't deba
 What that turns on:
 
 - **An agent ledger** at `~/.memory-pulse/agent/events.jsonl`, belonging to the agent and shared by every project and every tool that speaks MCP. Same format, same hash chain, same seal.
-- **A self block, first in every brief**, online or offline. It carries who the agent is as a pinned line, the standing rules and preferences it has learned (rows tagged `rule` and `preference`), the ten newest lessons (tagged `lesson`), and a fingerprint made of the chain head and the engine's seal, so the agent can state which memory it is running on and show it was not swapped or edited overnight.
+- **A self block, first in every brief**, online or offline. It carries who the agent is as a pinned line, the standing rules and preferences it has learned (rows tagged `rule` and `preference`), a bank of at most ten lessons (tagged `lesson`, chosen as described below), and a fingerprint made of the chain head and the engine's seal, so the agent can state which memory it is running on and show it was not swapped or edited overnight.
 - **Growth, after every turn.** Two user-scope hooks in `~/.claude/settings.json` (Claude Code only, today). The Stop hook deterministically records a stated decision to the project ledger, a user preference or stated lesson to the agent ledger, and any correction shaped like one. It is capped at four rows a turn, tagged `ambient`, never pinned, and never taken from instruction-like text. Identity itself is only ever set by you or superseded by a correction.
 - **Corrections that follow the agent.** A correction on the agent ledger blocks the same edit in any project, in either mode, for as long as the file exists.
+- **Lessons kept for what they did, not for being new.** The bank holds pinned lessons first, then lessons that held somewhere other than where they were learned (chosen to cover as many places as possible), then two new lessons on probation. A lesson that failed as often as it held leaves the bank. A sentence that only points at a lesson ("the lesson is in the ledger"), a fragment and a duplicate are held out and counted. `memory-pulse lesson probe 41 held --where billing-api` records the evidence; `memory-pulse lesson freeze` pins the bank you reviewed. The method follows Self-Organizing Agent Teams (Pappu et al., [arXiv 2609.22682](https://arxiv.org/abs/2609.22682)), where a team keeps a learned strategy only after it works on problems other than the one that produced it.
 
 `npx memory-pulse mode deliberate` turns the hooks off again and leaves the ledgers in place. `remember` takes `scope: "agent"` from any tool and `--scope agent` from the shell, in either mode. The rule of thumb: off for one repository; on when one agent spans repositories and tools and you accept up to four rows per turn, with the decision rows landing in the project ledger you commit.
 

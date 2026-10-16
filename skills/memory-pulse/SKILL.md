@@ -39,6 +39,10 @@ a decision, a measurement, a shipped change, a dead end. One event per fact.
 - `note` says what was measured and how, numbers with their method.
 - Nothing is recorded automatically when a session ends in deliberate mode.
   Before you stop, call `remember` once per finding, decision and dead end.
+- When a lesson from your identity block changed what you did, record whether it held:
+  `memory-pulse lesson probe <t> held` (or `failed`) `--where <project>`, or `remember` with cause
+  `lesson-probe`, effect `t<N>-held-in-<project>`, tag `lesson-probe`, scope `agent`. The bank keeps
+  lessons that held in places other than where they were learned, so a probe is how a good lesson stays.
 
 ## 3. Corrections are the point: record them with withdrawn terms
 

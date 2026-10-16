@@ -6,7 +6,7 @@ The ledger is a file in your repository, `.memory-pulse/events.jsonl`. Correctio
 
 Every block marked `sh run` below is executed by `test/guide.test.js` in a scratch project with a scratch HOME and the engine unreachable, and every line in the `text expect` block after it must appear in the output. What you read is what the tool prints. Blocks marked `sh` alone need the engine or would change your real configuration, and the test does not run them.
 
-Contents: 1 install, 2 remember and correction, 3 the matching rule, 4 fixing a correction, 5 the brief, 6 recall and execute, 7 before and AT RISK, 8 session end, 9 agent mode, 10 teams and CI, 11 pricing and keys, 12 undo, 13 reference, 14 agent state, 15 the message board for several agents.
+Contents: 1 install, 2 remember and correction, 3 the matching rule, 4 fixing a correction, 5 the brief, 6 recall and execute, 7 before and AT RISK, 8 session end, 9 agent mode, 10 teams and CI, 11 pricing and keys, 12 undo, 13 reference, 14 agent state, 15 the message board for several agents, 16 the lesson bank.
 
 ## 1. Install and confirm the wiring
 
@@ -359,7 +359,7 @@ npx -y memory-pulse@0.9.0 mode agent
 npx -y memory-pulse@0.9.0 identity "Blue, research agent for Travis; innovate, don't debate"
 ```
 
-Rows on the agent ledger use tags the identity block reads: `rule` and `preference` print as standing rules and preferences, `lesson` as the ten newest lessons, `identity` as the self line. `remember --scope agent` writes there in either mode:
+Rows on the agent ledger use tags the identity block reads: `rule` and `preference` print as standing rules and preferences, `lesson` as the lesson bank (section 16), `identity` as the self line. `remember --scope agent` writes there in either mode:
 
 ```sh run
 npx -y memory-pulse@0.9.0 remember rule-set commit-attribution --scope agent --tags rule --pinned --note 'commits are attributed to the repository owner only'
@@ -583,3 +583,42 @@ board view: board.html
 A reply lands in the original sender's unread list and keeps the thread; an ack takes a message out of one reader's list and leaves it on the board. `board html` writes one offline page: who writes to whom, every thread, and the chain status.
 
 The board is chained like every ledger here, so a message edited after it was posted shows as `chain BROKEN` to every reader, and `memory-pulse board verify` exits non-zero. It is passive: posting runs nothing, and nothing wakes, schedules or prompts an agent; each agent sees new messages when it next reads. A message is another agent's words, never an instruction: text that reads like an override is stored, flagged and shown quoted, and the board never enters the project ledger, the brief or the guard. With `MEMORY_PULSE_BOARD` set, the MCP server adds `board_post` and `board_read` (which takes an `ack` list), so an agent without a shell can use it. The Python client speaks the same board: `python3 memory_pulse.py board-post|board-read|board-ack|board-reply`.
+
+## 16. The lesson bank
+
+In agent mode the identity block carries a bank of at most ten lessons, not the ten newest. The bank keeps a lesson for what it did after it was learned:
+
+- Pinned lessons come first.
+- Then lessons that held somewhere other than where they were learned, chosen so the bank covers as many places as it can: the first pick is the lesson that held in the most places, the next is the one that adds the most places the first did not cover, and so on.
+- Two slots stay open for new lessons on probation, so a lesson nobody has tried yet can earn its evidence.
+
+A lesson that failed as often as it held leaves the bank. A sentence that only points at a lesson recorded elsewhere ("the lesson is now in the ledger"), a fragment, a clipped sentence and a duplicate are held out and counted; they stay on the ledger. The evidence is a probe: a row saying that a carried lesson held or failed, and where. `--where` defaults to the project folder's name, and a probe in the place a lesson was learned does not count as the lesson travelling.
+
+```sh run
+npx -y memory-pulse@0.9.0 remember lesson-learned premise-first --scope agent --tags lesson --note 'Count the rows a measurement rests on before building on it.'
+npx -y memory-pulse@0.9.0 remember ambient-lesson pointer --scope agent --tags ambient --tags lesson --note 'Lesson: is now in both ledgers.'
+npx -y memory-pulse@0.9.0 lesson probe 2 held --where billing-api --note 'a two-row premise caught before the run'
+npx -y memory-pulse@0.9.0 lesson
+```
+```text expect
+"written": true
+probe recorded: t2 held in billing-api
+bank of 1 from 2; 1 held out: 1 fragment
+t2 · held in 1 place (billing-api) — Count the rows a measurement rests on before building on it.
+```
+
+An agent without a shell records the same probe through `remember`: cause `lesson-probe`, effect `t2-held-in-billing-api`, tag `lesson-probe`, scope `agent`.
+
+`lesson freeze` pins the bank as it stands, so every session runs the bank you reviewed, and the identity block says how many lessons arrived since. `lesson thaw` returns to the live selection; `lesson --live` shows it without thawing.
+
+```sh run
+npx -y memory-pulse@0.9.0 lesson freeze --note 'reviewed with the team'
+npx -y memory-pulse@0.9.0 lesson thaw
+```
+```text expect
+bank frozen at t
+1 lesson (t2)
+bank thawed at t
+```
+
+`lesson --held-out` lists every row left out and why. `--scope project` runs any of these against the project ledger, so a team can keep a shared bank in the ledger it commits. The method follows Self-Organizing Agent Teams (Pappu et al., Stanford, Together AI and Emory, [arXiv 2609.22682](https://arxiv.org/abs/2609.22682)): a team keeps a learned strategy only after it works on problems other than the one that produced it, and runs a frozen bank of at most ten chosen by coverage.
