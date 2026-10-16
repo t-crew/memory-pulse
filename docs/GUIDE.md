@@ -1,6 +1,6 @@
 # How to use memory-pulse properly
 
-The ledger is a file in your repository, `.memory-pulse/events.jsonl`. Corrections are the point: a value you withdrew is printed first in every session and the guard blocks the edit that writes it back. This guide walks the protocol end to end against memory-pulse 0.8.0.
+The ledger is a file in your repository, `.memory-pulse/events.jsonl`. Corrections are the point: a value you withdrew is printed first in every session and the guard blocks the edit that writes it back. This guide walks the protocol end to end against `memory-pulse@0.10.0`.
 
 `remember` and `help` from the shell arrive in 0.5.9. npm served 0.5.8 on 2026-09-09, where both exit 1 with `unknown command`; the command blocks below pin `npx -y memory-pulse@0.10.0`, the version this guide is measured against, so they run it once it is published, whatever your npx cache holds. Before it is published, run `node server.mjs` from a checkout; the first correction from one is `git clone https://github.com/t-crew/memory-pulse.git && node memory-pulse/server.mjs remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'`. The two `sh run` blocks that pipe into `guard --verbose` (section 1) and `handoff` (section 8) also print 0.5.9 lines that 0.5.8 does not.
 
