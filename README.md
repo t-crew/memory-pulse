@@ -192,9 +192,9 @@ git clone https://github.com/t-crew/memory-pulse.git && node memory-pulse/server
 ```
 
 The hook command `install-hook` writes is `npx -y memory-pulse guard`, and npx
-resolves the package on every call: 0.95 s warm and 4.4 s cold per edit on an
-M1 Pro on 2026-09-09, against 60 ms for `node server.mjs guard` on the same
-ledger the same day, which is the path the plugin runs. If the cost matters,
+resolves the package on every call: 0.99 s warm and 1.4 s cold (empty npm
+cache) per edit on an M1 Pro on 2026-10-16 with 0.8.0, against 52 ms for
+`node server.mjs guard` on the same ledger, which is the path the plugin runs. If the cost matters,
 install the plugin, or install globally and edit the hook command to
 `memory-pulse guard`.
 

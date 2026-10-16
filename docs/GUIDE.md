@@ -79,7 +79,7 @@ memory-pulse guard: stdin was not hook JSON, allowing
 exit 0
 ```
 
-Cost of the hook path. `node server.mjs guard` (the plugin path) took 60 ms on a 5-row ledger on this machine on 2026-09-09; the site's figure is 81 ms for the whole hook at 1,000 events, measured 2026-09-08. `npx -y memory-pulse guard`, the command `install-hook` writes, took 0.95 s warm and 4.4 s cold on the same machine the same day, because npx resolves the package on every call. If that cost matters, install the plugin or run `npm i -g memory-pulse` and edit the hook command to `memory-pulse guard`.
+Cost of the hook path, measured on 0.8.0 on an M1 Pro on 2026-10-16 (median per edit, process start included): `node server.mjs guard` (the plugin path) took 52 ms on a 5-row ledger and 53 ms on a 1,000-row chained ledger. `npx -y memory-pulse guard`, the command `install-hook` writes, took 0.99 s warm and 1.4 s cold with an empty npm cache, because npx resolves the package on every call. If that cost matters, install the plugin or run `npm i -g memory-pulse` and edit the hook command to `memory-pulse guard`.
 
 ## 2. remember and correction
 
