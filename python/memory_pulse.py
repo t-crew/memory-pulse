@@ -215,6 +215,9 @@ def instruction_like(text) -> list:
 
 _BOARD_KINDS, _BOARD_ID = ("note", "request", "reply", "claim", "verdict", "synthesis"), _re.compile(r"^[a-z0-9][a-z0-9._-]{0,39}$")
 _VERDICTS = ("upheld", "refuted", "withdrawn")
+def _int(x):
+    try: return int(x)
+    except (TypeError, ValueError): return None
 def _bslug(s): return (_re.sub(r"^-+|-+$", "", _re.sub(r"[^a-z0-9]+", "-", str(s).lower()))[:60]) or "message"
 def _now_iso():
     import datetime; return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
@@ -244,7 +247,10 @@ class Board:
     def _standing(c, msgs):
         vs = [v for v in msgs if v["kind"] == "verdict" and v["reply_to"] == c["t"]]
         if any(v.get("verdict") == "withdrawn" and v["from"] == c["from"] for v in vs): return "withdrawn", vs
-        said = {v.get("verdict") for v in vs if v["from"] != c["from"]}
+        latest = {}
+        for v in vs:
+            if v["from"] != c["from"]: latest[v["from"]] = v.get("verdict")   # each agent's latest verdict counts
+        said = set(latest.values())
         return ("contested" if {"upheld", "refuted"} <= said else "refuted" if "refuted" in said else "upheld" if "upheld" in said else "open"), vs
 
     def claims(self, thread=None) -> list:
@@ -262,21 +268,28 @@ class Board:
     def post(self, from_, to, kind="note", title="", body="", thread=None, reply_to=None, verdict=None, defect="", over_open=False) -> dict:
         from_, to, title, body = str(from_ or "").strip().lower(), str(to or "").strip().lower(), str(title or "").strip(), str(body or "")
         extra = {}
+        if kind in ("claim", "synthesis"):   # a claim or synthesis lives in its root thread (see lib/board.mjs)
+            ref = thread if thread is not None else (reply_to if kind == "claim" else None)
+            if ref is not None:
+                m = next((x for x in self._load() if x["t"] == _int(ref)), None)
+                if not m: return {"written": False, "reason": f"no message t{ref} on this board to name a thread"}
+                thread = m["thread"]
         if kind == "verdict":
-            c = next((m for m in self._load() if m["t"] == int(reply_to or 0)), None)
+            c = next((m for m in self._load() if m["t"] == _int(reply_to)), None)
             if not c or c["kind"] != "claim": return {"written": False, "reason": f"a verdict answers a claim: t{reply_to} is not a claim on this board"}
             if verdict not in _VERDICTS: return {"written": False, "reason": "the verdict is one of upheld, refuted, withdrawn"}
             if verdict == "withdrawn" and from_ != c["from"]: return {"written": False, "reason": f"only the claim's author ({c['from']}) withdraws it"}
             if verdict != "withdrawn" and from_ == c["from"]: return {"written": False, "reason": "an agent does not adjudicate its own claim; withdraw it instead"}
             defect = str(defect or "").strip()
+            if len(defect) > 1000: return {"written": False, "reason": "a defect is at most 1000 characters"}
             if verdict == "refuted" and len(defect.split()) < 3: return {"written": False, "reason": "a refutation names the defect: the step, number or fact in the claim that fails"}
             to = c["to"] if verdict == "withdrawn" else c["from"]; thread, reply_to = c["thread"], c["t"]; title = title or f"{verdict}: {c['title']}"[:200]
             extra = {"verdict": verdict, **({"defect": defect} if defect else {})}
         if kind in ("claim", "synthesis") and not to: to = "all"
         if kind == "synthesis":
             msgs = self._load()
-            if not thread or not any(m["t"] == int(thread) for m in msgs): return {"written": False, "reason": "a synthesis names a thread on this board"}
-            open_ = [m for m in msgs if m["kind"] == "claim" and m["thread"] == int(thread) and self._standing(m, msgs)[0] == "open"]
+            if not thread: return {"written": False, "reason": "a synthesis names a thread on this board"}
+            open_ = [m for m in msgs if m["kind"] == "claim" and m["thread"] == thread and self._standing(m, msgs)[0] == "open"]
             if open_ and not over_open: return {"written": False, "reason": f"thread t{thread} has {len(open_)} open claim(s): " + ", ".join(f"t{m['t']} ({m['from']})" for m in open_)}
             if open_: extra["over_open"] = [m["t"] for m in open_]
         if not _BOARD_ID.match(from_): return {"written": False, "reason": "sender must be an agent id"}
@@ -285,10 +298,11 @@ class Board:
         if kind not in _BOARD_KINDS: return {"written": False, "reason": "kind must be note, request or reply"}
         if not title or len(title) > 200: return {"written": False, "reason": "title required, at most 200 characters"}
         if len(body) > 20000: return {"written": False, "reason": "body at most 20000 characters"}
-        flagged = instruction_like(f"{title}\n{body}")
+        flagged = instruction_like(f"{title}\n{body}\n{extra.get('defect', '')}")
         bd = {"from": from_, "to": to, "kind": kind, "title": title, "at": _now_iso()}
-        if thread: bd["thread"] = int(thread)
-        if reply_to: bd["reply_to"] = int(reply_to)
+        if (thread and _int(thread) is None) or (reply_to and _int(reply_to) is None): return {"written": False, "reason": "thread and reply_to are row numbers"}
+        if thread: bd["thread"] = _int(thread)
+        if reply_to: bd["reply_to"] = _int(reply_to)
         bd.update(extra)
         if flagged: bd["flagged"] = flagged
         ev = {"t": None, "cause": "board-post", "effect": _bslug(title), "kind": "event", **({"note": body} if body else {}), "tags": ["board", kind], "board": bd}

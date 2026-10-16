@@ -168,16 +168,19 @@ test("CLI: lesson probe, bank, freeze and thaw; a probe written through remember
 });
 
 test("merge: a probe carried from a branch credits the lesson it named there, not the row that holds that number here", async () => {
-  const { appendEvent, readEvents, inForce, lessonBank } = await load("mg");
-  const a = lesson(appendEvent, "Check the premise count before building a measurement on it.");
-  const unrelated = lesson(appendEvent, "Read the run log, not the run status, before trusting a remote job.");
-  // what state merge appends: the branch's lesson and its probe, renumbered, each carrying origin { branch, t }
-  const carried = appendEvent({ cause: "lesson-learned", effect: "branch-lesson", note: "Pin the image version before a remote run.", tags: ["lesson"], scope: "agent",
-                                fields: { origin: { branch: "exp", t: unrelated, capsule: "abc" } } }).t;
-  appendEvent({ cause: "lesson-probe", effect: `t${unrelated}-held-in-ci`, tags: ["lesson-probe"], scope: "agent", fields: { origin: { branch: "exp", t: unrelated + 1, capsule: "abc" } } });
-  appendEvent({ cause: "lesson-probe", effect: `t${a}-held-in-ci`, tags: ["lesson-probe"], scope: "agent", fields: { origin: { branch: "exp", t: a + 5, capsule: "abc" } } });
-  const bank = lessonBank(inForce(readEvents({ scope: "agent" }).events));
-  assert.equal(bank.bank.find((x) => x.t === carried).status, "proven", "the branch's own t resolves through origin");
-  assert.equal(bank.bank.find((x) => x.t === unrelated).status, "probation", "the local row with that number gets no credit");
-  assert.equal(bank.bank.find((x) => x.t === a).status, "proven", "a lesson from before the fork keeps its number on both sides");
+  const { lessonBank } = await import("../lib/lessons.mjs");
+  // what state merge leaves (it appends with chainAppend, never through appendEvent): the branch's lesson and probes renumbered, each
+  // carrying origin { branch, t, capsule }, and a state-merged row recording the fork. The probes here carry no key, the oldest form.
+  const events = [
+    { t: 1, cause: "lesson-learned", effect: "a", note: "Check the premise count before building a measurement on it.", tags: ["lesson"] },
+    { t: 2, cause: "lesson-learned", effect: "u", note: "Read the run log, not the run status, before trusting a remote job.", tags: ["lesson"] },
+    { t: 3, cause: "lesson-learned", effect: "branch-lesson", note: "Pin the image version before a remote run.", tags: ["lesson"], origin: { branch: "exp", t: 2, capsule: "abc" } },
+    { t: 4, cause: "lesson-probe", effect: "t2-held-in-ci", tags: ["lesson-probe"], origin: { branch: "exp", t: 3, capsule: "abc" } },
+    { t: 5, cause: "lesson-probe", effect: "t1-held-in-ci", tags: ["lesson-probe"], origin: { branch: "exp", t: 6, capsule: "abc" } },
+    { t: 6, cause: "state-merged", effect: "from-exp", tags: ["merge"], state: { capsule: "abc0123456789", branch: "exp", fork: 1 } },
+  ];
+  const bank = lessonBank(events).bank;
+  assert.equal(bank.find((x) => x.t === 3).status, "proven", "the branch's own t resolves through origin");
+  assert.equal(bank.find((x) => x.t === 2).status, "probation", "the local row with that number gets no credit");
+  assert.equal(bank.find((x) => x.t === 1).status, "proven", "a lesson at or before the fork keeps its number on both sides");
 });
