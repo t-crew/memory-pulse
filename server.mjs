@@ -2065,7 +2065,7 @@ Commands
   stats                               the signed telemetry capsule, signature verified by the engine
   badge                               README badge markdown from the capsule's counters
   install-hook [--codex] [--project] [--ambient]
-                                      write three hooks (SessionStart brief, PreToolUse guard, PreCompact handoff) into ~/.claude/settings.json; --codex targets ~/.codex/hooks.json; --project writes them into the repo; --ambient adds the UserPromptSubmit observer
+                                      write four hooks (SessionStart brief, UserPromptSubmit prompt, PreToolUse guard, PreCompact handoff) into ~/.claude/settings.json; --codex targets ~/.codex/hooks.json; --project writes them into the repo; --ambient adds the UserPromptSubmit observer
   mode [agent|deliberate]             show or set the mode; agent adds a Stop and a UserPromptSubmit hook and an agent ledger at ~/.memory-pulse/agent/
   identity "<name>, <role>; <stance>" pin the agent's self on the agent ledger (agent mode prints it first in every brief)
   handoff                             PreCompact hook: record what the session was doing from the transcript on stdin

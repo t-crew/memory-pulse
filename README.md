@@ -51,6 +51,8 @@ floor it returns an empty result, and the brief says so.
 
 ## Install
 
+Every route, host by host, with what runs on each: [docs/INSTALL.md](docs/INSTALL.md) (also at pulse.strategic-innovations.ai/install).
+
 Six routes. Pick the row for your agent. Node 18 or newer (`package.json`
 engines); the test suite runs on 22 and 24.
 

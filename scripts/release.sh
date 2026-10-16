@@ -25,7 +25,7 @@ if [ "${1:-}" != "" ]; then
     sed -i '' -E "s/\"version\": \"[0-9]+\.[0-9]+\.[0-9]+\"/\"version\": \"$1\"/g" "$f"
   done
   # the docs pin the release a reader copies (test/manifests.test.js holds them to package.json)
-  for f in README.md docs/GUIDE.md; do
+  for f in README.md docs/GUIDE.md docs/INSTALL.md; do
     sed -i '' -E "s/memory-pulse@[0-9]+\.[0-9]+\.[0-9]+/memory-pulse@$1/g" "$f"
   done
 fi
@@ -43,7 +43,7 @@ for f in server.json .claude-plugin/plugin.json .codex-plugin/plugin.json mcpb/m
   grep -q "\"version\": \"$VERSION\"" "$f" || { echo "$f is not at $VERSION"; exit 1; }
 done
 if ! git diff --quiet || ! git diff --cached --quiet; then
-  git add package.json server.json .claude-plugin/plugin.json .codex-plugin/plugin.json mcpb/manifest.json README.md docs/GUIDE.md
+  git add package.json server.json .claude-plugin/plugin.json .codex-plugin/plugin.json mcpb/manifest.json README.md docs/GUIDE.md docs/INSTALL.md
   git -c user.name="Travis Crew" -c user.email="travisaaroncrew@gmail.com" commit -q -m "release $VERSION" || true
 fi
 
