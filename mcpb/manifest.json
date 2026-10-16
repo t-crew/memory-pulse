@@ -1,0 +1,65 @@
+{
+  "manifest_version": "0.3",
+  "name": "memory-pulse",
+  "display_name": "memory-pulse",
+  "version": "0.8.0",
+  "description": "Memory for Claude that keeps every correction and shows it when it matters. Notes cannot instruct the agent, and any edit to the record shows.",
+  "long_description": "memory-pulse keeps a project's memory as a ledger file on your machine: what happened, what caused it, and every correction with the value it withdrew and the value that replaced it. Claude reads it through four tools: pulse (what the memory says about a topic), recall, remember and execute. A note that reads like an instruction is refused or quarantined, never shown as a command, and any edit to an earlier row breaks the chain and shows. Point several agents at one message board file and they can post, read and reply to each other; nothing on the board wakes or prompts an agent. The free tier needs no key.",
+  "author": { "name": "Travis Crew", "url": "https://pulse.strategic-innovations.ai" },
+  "homepage": "https://pulse.strategic-innovations.ai",
+  "documentation": "https://github.com/t-crew/memory-pulse/blob/main/docs/GUIDE.md",
+  "support": "https://github.com/t-crew/memory-pulse/issues",
+  "repository": { "type": "git", "url": "https://github.com/t-crew/memory-pulse" },
+  "license": "MIT",
+  "icon": "icon.png",
+  "keywords": ["memory", "corrections", "ledger", "multi-agent", "mcp"],
+  "privacy_policies": ["https://pulse.strategic-innovations.ai/privacy"],
+  "server": {
+    "type": "node",
+    "entry_point": "server.mjs",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server.mjs"],
+      "env": {
+        "MEMORY_PULSE_LEDGER": "${user_config.memory_folder}/events.jsonl",
+        "MEMORY_PULSE_KEY": "${user_config.license_key}",
+        "MEMORY_PULSE_BOARD": "${user_config.board_file}"
+      }
+    }
+  },
+  "tools": [
+    { "name": "pulse", "description": "What the memory says about a topic: findings, causes and the corrections in force, each citing its ledger row." },
+    { "name": "recall", "description": "Find recorded events related to a question, with the exact recorded links." },
+    { "name": "remember", "description": "Record a finding or a correction (the withdrawn value and its replacement)." },
+    { "name": "execute", "description": "Run a small read-only program over the memory and return only the answer." }
+  ],
+  "tools_generated": true,
+  "user_config": {
+    "memory_folder": {
+      "type": "directory",
+      "title": "Memory folder",
+      "description": "Where the ledger file (events.jsonl) is kept. Use a project's .memory-pulse folder to share memory with Claude Code in that project.",
+      "default": "${HOME}/.memory-pulse",
+      "required": true
+    },
+    "license_key": {
+      "type": "string",
+      "title": "Licence key",
+      "description": "Optional. Leave blank for the free tier.",
+      "sensitive": true,
+      "required": false,
+      "default": ""
+    },
+    "board_file": {
+      "type": "string",
+      "title": "Agent message board file",
+      "description": "Optional. A board file shared with other agents (for example ~/.memory-pulse/board.jsonl). Set it to add the board_post and board_read tools; leave blank to keep the board off.",
+      "required": false,
+      "default": ""
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": { "node": ">=18.0.0" }
+  }
+}

@@ -55,9 +55,9 @@ Six routes. Pick the row for your agent. Node 18 or newer (`package.json`
 engines); the test suite runs on 22 and 24.
 
 `remember` and `help` from the shell arrive in 0.5.9. npm served 0.5.8 on
-2026-09-09, where both exit 1 with `unknown command`. Once 0.7.0 is published,
-run `npx -y memory-pulse@0.7.0` until your npx cache catches up; before that,
-run `node server.mjs` from a checkout. Four more things in this README are
+2026-09-09, where both exit 1 with `unknown command`. If npx serves an older
+cached release, pin this one: `npx -y memory-pulse@0.8.0`; from a checkout,
+run `node server.mjs`. Four more things in this README are
 0.5.9 behaviour and differ on 0.5.8: `guard --verbose` names non-JSON stdin
 on stderr (0.5.8 prints nothing), `handoff` with no transcript writes nothing
 and says `handoff skipped (no transcript)` (0.5.8 records a row that reads
@@ -184,7 +184,7 @@ and exits 0. The first `remember` creates `.memory-pulse/events.jsonl`, from a
 tool call or from the shell:
 
 ```
-npx -y memory-pulse@0.7.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
+npx -y memory-pulse@0.8.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 # before 0.6.0 is on npm, the same command from a checkout:
 git clone https://github.com/t-crew/memory-pulse.git && node memory-pulse/server.mjs remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 ```

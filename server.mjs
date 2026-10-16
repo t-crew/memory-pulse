@@ -44,7 +44,7 @@ import { promptSlice as promptSliceWith, editSlice as editSliceWith } from "./li
 import { recordUsage, consentState, setConsent, hasConsentAnswer, resetInstall, usagePayload, maybeSendUsage } from "./lib/usage.mjs";
 
 const API = (process.env.MEMORY_PULSE_API ?? "https://pulse.strategic-innovations.ai").replace(/\/$/, "");
-const KEY = process.env.MEMORY_PULSE_KEY ?? null;
+const KEY = process.env.MEMORY_PULSE_KEY || null;
 
 // ---------------------------------------------------------------- ledger ----
 function ledgerPath() {

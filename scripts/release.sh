@@ -21,8 +21,12 @@ noproxy() { env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https
 cd "$CLIENT"
 
 if [ "${1:-}" != "" ]; then
-  for f in package.json server.json .claude-plugin/plugin.json .codex-plugin/plugin.json; do
+  for f in package.json server.json .claude-plugin/plugin.json .codex-plugin/plugin.json mcpb/manifest.json; do
     sed -i '' -E "s/\"version\": \"[0-9]+\.[0-9]+\.[0-9]+\"/\"version\": \"$1\"/g" "$f"
+  done
+  # the docs pin the release a reader copies (test/manifests.test.js holds them to package.json)
+  for f in README.md docs/GUIDE.md; do
+    sed -i '' -E "s/memory-pulse@[0-9]+\.[0-9]+\.[0-9]+/memory-pulse@$1/g" "$f"
   done
 fi
 VERSION=$(node -p "require('./package.json').version")
@@ -35,11 +39,11 @@ grep -E "^ℹ fail 0$" "$LOG" > /dev/null || { echo "tests not green — see $LO
 grep -E "^ℹ (tests|pass|fail)" "$LOG" | tr '\n' ' '; echo
 
 echo "2/4 version consistency"
-for f in server.json .claude-plugin/plugin.json .codex-plugin/plugin.json; do
+for f in server.json .claude-plugin/plugin.json .codex-plugin/plugin.json mcpb/manifest.json; do
   grep -q "\"version\": \"$VERSION\"" "$f" || { echo "$f is not at $VERSION"; exit 1; }
 done
 if ! git diff --quiet || ! git diff --cached --quiet; then
-  git add package.json server.json .claude-plugin/plugin.json .codex-plugin/plugin.json
+  git add package.json server.json .claude-plugin/plugin.json .codex-plugin/plugin.json mcpb/manifest.json README.md docs/GUIDE.md
   git -c user.name="Travis Crew" -c user.email="travisaaroncrew@gmail.com" commit -q -m "release $VERSION" || true
 fi
 
