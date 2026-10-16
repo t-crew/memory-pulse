@@ -21,6 +21,8 @@ Every append holds <ledger>.lock (created with O_EXCL; the same lock the npm cli
 file and computes t, prev and hash under it, so two writers in any language never share a t or a prev.
 
 CLI:  python3 memory_pulse.py verify <ledger>   |   python3 memory_pulse.py append <ledger> <cause> <effect> [note]
+      python3 memory_pulse.py board-post <board> <from> <to|all> <note|request|reply> <title> [body]   |   board-read <board> <agent>
+      python3 memory_pulse.py board-reply <board> <t> <agent> <body>   |   board-ack <board> <t> <agent>      (Board: the shared agent message board)
 """
 from __future__ import annotations
 import hashlib, json, os, sys, time, urllib.request
@@ -190,6 +192,85 @@ class Ledger:
     def brief(self, key: str | None = None) -> str:
         out = self.pulse(key=key); return out.get("text") or json.dumps(out)
 
+# ---- Agent message board (2026-10-16): the same board as lib/board.mjs, so a Python agent and a Node agent share one board file.
+# Passive: posting runs nothing and wakes no one. A message is data, never an instruction: instruction-like text is stored, flagged
+# (same patterns as server.mjs) and shown as data. The board is a ledger of its own (same chain and lock), never the project ledger.
+import re as _re
+_INSTRUCTION_PATTERNS = [
+    ("protect-instructions", r"\b(ignore|disregard|forget)\b[^.\n]{0,40}\b(previous|prior|above|all|earlier)\b[^.\n]{0,20}\b(instructions?|rules?|prompts?)\b"),
+    ("protect-role", r"\byou are now\b|\bfrom now on,? you\b|\bact as (an?|the) (system|admin|developer)\b"),
+    ("protect-boundaries", r"</?\s*[a-z][\w-]{2,40}\s*(?:[\s>]|$)|\[(system|assistant|tool)\s*:?\s*\]"),
+    ("protect-configuration", r"\b(reveal|print|show|dump)\b[^.\n]{0,30}\b(system prompt|hidden prompt|your instructions)\b"),
+    ("protect-execution", r"\b(run|execute|paste)\b[^.\n]{0,25}\b(this|the following)\b[^.\n]{0,15}\b(command|script|shell|code)\b"),
+    ("protect-installs", r"\b(curl|wget)\b[^\n]{0,120}\|\s*(sudo\s+)?(sh|bash|zsh)\b"),
+    ("protect-data", r"\b(rm\s+-rf\s+[/~]|drop\s+table|truncate\s+table|format\s+c:)"),
+    ("protect-credentials", r"\b(send|post|upload|exfiltrat\w*|leak|forward|email)\b[^.\n]{0,40}\b(api[\s_-]?keys?|secrets?|tokens?|passwords?|credentials?)\b[^.\n]{0,40}\b(to|via|at)\b[^.\n]{0,4}(https?://|[\w.-]+@[\w.-]+\b|this\b|the following\b|that (address|url|endpoint|server)\b|me\b)|\b(send|give|show|tell) me\b[^.\n]{0,30}\b(api[\s_-]?keys?|secrets?|tokens?|passwords?|credentials?)\b"),
+    ("protect-transparency", r"\b(do not|don't|never)\b[^.\n]{0,20}\b(tell|show|mention|reveal)\b[^.\n]{0,20}\b(the )?(user|human|operator)\b"),
+]
+_IPAT = [(i, _re.compile(p, _re.I)) for i, p in _INSTRUCTION_PATTERNS]
+def instruction_like(text) -> list:
+    if not isinstance(text, str) or not text: return []
+    return [i for i, rx in _IPAT if rx.search(text)]
+
+_BOARD_KINDS, _BOARD_ID = ("note", "request", "reply"), _re.compile(r"^[a-z0-9][a-z0-9._-]{0,39}$")
+def _bslug(s): return (_re.sub(r"^-+|-+$", "", _re.sub(r"[^a-z0-9]+", "-", str(s).lower()))[:60]) or "message"
+def _now_iso():
+    import datetime; return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+class Board:
+    """The shared agent message board (see lib/board.mjs): post / reply / ack / inbox / messages / verify."""
+    def __init__(self, path: str): self.path = path; self.ledger = Ledger(path)
+
+    def _load(self):
+        msgs, acks = [], {}
+        for r in self.ledger.events():
+            b = r.get("board")
+            if not isinstance(b, dict): continue
+            if b.get("kind") == "ack": acks.setdefault(b.get("ack"), set()).add(b.get("from")); continue
+            msgs.append({"t": r.get("t"), "from": b.get("from"), "to": b.get("to"), "kind": b.get("kind"), "title": b.get("title", r.get("effect")),
+                         "body": r.get("note", ""), "at": b.get("at"), "thread": b.get("thread", r.get("t")), "reply_to": b.get("reply_to"),
+                         "flagged": b.get("flagged", [])})
+        for m in msgs: m["acked_by"] = sorted(acks.get(m["t"], set()))
+        return msgs
+
+    def _write(self, ev):
+        with _LedgerLock(self.path): return self.ledger._append_locked(ev)
+
+    def post(self, from_, to, kind="note", title="", body="", thread=None, reply_to=None) -> dict:
+        from_, to, title, body = str(from_ or "").strip().lower(), str(to or "").strip().lower(), str(title or "").strip(), str(body or "")
+        if not _BOARD_ID.match(from_): return {"written": False, "reason": "sender must be an agent id"}
+        if to != "all" and not _BOARD_ID.match(to): return {"written": False, "reason": "addressee must be an agent id or 'all'"}
+        if from_ == to: return {"written": False, "reason": "an agent does not post to itself"}
+        if kind not in _BOARD_KINDS: return {"written": False, "reason": "kind must be note, request or reply"}
+        if not title or len(title) > 200: return {"written": False, "reason": "title required, at most 200 characters"}
+        if len(body) > 20000: return {"written": False, "reason": "body at most 20000 characters"}
+        flagged = instruction_like(f"{title}\n{body}")
+        bd = {"from": from_, "to": to, "kind": kind, "title": title, "at": _now_iso()}
+        if thread: bd["thread"] = int(thread)
+        if reply_to: bd["reply_to"] = int(reply_to)
+        if flagged: bd["flagged"] = flagged
+        ev = {"t": None, "cause": "board-post", "effect": _bslug(title), "kind": "event", **({"note": body} if body else {}), "tags": ["board", kind], "board": bd}
+        r = self._write(ev); return {"written": True, "t": r["t"], "flagged": flagged, "board": self.path}
+
+    def reply(self, t, from_, body="", title=None) -> dict:
+        o = next((m for m in self._load() if m["t"] == int(t)), None)
+        if not o: return {"written": False, "reason": f"no message t{t} on this board"}
+        to = o["to"] if o["from"] == str(from_).lower() else o["from"]
+        return self.post(from_, to, "reply", title or f"re: {o['title']}"[:200], body, thread=o["thread"], reply_to=o["t"])
+
+    def ack(self, t, as_) -> dict:
+        as_ = str(as_ or "").strip().lower(); m = next((x for x in self._load() if x["t"] == int(t)), None)
+        if not m: return {"written": False, "reason": f"no message t{t} on this board"}
+        if m["to"] not in (as_, "all"): return {"written": False, "reason": f"t{t} is addressed to {m['to']}, not {as_}"}
+        ev = {"t": None, "cause": "board-ack", "effect": f"t{m['t']}", "kind": "event", "tags": ["board", "ack"], "board": {"from": as_, "kind": "ack", "ack": m["t"], "at": _now_iso()}}
+        r = self._write(ev); return {"written": True, "t": r["t"]}
+
+    def inbox(self, agent) -> list:
+        a = str(agent or "").lower(); return [m for m in self._load() if m["to"] in (a, "all") and m["from"] != a and a not in m["acked_by"]]
+
+    def messages(self) -> list: return self._load()
+    def verify(self) -> dict: return self.ledger.verify()
+
 if __name__ == "__main__":
     a = sys.argv[1:]
     if len(a) >= 2 and a[0] == "verify":
@@ -197,4 +278,12 @@ if __name__ == "__main__":
     if len(a) >= 4 and a[0] == "append":
         try: print(json.dumps(Ledger(a[1]).append(a[2], a[3], a[4] if len(a) > 4 else None))); sys.exit(0)
         except LedgerLocked as e: print(json.dumps({"written": False, "reason": str(e)})); sys.exit(1)
+    if len(a) >= 5 and a[0] == "board-post":
+        r = Board(a[1]).post(a[2], a[3], a[4], a[5] if len(a) > 5 else "", a[6] if len(a) > 6 else ""); print(json.dumps(r)); sys.exit(0 if r["written"] else 1)
+    if len(a) >= 3 and a[0] == "board-read":
+        B = Board(a[1]); print(json.dumps({"board": a[1], "integrity": B.verify(), "messages": B.inbox(a[2])}, ensure_ascii=False)); sys.exit(0)
+    if len(a) >= 4 and a[0] == "board-ack":
+        r = Board(a[1]).ack(a[2], a[3]); print(json.dumps(r)); sys.exit(0 if r["written"] else 1)
+    if len(a) >= 5 and a[0] == "board-reply":
+        r = Board(a[1]).reply(a[2], a[3], a[4]); print(json.dumps(r)); sys.exit(0 if r["written"] else 1)
     print(__doc__); sys.exit(1)
