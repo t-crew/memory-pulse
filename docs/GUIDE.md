@@ -376,24 +376,26 @@ Three things to know. A correction on the agent ledger blocks the same edit in e
 
 ### Soul mode
 
-Soul mode is agent mode plus a soul: the persona, voice and values the agent keeps, a profile of the person it works with, its long-term memory and a journal of recent days. They live on the agent ledger, chained like every row, and every brief in every tool starts with them and the ledger's fingerprint, also in a project that has no ledger of its own.
+Soul mode is agent mode plus a soul: the persona, voice and values the agent keeps, its notes about the person it works with, its long-term memory and a journal of recent days. The agent owns them. It can rewrite its soul, its notes and its name from any session, and every brief in every tool starts with the current version and the agent ledger's fingerprint, also in a project that has no ledger of its own.
 
-OpenClaw keeps the same things in workspace files (SOUL.md, IDENTITY.md, USER.md, MEMORY.md and a log per day). A file anything can write can be rewritten by a prompt injection, and the Cloud Security Alliance documented exactly that: instructions planted in SOUL.md and MEMORY.md that survive restarts. Here the soul, the user profile and the identity change only through their own commands, run by you. `remember` and the MCP tool cannot write them, ambient capture never does, and with the guard installed the agent's own tools cannot run those commands, write the agent ledger or edit the exported files. A script that goes around memory-pulse altogether can still append a row, so what holds is that a change shows: the soul line cites its row, and an edit to an earlier row breaks the chain the brief checks. The agent can propose a change; you approve or reject it. Soul text is screened: a line that reads like an injected instruction, tells the agent to rewrite its own files, or tells it to obey what arrives in email or web pages is refused, with the reason.
+An agent that can rewrite itself can be talked into it. OpenClaw keeps the same things in workspace files (SOUL.md, IDENTITY.md, USER.md, MEMORY.md and a log per day), and the Cloud Security Alliance documented the attack: a poisoned page or mail plants instructions in SOUL.md and MEMORY.md that survive restarts. Here what decides is where a change comes from. A change made in a session that read outside content (web fetch or search, a browser, mail, fetch-style MCP tools, curl or wget, as capture recorded the session) is held, and takes effect only when the agent confirms it from a session that did not, or you approve it. Soul text that reads like an injected instruction, tells the agent to rewrite its own files, or tells it to obey what arrives from outside is refused, with the reason. Every version is kept with its session and date. The agent writes its log through memory-pulse, so a raw edit of the ledger file is blocked and every entry stays chained. The check for outside content reads capture's record of the session, so it needs the capture hook and runs on Claude Code today.
+
+These commands change your agent ledger and your settings, so they are not run when this guide is tested:
 
 ```sh
 npx -y memory-pulse@0.13.1 mode soul
 npx -y memory-pulse@0.13.1 identity "Blue, research agent for Travis"
 npx -y memory-pulse@0.13.1 soul "Warm and direct. Speaks plainly, prefers measured numbers to adjectives, says so when unsure."
 npx -y memory-pulse@0.13.1 user "Travis, founder; wants the reasoning recorded, not just the result."
-npx -y memory-pulse@0.13.1 soul propose "Warm, direct, and a little dry."
-npx -y memory-pulse@0.13.1 soul approve 5
+npx -y memory-pulse@0.13.1 soul history
+npx -y memory-pulse@0.13.1 soul confirm 7
 ```
 
-The fifth line is what the agent may run; the sixth is yours, with the row number the proposal printed. With capture on, each session's end adds a dated journal entry, and the brief shows the last three days.
+The last line confirms a change that was held, with the row number the held change printed; run it from a session that has not read outside content. `soul revert <t>` brings back an earlier version, and `soul propose` leaves a change for later. With capture on, each session's end adds a dated journal entry, and the brief shows the last three days.
+
+What this does not stop, stated plainly: an agent that starts a new session itself (`claude -p`) and confirms there; outside content read through a channel the check does not name (`gh`, `git pull`, a downloaded file, a subagent, a script that fetches); a host other than Claude Code, where the session's reads are not recorded; and wording the screens do not know, since they catch known shapes only. A row appended to the ledger file around memory-pulse is not honored as the soul and is named in the brief, and the fingerprint (the sha256 of the agent ledger's bytes) changes with any edit. A soul arriving by `state merge` is held, and rolling the agent ledger back is refused from a session that read outside content. `mode soul` warns when the guard or capture hook is missing.
 
 Coming from OpenClaw, `soul import --openclaw` reads `~/.openclaw/workspace`, or a folder you name, through the same screens, and lists every line it withheld by file and line. `soul export --openclaw <folder>` writes SOUL.md, IDENTITY.md, USER.md and MEMORY.md back from the ledger. It never overwrites a file it did not write (`--force` keeps the old one as a `.bak`), and if a file it wrote is edited later, the next brief says that file differs from the sealed soul.
-
-These commands change your agent ledger and your settings, so this guide's test does not run them.
 
 ## 10. Teams and CI
 
