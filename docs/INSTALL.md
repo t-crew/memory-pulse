@@ -11,7 +11,7 @@ Typed inside Claude Code:
 /plugin install memory-pulse@memory-pulse
 ```
 
-The plugin brings the skill, the four tools, the session-start brief and the guard. About 120 tokens are always on (the skill's description); `claude plugin details memory-pulse` shows the figure on your install. To also record what a session was doing before Claude Code compacts it, add the handoff hook under `hooks.PreCompact` in `~/.claude/settings.json`:
+The plugin brings the skill, the four tools, the session-start brief, the prompt slice, the guard, and capture: each tool call is recorded locally, with no model and no network, and a check that failed and then passed becomes a fix. About 120 tokens are always on (the skill's description); `claude plugin details memory-pulse` shows the figure on your install. To also record what a session was doing before Claude Code compacts it, add the handoff hook under `hooks.PreCompact` in `~/.claude/settings.json`:
 
 ```json
 { "hooks": [{ "type": "command", "command": "npx -y memory-pulse handoff" }] }

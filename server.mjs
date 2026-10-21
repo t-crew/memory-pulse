@@ -1493,9 +1493,9 @@ async function cliBrief() {
   // sent the rows without it
   let hide = new Set();
   if (session && captureInstalled()) {
-    const { withhold, holdoutRate } = await import("./lib/weights.mjs"); const rate = holdoutRate();
+    const { withhold, holdoutRate, fold, decided } = await import("./lib/weights.mjs"); const live = inForce(led0.events), rate = holdoutRate(process.env, live), w = fold(live);
     const eligible = (e) => e.kind !== "correction" && Array.isArray(e.tags) && e.tags.some((x) => x === "decision" || x === "state" || x === "fix");
-    if (rate > 0) hide = new Set(led0.events.filter((e) => eligible(e) && withhold(`${session}|${e.t}`, rate)).map((e) => e.t));
+    if (rate > 0) hide = new Set(led0.events.filter((e) => eligible(e) && !decided(w.get(e.t)) && withhold(`${session}|${e.t}`, rate)).map((e) => e.t));
   }
   const led = led0, events = hide.size ? led0.events.filter((e) => !hide.has(e.t)) : led0.events;
   const bi = process.argv.indexOf("--budget");
@@ -1558,11 +1558,20 @@ function captureInstalled() {
                  join(proj, ".claude", "settings.json"), join(proj, ".claude", "settings.local.json")].filter(Boolean);
   // a hook entry that can run, not any mention (a permission allow-list entry matched before), and not with every hook disabled
   const isCapture = (c) => typeof c === "string" && /memory-pulse(?:@[\w.^~-]+)?"?\s+capture\b|server\.mjs"?\s+capture\b/.test(c);
+  const hasCapture = (j) => ["PostToolUse", "PostToolUseFailure"].some((ev) => (Array.isArray(j?.hooks?.[ev]) ? j.hooks[ev] : []).some((m) => (Array.isArray(m?.hooks) ? m.hooks : []).some((h) => isCapture(h?.command))));
   let any = false;
   for (const f of files) {
     let j; try { j = JSON.parse(readFileSync(f, "utf8")); } catch { continue; }
     if (j?.disableAllHooks === true) return false;
-    for (const ev of ["PostToolUse", "PostToolUseFailure"]) for (const m of Array.isArray(j?.hooks?.[ev]) ? j.hooks[ev] : []) for (const h of Array.isArray(m?.hooks) ? m.hooks : []) if (isCapture(h?.command)) any = true;
+    if (hasCapture(j)) any = true;
+  }
+  // the plugin (0.13.1): a hook run from this plugin (Claude Code exports CLAUDE_PLUGIN_ROOT to plugin hooks) with this server's own
+  // hooks/hooks.json carrying capture. The npm package ships no hooks/hooks.json, so npx runs never match.
+  if (!any && process.env.CLAUDE_PLUGIN_ROOT) {
+    try {
+      const own = realpathSync(dirname(fileURLToPath(import.meta.url)));
+      if (realpathSync(process.env.CLAUDE_PLUGIN_ROOT) === own && hasCapture(JSON.parse(readFileSync(join(own, "hooks", "hooks.json"), "utf8")))) any = true;
+    } catch { /* not this plugin */ }
   }
   return any;
 }
@@ -1574,10 +1583,10 @@ async function cliPrompt() {
     let hook = {}; try { hook = raw.trim() ? JSON.parse(raw) : {}; } catch { return; }
     if (typeof hook.prompt !== "string") return;
     const events = readEvents().events, picked = [], held = [];
-    const { fold, holdoutRate } = await import("./lib/weights.mjs");
+    const { fold, holdoutRate } = await import("./lib/weights.mjs"); const live = inForce(events);
     // exposure and withholding (2026-10-21) only when capture is installed: without it nothing would ever credit them (lib/weights.mjs)
     const session = typeof hook.session_id === "string" && hook.session_id ? hook.session_id : null, learn = session && captureInstalled();
-    const slice = promptSlice(events, hook.prompt, { blocks: readBlocks(), agentEvents: existsSync(agentPath()) ? readEvents({ scope: "agent" }).events : [], weights: fold(inForce(events)), picked, withheld: held, holdout: learn ? holdoutRate() : 0, holdoutKey: String(session) });
+    const slice = promptSlice(events, hook.prompt, { blocks: readBlocks(), agentEvents: existsSync(agentPath()) ? readEvents({ scope: "agent" }).events : [], weights: fold(live), picked, withheld: held, holdout: learn ? holdoutRate(process.env, live) : 0, holdoutKey: String(session) });
     if (slice) { process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: slice } })); recordUsage("prompt_slice"); }
     if (learn && (picked.length || held.length)) {
       const { episodePath } = await import("./lib/capture.mjs"); const p = episodePath(ledgerPath(), session);
