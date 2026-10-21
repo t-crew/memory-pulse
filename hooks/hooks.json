@@ -1,5 +1,5 @@
 {
-  "description": "memory-pulse: re-enter through the organized memory at session start; add the corrections that bear on each prompt and edit; block edits that write a withdrawn value back. Both run the plugin's own server.mjs, so the hooks are exactly the plugin's version \u2014 no npx fetch, no skew against npm.",
+  "description": "memory-pulse: re-enter through the organized memory at session start; add the corrections that bear on each prompt and edit; block edits that write a withdrawn value back; record each tool call and turn fail-then-pass into findings (capture, local, no model, no network). Both run the plugin's own server.mjs, so the hooks are exactly the plugin's version — no npx fetch, no skew against npm.",
   "hooks": {
     "SessionStart": [
       {
@@ -28,6 +28,50 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/server.mjs\" prompt"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/server.mjs\" capture",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/server.mjs\" capture",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/server.mjs\" consolidate",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/server.mjs\" consolidate --final",
+            "timeout": 10
           }
         ]
       }

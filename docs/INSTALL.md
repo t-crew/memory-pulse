@@ -11,7 +11,7 @@ Typed inside Claude Code:
 /plugin install memory-pulse@memory-pulse
 ```
 
-The plugin brings the skill, the four tools, the session-start brief and the guard. About 120 tokens are always on (the skill's description); `claude plugin details memory-pulse` shows the figure on your install. To also record what a session was doing before Claude Code compacts it, add the handoff hook under `hooks.PreCompact` in `~/.claude/settings.json`:
+The plugin brings the skill, the four tools, the session-start brief, the prompt slice, the guard, and capture: each tool call is recorded locally, with no model and no network, and a check that failed and then passed becomes a fix. About 120 tokens are always on (the skill's description); `claude plugin details memory-pulse` shows the figure on your install. To also record what a session was doing before Claude Code compacts it, add the handoff hook under `hooks.PreCompact` in `~/.claude/settings.json`:
 
 ```json
 { "hooks": [{ "type": "command", "command": "npx -y memory-pulse handoff" }] }
@@ -46,15 +46,15 @@ Register the stdio server. For Cursor, put this in `.cursor/mcp.json` (project) 
 { "mcpServers": { "memory-pulse": { "command": "npx", "args": ["-y", "memory-pulse"] } } }
 ```
 
-Any client that starts a stdio MCP server takes the same command and arguments. Hooks do not run in these clients, so enforce corrections in CI with the GitHub Action below, and run `npx -y memory-pulse@0.13.0 lint` over `.cursorrules` and the other rule files. The Cursor entry follows Cursor's documented format and has not yet been verified inside Cursor.
+Any client that starts a stdio MCP server takes the same command and arguments. Hooks do not run in these clients, so enforce corrections in CI with the GitHub Action below, and run `npx -y memory-pulse@0.13.1 lint` over `.cursorrules` and the other rule files. The Cursor entry follows Cursor's documented format and has not yet been verified inside Cursor.
 
 ## Claude Code or Codex without the plugin
 
 ```
 claude mcp add memory-pulse -- npx -y memory-pulse
 codex  mcp add memory-pulse -- npx -y memory-pulse
-npx -y memory-pulse@0.13.0 install-hook
-npx -y memory-pulse@0.13.0 install-hook --codex
+npx -y memory-pulse@0.13.1 install-hook
+npx -y memory-pulse@0.13.1 install-hook --codex
 ```
 
 `install-hook` writes the hooks into `~/.claude/settings.json`, or `~/.codex/hooks.json` with `--codex`. Add `--project` to write them into the repository instead; commit that and every clone is re-entered and guarded with nothing to install.
@@ -102,9 +102,9 @@ A pull request that writes back a value your ledger retired fails the check, and
 From the project folder:
 
 ```
-npx -y memory-pulse@0.13.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
-npx -y memory-pulse@0.13.0 check --text 'the plan costs $49 a month'
-npx -y memory-pulse@0.13.0 verify
+npx -y memory-pulse@0.13.1 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
+npx -y memory-pulse@0.13.1 check --text 'the plan costs $49 a month'
+npx -y memory-pulse@0.13.1 verify
 ```
 
 The first command creates `.memory-pulse/events.jsonl` and records the correction. The second answers `BLOCKED` and names the row that retired `$49`. The third walks the chain and answers `chain: OK`.

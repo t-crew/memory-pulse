@@ -52,7 +52,12 @@ test("the Codex manifest points at the same skill, MCP and hook files Claude Cod
 
 test("hooks.json: one SessionStart brief and one guarded PreToolUse edit matcher, both run from the plugin root", () => {
   const h = read("hooks/hooks.json").hooks;
-  assert.deepEqual(Object.keys(h).sort(), ["PreToolUse", "SessionStart", "UserPromptSubmit"]); // 0.7.0: the prompt slice
+  // 0.7.0: the prompt slice; 0.13.1: capture and consolidation, as install-hook writes them (changed with the plugin, stated)
+  assert.deepEqual(Object.keys(h).sort(), ["PostToolUse", "PostToolUseFailure", "PreToolUse", "SessionEnd", "SessionStart", "Stop", "UserPromptSubmit"]);
+  const one = (ev) => { const x = h[ev].flatMap((g) => g.hooks); assert.equal(x.length, 1, ev); return x[0]; };
+  for (const ev of ["PostToolUse", "PostToolUseFailure"]) assert.deepEqual(one(ev), { type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/server.mjs" capture', async: true });
+  assert.deepEqual(one("Stop"), { type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/server.mjs" consolidate', async: true });
+  assert.deepEqual(one("SessionEnd"), { type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/server.mjs" consolidate --final', timeout: 10 });
   assert.deepEqual(h.UserPromptSubmit.flatMap((g) => g.hooks.map((x) => x.command)), ['node "${CLAUDE_PLUGIN_ROOT}/server.mjs" prompt']);
   const cmds = (ev) => h[ev].flatMap((g) => g.hooks.map((x) => [g.matcher, x.type, x.command]));
   assert.deepEqual(cmds("SessionStart"), [[undefined, "command", 'node "${CLAUDE_PLUGIN_ROOT}/server.mjs" brief']]);

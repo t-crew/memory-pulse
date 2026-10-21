@@ -58,7 +58,7 @@ engines); the test suite runs on 22 and 24.
 
 `remember` and `help` from the shell arrive in 0.5.9. npm served 0.5.8 on
 2026-09-09, where both exit 1 with `unknown command`. If npx serves an older
-cached release, pin this one: `npx -y memory-pulse@0.13.0`; from a checkout,
+cached release, pin this one: `npx -y memory-pulse@0.13.1`; from a checkout,
 run `node server.mjs`. Four more things in this README are
 0.5.9 behaviour and differ on 0.5.8: `guard --verbose` names non-JSON stdin
 on stderr (0.5.8 prints nothing), `handoff` with no transcript writes nothing
@@ -172,16 +172,17 @@ ledger, so you see the output format before installing anything.
 
 ### What each host runs
 
-Read from `server.mjs` and `hooks/hooks.json`, 2026-09-09.
+Read from `server.mjs` and `hooks/hooks.json`, 2026-10-21.
 
-| | Claude Code plugin | Codex plugin | `install-hook` | Cursor, other MCP clients |
-|---|---|---|---|---|
-| four tools | yes | yes | with `claude mcp add` or `codex mcp add` | yes |
-| brief at session start | yes | after `/hooks` trust | yes | no |
-| guard before an edit | `Edit\|Write\|MultiEdit\|apply_patch\|Bash` | `apply_patch` measured, after trust; `Bash` is in the matcher, unmeasured in Codex (2026-09-09) | `Edit\|Write\|MultiEdit\|Bash` (Claude Code), `Edit\|Write\|apply_patch` (Codex) | no; `check --ci` in CI |
-| handoff before compaction | no | no | yes | no |
-| ambient capture | `mode agent` | no | `--ambient` or `mode agent` | no |
-| CLI and GitHub Action | everywhere | everywhere | everywhere | everywhere |
+| | Claude Code plugin | Codex plugin | `install-hook` | `install-hook --cursor` | other MCP clients |
+|---|---|---|---|---|---|
+| four tools | yes | yes | with `claude mcp add` or `codex mcp add` | with `.cursor/mcp.json` | yes |
+| brief at session start | yes | after `/hooks` trust | yes | yes | no |
+| guard before an edit | `Edit\|Write\|MultiEdit\|apply_patch\|Bash` | `apply_patch` measured, after trust; `Bash` is in the matcher, unmeasured in Codex (2026-09-09) | `Edit\|Write\|MultiEdit\|Bash` (Claude Code), `Edit\|Write\|apply_patch` (Codex) | `Write\|Shell`, fail-closed | no; `check --ci` in CI |
+| capture and consolidation | yes | after `/hooks` trust, unmeasured in Codex | yes for Claude Code (`--no-capture` leaves it out); not for `--codex` | yes | no |
+| handoff before compaction | no | no | yes | no | no |
+| ambient capture | `mode agent` | no | `--ambient` or `mode agent` | no | no |
+| CLI and GitHub Action | everywhere | everywhere | everywhere | everywhere | everywhere |
 
 ### First run
 
@@ -190,7 +191,7 @@ and exits 0. The first `remember` creates `.memory-pulse/events.jsonl`, from a
 tool call or from the shell:
 
 ```
-npx -y memory-pulse@0.13.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
+npx -y memory-pulse@0.13.1 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 # before 0.6.0 is on npm, the same command from a checkout:
 git clone https://github.com/t-crew/memory-pulse.git && node memory-pulse/server.mjs remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 ```
@@ -508,7 +509,7 @@ npx memory-pulse board claims                # every claim: open, upheld, refute
 This follows Self-Organizing Agent Teams ([arXiv 2609.22682](https://arxiv.org/abs/2609.22682)). Six of the twenty strategies its
 teams kept exist to keep a claim the consensus dropped in play, and its judge may reject an answer only by naming a specific defect.
 
-**It remembers what the agent did, on its own.** `install-hook` (and `--cursor`; not yet `--codex`) adds a capture hook after every
+**It remembers what the agent did, on its own.** The plugin, `install-hook` and `install-hook --cursor` (not yet `--codex`) add a capture hook after every
 tool call: an edit (file, lines changed), a command (scrubbed of secrets, with its outcome and first error line) or a read becomes one
 row in the session's episode, `.memory-pulse/episodes/<session>.jsonl`. No model runs and nothing leaves the machine; tool output is
 never stored, only its outcome. At the end of each turn the episode is consolidated: a check that failed and later passed becomes a fix

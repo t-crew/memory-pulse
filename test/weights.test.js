@@ -103,8 +103,10 @@ const fixture = ({ capture = true } = {}) => {
   return { home, work };
 };
 const run = (f, args, stdin, extra = {}) => new Promise((resolve) => {
-  const env = { ...process.env, HOME: f.home, MEMORY_PULSE_LEDGER: join(f.work, ".memory-pulse", "events.jsonl"), MEMORY_PULSE_AGENT: join(f.home, "agent.jsonl"), MEMORY_PULSE_API: "http://127.0.0.1:9", MEMORY_PULSE_HOLDOUT: "0", ...extra };
+  const { CLAUDE_PLUGIN_ROOT: _plugin, ...host } = process.env;       // a test run from inside a plugin hook must not leak its root
+  const env = { ...host, HOME: f.home, MEMORY_PULSE_LEDGER: join(f.work, ".memory-pulse", "events.jsonl"), MEMORY_PULSE_AGENT: join(f.home, "agent.jsonl"), MEMORY_PULSE_API: "http://127.0.0.1:9", MEMORY_PULSE_HOLDOUT: "0", ...extra };
   delete env.MEMORY_PULSE_KEY;
+  for (const [k, v] of Object.entries(extra)) if (v === null) delete env[k];          // null: leave the variable unset (the default)
   const p = spawn(process.execPath, [SERVER, ...args], { cwd: f.work, env });
   let out = "", err = ""; p.stdout.on("data", (c) => (out += c)); p.stderr.on("data", (c) => (err += c)); p.on("close", (code) => resolve({ code, out, err, all: out + err }));
   p.stdin.end(stdin ?? "");
@@ -249,4 +251,80 @@ test("re-review: the brief reads a SessionStart payload that arrives late on std
   const out = await new Promise((resolve) => { const p = spawn(process.execPath, [SERVER, "brief"], { cwd: f.work, env }); let o = ""; p.stdout.on("data", (c) => (o += c)); p.on("close", () => resolve(o));
     setTimeout(() => p.stdin.end(JSON.stringify({ session_id: "late", hook_event_name: "SessionStart" })), 150); });
   assert.doesNotMatch(out, /line item/, "withheld: the payload came 150 ms after the start");
+});
+
+// ---- 0.13.1 (2026-10-21, Travis: "do what's best"): withhold only where the evidence can reach a decision
+//   default   off when this ledger's credit comes from one machine (replay: at 1 in 10 one person's 105 sessions never reached the
+//             floor, so a solo user paid in missing memories and learned nothing); 1 in 10 once credit from two machines is pooled here
+//             (teammates committing the ledger, state merge, hosted memory); MEMORY_PULSE_HOLDOUT always overrides
+//   decided   a memory whose effect is settled stops sitting out: past the floor in both arms and a 99% interval excluding zero, or a
+//             95% interval narrower than +/-0.1
+//   machine   each credit row names the machine that earned it (a random id in ~/.config/memory-pulse/machine-id), which is how pooling
+//             is seen
+// Written before the code.
+const credRow = (t, c, ep, machine) => ({ t, tags: ["credit"], credit: c, evidence: { episode: ep, ...(machine ? { machine } : {}) } });
+test("0.13.1: pooled is credit from two machines; the default rate is 0 alone and 0.1 pooled; MEMORY_PULSE_HOLDOUT overrides", async () => {
+  const W = await import("../lib/weights.mjs");
+  const solo = [credRow(1, { 5: [1, 0, 0, 0] }, "a", "m1"), credRow(2, { 5: [0, 1, 0, 0] }, "b", "m1"), credRow(3, { 5: [1, 0, 0, 0] }, "c")];
+  const team = [...solo, credRow(4, { 5: [1, 0, 0, 0] }, "d", "m2")];
+  assert.equal(W.pooled(solo), false); assert.equal(W.pooled(team), true); assert.equal(W.pooled([]), false);
+  assert.equal(W.holdoutRate({}, solo), 0); assert.equal(W.holdoutRate({}, team), 0.1);
+  assert.equal(W.holdoutRate({ MEMORY_PULSE_HOLDOUT: "0.3" }, solo), 0.3); assert.equal(W.holdoutRate({ MEMORY_PULSE_HOLDOUT: "0" }, team), 0);
+});
+
+test("0.13.1: a memory whose effect is decided stops sitting out", async () => {
+  const W = await import("../lib/weights.mjs");
+  assert.equal(W.decided({ s: 3, f: 3, s0: 3, f0: 3 }), false, "past the floor, effect unknown");
+  assert.equal(W.decided({ s: 12, f: 0, s0: 0, f0: 12 }), true, "clearly helps");
+  assert.equal(W.decided({ s: 0, f: 2, s0: 2, f0: 0 }), false, "under the floor");
+  assert.equal(W.decided({ s: 200, f: 200, s0: 200, f0: 200 }), true, "no effect, measured to within 0.1");
+});
+
+test("0.13.1: alone, nothing sits out by default; with credit from a second machine, 1 in 10 does", async () => {
+  const W = await import("../lib/weights.mjs");
+  const f = fixture();
+  await run(f, ["remember", "refund rounding decision", "round per line item before tax", "--tags", "decision"]);
+  const t = ledger(f)[0].t;
+  let sid = ""; for (let i = 0; i < 2000 && !sid; i++) if (W.withhold(`d${i}|${t}`, 0.1)) sid = `d${i}`;   // a session whose draw at 0.1 is "sit out"
+  const solo = await prompt(f, sid, "fix the refund rounding before tax", { MEMORY_PULSE_HOLDOUT: null });
+  assert.match(solo.out, /line item/, "one machine: shown");
+  for (const m of ["m1", "m2"]) await run(f, ["append", "--json", JSON.stringify({ cause: "credit", effect: `seed-${m}`, tags: ["credit"], credit: { 999: [1, 0, 0, 0] }, evidence: { episode: `e-${m}`, machine: m } })]);
+  const team = await prompt(f, `${sid}`, "the refund rounding before tax again", { MEMORY_PULSE_HOLDOUT: null });
+  assert.doesNotMatch(team.out, /line item/, "two machines: this session's draw sits it out");
+});
+
+test("0.13.1: a decided memory is shown even at MEMORY_PULSE_HOLDOUT=1, in the prompt and the brief", async () => {
+  const f = fixture();
+  await run(f, ["remember", "refund rounding decision", "round per line item before tax", "--tags", "decision"]);
+  const t = ledger(f)[0].t;
+  await trials(f, t, [[1, 0, 0, 0], 12], [[0, 0, 0, 1], 12]);
+  assert.match((await prompt(f, "x1", "fix the refund rounding before tax", { MEMORY_PULSE_HOLDOUT: "1" })).out, /line item/);
+  const b = await run(f, ["brief"], JSON.stringify({ session_id: "x2", hook_event_name: "SessionStart" }), { MEMORY_PULSE_HOLDOUT: "1", CLAUDE_PROJECT_DIR: f.work });
+  assert.match(b.out, /line item/);
+});
+
+test("0.13.1: every credit row names this machine, the same id each time", async () => {
+  const f = fixture();
+  await run(f, ["remember", "refund rounding decision", "round per line item before tax", "--tags", "decision"]);
+  for (const sid of ["k1", "k2"]) { await prompt(f, sid, "fix the refund rounding before tax"); await check(f, sid, true); await stop(f, sid); }
+  const ids = ledger(f).filter((e) => (e.tags ?? []).includes("credit")).map((e) => e.evidence?.machine);
+  assert.equal(ids.length, 2); assert.match(ids[0], /^[0-9a-f]{12}$/); assert.equal(ids[0], ids[1]);
+  assert.equal(readFileSync(join(f.home, ".config", "memory-pulse", "machine-id"), "utf8").trim(), ids[0]);
+});
+
+test("0.13.1: the plugin's own capture hook counts as installed when the hook runs from the plugin", async () => {
+  const f = fixture({ capture: false }), root = join(SERVER, "..");
+  await run(f, ["remember", "refund rounding decision", "round per line item before tax", "--tags", "decision"]);
+  await prompt(f, "pl1", "fix the refund rounding before tax", { CLAUDE_PLUGIN_ROOT: root });
+  assert.ok(existsSync(join(f.work, ".memory-pulse", "episodes", "pl1.jsonl")), "exposure recorded: the plugin installs capture");
+  await prompt(f, "pl2", "fix the refund rounding before tax", { CLAUDE_PLUGIN_ROOT: f.home });
+  assert.equal(existsSync(join(f.work, ".memory-pulse", "episodes", "pl2.jsonl")), false, "a plugin root that is not this server's");
+});
+
+test("0.13.1: retirement needs the 99% interval below zero, because it is checked every session and freezes the memory once it fires", async () => {
+  const W = await import("../lib/weights.mjs");
+  const borderline = { s: 2, f: 6, s0: 6, f0: 2 };               // 95% interval below zero, 99% interval not (placebo replay: 2 false retirements at 95%)
+  const u = W.utility(borderline); assert.ok(u.raw + 1.96 * u.esd < 0 && u.raw + 2.576 * u.esd > 0, "fixture is borderline");
+  assert.equal(W.retired({ kind: "event" }, borderline), false);
+  assert.equal(W.retired({ kind: "event" }, { s: 0, f: 8, s0: 8, f0: 0 }), true);
 });
