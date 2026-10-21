@@ -12,6 +12,9 @@
 // 0.553 base). So an eligible memory is withheld at random (MEMORY_PULSE_HOLDOUT, default 0.1; corrections never), credit is kept in both
 // arms {t: [shown passes, shown failures, withheld passes, withheld failures]}, and only the effect between the arms ranks or retires.
 // Tests changed by that revision, stated: the retirement and rank tests below, and the integration credit shape [1, 0] -> [1, 0, 0, 0].
+// Revised again after the independent review (2026-10-21): a credit row is trusted only as one trial per memory (four non-negative
+// integers summing to 1, a canonical integer key), once per (episode, memory), over rows in force; merges carry credit to the memory it
+// was earned by. Tests changed by that, stated: the fold test and the ranking test now seed one-trial rows instead of rows of many counts.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -20,12 +23,29 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SERVER } from "./_helpers.mjs";
 
-test("weights fold credit rows by summing both arms, so any order gives the same weights; an old two-count row is shown-only", async () => {
+test("weights fold one-trial credit rows by summing both arms, so any order gives the same weights", async () => {
   const W = await import("../lib/weights.mjs");
-  const rows = [{ t: 10, tags: ["credit"], credit: { 3: [2, 0, 1, 0], 4: [0, 1, 0, 0] } }, { t: 11, tags: ["credit"], credit: { 3: [1, 1, 0, 2] } }, { t: 12, tags: ["credit"], credit: { 4: [0, 2], 5: [1, 0, 0, 1] } }];
-  const a = W.fold(rows), b = W.fold([rows[2], rows[0], rows[1]]);
+  const c = (t, ep, credit) => ({ t, tags: ["credit"], credit, evidence: { episode: ep } });
+  const rows = [c(10, "a", { 3: [1, 0, 0, 0], 4: [0, 1, 0, 0] }), c(11, "b", { 3: [0, 0, 0, 1] }), c(12, "c", { 4: [0, 1, 0, 0], 5: [0, 0, 1, 0] }), c(13, "d", { 3: [1, 0, 0, 0] })];
+  const a = W.fold(rows), b = W.fold([rows[2], rows[3], rows[0], rows[1]]);
   assert.deepEqual([...a].sort(), [...b].sort());
-  assert.deepEqual(a.get(3), { s: 3, f: 1, s0: 1, f0: 2 }); assert.deepEqual(a.get(4), { s: 0, f: 3, s0: 0, f0: 0 });
+  assert.deepEqual(a.get(3), { s: 2, f: 0, s0: 0, f0: 1 }); assert.deepEqual(a.get(4), { s: 0, f: 2, s0: 0, f0: 0 });
+});
+
+test("review: a credit row is trusted only as one trial: more counts, a non-canonical key, an absurd number or a second trial from the same session add nothing", async () => {
+  const W = await import("../lib/weights.mjs");
+  const c = (t, ep, credit) => ({ t, tags: ["credit"], credit, ...(ep ? { evidence: { episode: ep } } : {}) });
+  const w = W.fold([c(1, null, { 1: [0, 6, 6, 0] }), c(2, null, { "0x1": [1, 0, 0, 0], "1.0": [1, 0, 0, 0], " 1": [1, 0, 0, 0] }), c(3, null, { 1: [1e308, 0, 0, 0] }),
+                    c(4, null, { 1: [0.5, 0.5, 0, 0] }), c(5, null, { 1: [-1, 2, 0, 0] }), c(6, "s1", { 1: [0, 1, 0, 0] }), c(7, "s1", { 1: [0, 1, 0, 0] }), c(8, "s2", { 1: [0, 0, 1, 0] })]);
+  assert.deepEqual(w.get(1), { s: 0, f: 1, s0: 1, f0: 0 });
+  assert.equal(W.retired({ kind: "event" }, W.fold([c(1, null, { 7: [0, 6, 6, 0] })]).get(7)), false, "one forged row retires nothing");
+});
+
+test("review: project weights never move a row from the agent ledger that happens to share a number", async () => {
+  const W = await import("../lib/weights.mjs");
+  const strong = new Map([[1, { s: 6, f: 0, s0: 0, f0: 6 }]]);
+  assert.deepEqual(W.rank([{ t: 1, hits: 10, own: false }, { t: 2, hits: 11, own: true }], strong).map((x) => x.t), [2, 1]);
+  assert.deepEqual(W.rank([{ t: 1, hits: 10, own: true }, { t: 2, hits: 11, own: true }], strong).map((x) => x.t), [1, 2]);
 });
 
 test("utility: the effect is shown minus withheld, shrunk to zero without withheld evidence; only a clearly harmful effect past the floor in both arms retires", async () => {
@@ -93,6 +113,9 @@ const ledger = (f) => readFileSync(join(f.work, ".memory-pulse", "events.jsonl")
 const prompt = (f, sid, text, extra) => run(f, ["prompt"], JSON.stringify({ session_id: sid, cwd: f.work, hook_event_name: "UserPromptSubmit", prompt: text }), extra);
 const check = (f, sid, ok) => run(f, ["capture"], JSON.stringify({ session_id: sid, cwd: f.work, hook_event_name: ok ? "PostToolUse" : "PostToolUseFailure", tool_name: "Bash", tool_use_id: `${sid}-${Math.random()}`, tool_input: { command: "npm test" }, ...(ok ? { tool_response: { stdout: "ℹ pass 3\nℹ fail 0", stderr: "", interrupted: false } } : { error: "Exit code 1\n✖ totals" }) }));
 const stop = (f, sid) => run(f, ["consolidate"], JSON.stringify({ session_id: sid, cwd: f.work, hook_event_name: "Stop" }));
+// honest one-trial credit rows, one per session: trials(f, t, [[1, 0, 0, 0], 5], ...) = five sessions in which t was shown and the check passed
+let seeded = 0;
+async function trials(f, t, ...groups) { for (const [c, n] of groups) for (let i = 0; i < n; i++) await run(f, ["append", "--json", JSON.stringify({ cause: "credit", effect: `seed-${++seeded}`, tags: ["credit"], credit: { [t]: c }, evidence: { episode: `seed-${seeded}` } })]); }
 
 test("the prompt hook records what it injected; consolidate credits it with the next check, once; weights shows it", async () => {
   const f = fixture();
@@ -127,8 +150,7 @@ test("ranking uses the weights: the memory that helped comes first, the one that
   const [a, b] = ledger(f).map((e) => e.t);
   const base = await prompt(f, "s0", "refund rounding before tax");
   assert.match(base.out, /line item/); assert.match(base.out, /order total/);
-  const credit = (t, c, n) => run(f, ["append", "--json", JSON.stringify({ cause: "credit", effect: `seed-${n}`, tags: ["credit"], credit: { [t]: c } })]);
-  await credit(b, [5, 0, 0, 5], 1); await credit(a, [0, 8, 8, 0], 2);
+  await trials(f, b, [[1, 0, 0, 0], 5], [[0, 0, 0, 1], 5]); await trials(f, a, [[0, 1, 0, 0], 8], [[0, 0, 1, 0], 8]);
   const after = await prompt(f, "s9", "refund rounding before tax");
   assert.match(after.out, /order total/); assert.doesNotMatch(after.out, /line item/, "retired: failed 8 of 8 shown, passed 8 of 8 withheld");
 });
@@ -155,4 +177,76 @@ test("a withheld memory is left out of the prompt, recorded as withheld, and cre
   assert.equal(c.length, 1); assert.deepEqual(c[0].credit[t], [0, 0, 1, 0]);
   const w = await run(f, ["weights"]);
   assert.match(w.out, /withheld: 1 passed, 0 failed/);
+});
+
+test("review: state merge carries credit to the memory it was earned by, not to whatever row has that number here", async () => {
+  const a = fixture(), b = fixture();
+  await run(a, ["remember", "shared base", "the base row both sides have", "--tags", "decision"]);
+  const cut = join(a.home, "base.rain"); await run(a, ["state", "branch", "bob", "--out", cut]); await run(b, ["state", "import", cut]);
+  await run(b, ["remember", "bob refund rounding", "round per line item before tax", "--tags", "decision"]);
+  const bt = ledger(b).at(-1).t;
+  await trials(b, bt, [[0, 1, 0, 0], 6], [[0, 0, 1, 0], 6]);                         // on Bob's side: clearly harmful, retired
+  for (let i = 0; ledger(a).at(-1).t + 1 < bt; i++) await run(a, ["remember", `alice filler ${i}`, `row ${i}`]);   // import wrote a row on Bob's side
+  await run(a, ["remember", "alice checkout", "ship the checkout flag on friday", "--tags", "decision"]);
+  const at = ledger(a).at(-1).t; assert.equal(at, bt, "Alice's own decision has the number Bob's memory had");
+  const capB = join(b.home, "bob.rain"); await run(b, ["state", "export", "--out", capB]);
+  const m = await run(a, ["state", "merge", capB]); assert.equal(m.code, 0, m.all);
+  const W = await import("../lib/weights.mjs"); const rows = ledger(a), w = W.fold(rows);
+  const carried = rows.find((e) => e.cause === "bob refund rounding"); assert.ok(carried && carried.t !== bt);
+  assert.equal(w.get(at), undefined, "Alice's decision earned no credit"); assert.deepEqual(w.get(carried.t), { s: 0, f: 6, s0: 6, f0: 0 });
+  assert.match((await prompt(a, "m1", "ship the checkout flag on friday")).out, /checkout flag/);
+});
+
+test("review: state rollback takes credit rows out of force with everything else", async () => {
+  const f = fixture();
+  await run(f, ["remember", "refund rounding decision", "round per line item before tax", "--tags", "decision"]);
+  const t = ledger(f)[0].t;
+  await trials(f, t, [[0, 1, 0, 0], 6], [[0, 0, 1, 0], 6]);
+  assert.doesNotMatch((await prompt(f, "r1", "refund rounding before tax")).out, /line item/, "retired");
+  const rb = await run(f, ["state", "rollback", "--to", String(t), "credit was seeded by a test"]); assert.equal(rb.code, 0, rb.all);
+  assert.match((await prompt(f, "r2", "refund rounding before tax")).out, /line item/, "the credit is rolled back, so the memory is back");
+});
+
+test("review: a memory sitting out the session is left out of the session-start brief too; corrections never are", async () => {
+  const f = fixture();
+  await run(f, ["remember", "refund rounding decision", "round per line item before tax", "--tags", "decision"]);
+  await run(f, ["remember", "price", "corrected", "--kind", "correction", "--withdrawn", "$49", "--replacement", "$29"]);
+  const start = JSON.stringify({ session_id: "b1", hook_event_name: "SessionStart", source: "startup", cwd: f.work });
+  const held = await run(f, ["brief"], start, { MEMORY_PULSE_HOLDOUT: "1", CLAUDE_PROJECT_DIR: f.work });
+  assert.doesNotMatch(held.out, /line item/); assert.match(held.out, /\$49/);
+  const shown = await run(f, ["brief"], start, { MEMORY_PULSE_HOLDOUT: "0", CLAUDE_PROJECT_DIR: f.work });
+  assert.match(shown.out, /line item/);
+});
+
+test("review: capture counts as installed only as a hook that can run: not a permission entry, not with every hook disabled", async () => {
+  for (const settings of [{ permissions: { allow: ["Bash(npx -y memory-pulse capture)"] } },
+                          { disableAllHooks: true, hooks: { PostToolUse: [{ hooks: [{ type: "command", command: "npx -y memory-pulse capture" }] }] } }]) {
+    const f = fixture({ capture: false }); mkdirSync(join(f.home, ".claude"), { recursive: true }); writeFileSync(join(f.home, ".claude", "settings.json"), JSON.stringify(settings));
+    await run(f, ["remember", "refund rounding decision", "round per line item before tax", "--tags", "decision"]);
+    const r = await prompt(f, "c1", "fix the refund rounding before tax", { MEMORY_PULSE_HOLDOUT: "1" });
+    assert.match(r.out, /line item/); assert.equal(existsSync(join(f.work, ".memory-pulse", "episodes", "c1.jsonl")), false, JSON.stringify(settings));
+  }
+});
+
+// ---- re-review of the fixes (2026-10-21)
+test("re-review: a fix sitting out the session still closes the thread it closed", async () => {
+  const f = fixture();
+  await check(f, "s1", false); await run(f, ["consolidate", "--final"], JSON.stringify({ session_id: "s1", cwd: f.work, hook_event_name: "SessionEnd" }));
+  await check(f, "s2", false);
+  await run(f, ["capture"], JSON.stringify({ session_id: "s2", cwd: f.work, hook_event_name: "PostToolUse", tool_name: "Edit", tool_use_id: "s2-edit", tool_input: { file_path: join(f.work, "tax.js"), old_string: "a", new_string: "b" }, tool_response: {} }));
+  await check(f, "s2", true); await stop(f, "s2");
+  assert.ok(ledger(f).some((e) => (e.tags ?? []).includes("fix") && e.resolves?.length));
+  const r = await run(f, ["brief"], JSON.stringify({ session_id: "s3", hook_event_name: "SessionStart", cwd: f.work }), { MEMORY_PULSE_HOLDOUT: "1", CLAUDE_PROJECT_DIR: f.work });
+  assert.doesNotMatch(r.out, /passed after editing tax\.js/, "the fix itself sits out this session");
+  assert.doesNotMatch(r.out, /still failing/, "and the thread it closed stays closed");
+});
+
+test("re-review: the brief reads a SessionStart payload that arrives late on stdin", async () => {
+  const f = fixture();
+  await run(f, ["remember", "refund rounding decision", "round per line item before tax", "--tags", "decision"]);
+  const env = { ...process.env, HOME: f.home, MEMORY_PULSE_LEDGER: join(f.work, ".memory-pulse", "events.jsonl"), MEMORY_PULSE_AGENT: join(f.home, "agent.jsonl"), MEMORY_PULSE_API: "http://127.0.0.1:9", MEMORY_PULSE_HOLDOUT: "1", CLAUDE_PROJECT_DIR: f.work };
+  delete env.MEMORY_PULSE_KEY;
+  const out = await new Promise((resolve) => { const p = spawn(process.execPath, [SERVER, "brief"], { cwd: f.work, env }); let o = ""; p.stdout.on("data", (c) => (o += c)); p.on("close", () => resolve(o));
+    setTimeout(() => p.stdin.end(JSON.stringify({ session_id: "late", hook_event_name: "SessionStart" })), 150); });
+  assert.doesNotMatch(out, /line item/, "withheld: the payload came 150 ms after the start");
 });

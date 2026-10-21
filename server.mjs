@@ -289,8 +289,11 @@ function appendRowLocked(path, event) {
   return event;
 }
 // The one writer. A bad tail is moved aside before anything is chained onto it.
-export function chainAppend(path, event) {
+// `unless(path)`, when given, is checked under the lock: a row that must be written once (capture's tool_use_id) stays once even when two
+// hook processes append at the same moment (review 2026-10-21: three parallel captures of one call wrote three rows)
+export function chainAppend(path, event, { unless } = {}) {
   return withLedgerLock(path, () => {
+    if (unless && existsSync(path) && unless(path)) return { written: false, reason: "already recorded" };
     const info = existsSync(path) ? inspectChain(path) : { ok: true };
     if (!info.ok && info.tail?.allBad) quarantineTailLocked(path);
     return appendRowLocked(path, event);
@@ -393,7 +396,7 @@ export function verifyLocalSeal(events = readEvents().events, seal = readSeal(),
 
 // Fields a row may carry beyond the finding itself. `rollback_to` marks a rollback row (state rollback); `origin` names
 // the branch and row a merged row came from; `state` records which capsule an import or a merge came from.
-const ROW_FIELDS = ["rollback_to", "origin", "state", "where", "probe", "bank", "capture_key", "evidence", "credit"];
+const ROW_FIELDS = ["rollback_to", "origin", "state", "where", "probe", "bank", "capture_key", "evidence", "credit", "resolves"];
 
 export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn, replacement, supersedes, override, scope, fields }) {
   // Instruction-like notes are refused at the write. The engine quarantines
@@ -406,7 +409,10 @@ export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn
   // A duplicate is the same cause, effect, note AND terms. The old rule ignored the terms, so the product's
   // own hint ("record it again with withdrawn") was refused as a duplicate (daily-use review, 2026-09-09).
   const norm = (a) => JSON.stringify(Array.isArray(a) ? a.map((w) => String(w).trim()).filter(Boolean) : []);
-  const dup = events.find((e) => e.cause === cause && e.effect === effect && (e.note ?? "") === (note ?? "") && norm(e.withdrawn) === norm(withdrawn) && norm(e.replacement) === norm(replacement));
+  // a captured row (capture_key) names one event: the same words from another session are a new row (re-review 2026-10-21: a check that
+  // failed again after its thread closed, and the pass after it, were refused as duplicates)
+  const ck = fields && typeof fields.capture_key === "string" ? fields.capture_key : null;
+  const dup = events.find((e) => e.cause === cause && e.effect === effect && (e.note ?? "") === (note ?? "") && norm(e.withdrawn) === norm(withdrawn) && norm(e.replacement) === norm(replacement) && (ck === null || e.capture_key === ck));
   if (dup) return { written: false, reason: "duplicate", t: dup.t, ledger: path, hint: "Nothing written: a row with the same cause, effect, note and terms is refused as a duplicate. Record it again with withdrawn (and replacement) to add terms, or change the note if this is a new finding." };
   // t is assigned by the writer under the ledger lock (two writers never share one); this is only the order of keys.
   const event = { t: undefined, cause, effect, kind: kind || "event" };
@@ -460,7 +466,10 @@ export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn
     event.probe = { lesson: lesson.t, key: lessonKey(lesson), outcome: m[2], where: m[3] || "unspecified" };
     if (!event.tags?.includes("lesson-probe")) event.tags = [...(event.tags ?? []), "lesson-probe"];
   }
-  try { chainAppend(path, event); }
+  // a captured row is checked again under the lock: a Stop and a SessionEnd consolidation running at once both read the ledger before
+  // either wrote (final pass 2026-10-21)
+  const ckLine = ck ? `"capture_key":${JSON.stringify(ck)}` : null;
+  try { const r = chainAppend(path, event, ckLine ? { unless: (p) => readFileSync(p, "utf8").includes(ckLine) } : {}); if (r && r.written === false) return { written: false, reason: "duplicate", ledger: path }; }
   catch (e) { if (e.code === "ELEDGERLOCKED") return { written: false, reason: e.message, ledger: path, hint: "Another writer holds the ledger lock; nothing was written. Retry, or remove the lock file if its holder is gone." }; throw e; }
   // Echo the canonical stored event back. A shell-quoting accident once ate a
   // word from a note SILENTLY; the caller must be able to see what the ledger
@@ -1456,10 +1465,39 @@ async function cliObserve() {
   } catch { /* silent */ }
 }
 
+// The SessionStart payload, when the brief runs as a Claude Code hook (stdin a pipe, CLAUDE_PROJECT_DIR set): never read from a terminal
+// or outside a hook, so a manual `memory-pulse brief` never waits on stdin. Read to EOF asynchronously with a cap: a synchronous read
+// returned nothing when the payload came a few milliseconds after the start (re-review 2026-10-21).
+function hookStdin(timeoutMs = 1500) {
+  if (process.stdin.isTTY || !process.env.CLAUDE_PROJECT_DIR) return Promise.resolve(null);
+  return stdinCapped(timeoutMs);
+}
+// stdin to EOF, or whatever arrived within the cap, as JSON (null when empty or not JSON). Never blocks past the cap.
+function stdinCapped(timeoutMs = 1500) {
+  if (process.stdin.isTTY) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    let raw = "", done = false;
+    const finish = () => { if (done) return; done = true; clearTimeout(timer); process.stdin.removeAllListeners("data"); process.stdin.pause(); try { resolve(raw.trim() ? JSON.parse(raw) : null); } catch { resolve(null); } };
+    const timer = setTimeout(finish, timeoutMs);
+    process.stdin.setEncoding("utf8"); process.stdin.on("data", (c) => { raw += c; }); process.stdin.on("end", finish); process.stdin.on("error", finish);
+  });
+}
+
 async function cliBrief() {
-  const led = readEvents();
-  const { events } = led;
-  if (!events.length) return;
+  const led0 = readEvents();
+  if (!led0.events.length) return;
+  // withholding (lib/weights.mjs): a memory sitting out this session is left out of the brief too, or the sat-out arm would still have
+  // seen it at session start (review 2026-10-21). The same draw as the prompt hook; corrections never sit out.
+  const hookIn = await hookStdin(), session = typeof hookIn?.session_id === "string" && hookIn.session_id ? hookIn.session_id : null;
+  // the local render hides a sat-out row but still reads it (a hidden fix still closes its thread: re-review 2026-10-21); the engine is
+  // sent the rows without it
+  let hide = new Set();
+  if (session && captureInstalled()) {
+    const { withhold, holdoutRate } = await import("./lib/weights.mjs"); const rate = holdoutRate();
+    const eligible = (e) => e.kind !== "correction" && Array.isArray(e.tags) && e.tags.some((x) => x === "decision" || x === "state" || x === "fix");
+    if (rate > 0) hide = new Set(led0.events.filter((e) => eligible(e) && withhold(`${session}|${e.t}`, rate)).map((e) => e.t));
+  }
+  const led = led0, events = hide.size ? led0.events.filter((e) => !hide.has(e.t)) : led0.events;
   const bi = process.argv.indexOf("--budget");
   const budget = bi >= 0 ? Number(process.argv[bi + 1]) : (process.env.MEMORY_PULSE_BRIEF_BUDGET ? Number(process.env.MEMORY_PULSE_BRIEF_BUDGET) : undefined);
   if (budget !== undefined && !(Number.isFinite(budget) && budget >= 1)) { console.error("brief --budget takes a positive number of tokens"); process.exit(1); }
@@ -1469,7 +1507,7 @@ async function cliBrief() {
   const mode = process.env.MEMORY_PULSE_BRIEF;
   const engine = mode !== "scaffold" && !process.argv.includes("--scaffold") &&
     (mode === "engine" || process.argv.includes("--engine") || bi >= 0 || process.env.MEMORY_PULSE_BRIEF_BUDGET || process.env.MEMORY_PULSE_BRIEF_TIER || process.env.MEMORY_PULSE_KEY);
-  if (!engine) { const { text } = scaffoldFor(led); if (text) { process.stdout.write(text + "\n"); recordUsage("scaffold"); } return; }
+  if (!engine) { const { text } = scaffoldFor(led, { hide }); if (text) { process.stdout.write(text + "\n"); recordUsage("scaffold"); } return; }
   try {
     const out = await callApi("/v1/pulse", { events, ...(tier ? { tier } : {}), ...(budget ? { budget } : {}) });
     const head = [loadedLine(led, events, { keyStatus: out.keyStatus, tier: out.tier ?? tier, chars: out.text?.length, budget })];
@@ -1483,12 +1521,12 @@ async function cliBrief() {
     const sd = sealDriftLine(out); if (sd) tail.push(sd);
     const foot = telemetryFooter(out.telemetry);
     if (foot) tail.push(foot);
-    const forRoom = (room) => scaffoldFor(led, { withIdentity: false, budgets: { identity: 0, corrections: Math.floor(room * 0.6), state: Math.floor(room * 0.15), findings: Math.floor(room * 0.15), threads: Math.floor(room * 0.1) } }).text;
+    const forRoom = (room) => scaffoldFor(led, { hide, withIdentity: false, budgets: { identity: 0, corrections: Math.floor(room * 0.6), state: Math.floor(room * 0.15), findings: Math.floor(room * 0.15), threads: Math.floor(room * 0.1) } }).text;
     process.stdout.write(composeBrief({ head, text: out.text ?? "", tail }, forRoom) + "\n");
   } catch (e) {
     // A dead network must not break session start — and must not hand it nothing: the local scaffold, labelled as such.
     process.stdout.write(`memory-pulse: brief unavailable (${String(e?.message ?? e).split(".")[0]})\n`);
-    const { text } = scaffoldFor(led); if (text) process.stdout.write(text + "\n");
+    const { text } = scaffoldFor(led, { hide }); if (text) process.stdout.write(text + "\n");
   }
 }
 
@@ -1518,7 +1556,15 @@ function captureInstalled() {
   const proj = process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const files = [process.env.MEMORY_PULSE_SETTINGS_DIR && join(process.env.MEMORY_PULSE_SETTINGS_DIR, "settings.json"), join(process.env.HOME || "", ".claude", "settings.json"),
                  join(proj, ".claude", "settings.json"), join(proj, ".claude", "settings.local.json")].filter(Boolean);
-  return files.some((f) => { try { return /memory-pulse(?:@[\w.^~-]+)?"?\s+capture\b|server\.mjs"?\s+capture\b/.test(readFileSync(f, "utf8")); } catch { return false; } });
+  // a hook entry that can run, not any mention (a permission allow-list entry matched before), and not with every hook disabled
+  const isCapture = (c) => typeof c === "string" && /memory-pulse(?:@[\w.^~-]+)?"?\s+capture\b|server\.mjs"?\s+capture\b/.test(c);
+  let any = false;
+  for (const f of files) {
+    let j; try { j = JSON.parse(readFileSync(f, "utf8")); } catch { continue; }
+    if (j?.disableAllHooks === true) return false;
+    for (const ev of ["PostToolUse", "PostToolUseFailure"]) for (const m of Array.isArray(j?.hooks?.[ev]) ? j.hooks[ev] : []) for (const h of Array.isArray(m?.hooks) ? m.hooks : []) if (isCapture(h?.command)) any = true;
+  }
+  return any;
 }
 
 // UserPromptSubmit hook: inject the slice of the memory that bears on this prompt. Silent when nothing does; exit 0 always.
@@ -1531,7 +1577,7 @@ async function cliPrompt() {
     const { fold, holdoutRate } = await import("./lib/weights.mjs");
     // exposure and withholding (2026-10-21) only when capture is installed: without it nothing would ever credit them (lib/weights.mjs)
     const session = typeof hook.session_id === "string" && hook.session_id ? hook.session_id : null, learn = session && captureInstalled();
-    const slice = promptSlice(events, hook.prompt, { blocks: readBlocks(), agentEvents: existsSync(agentPath()) ? readEvents({ scope: "agent" }).events : [], weights: fold(events), picked, withheld: held, holdout: learn ? holdoutRate() : 0, holdoutKey: String(session) });
+    const slice = promptSlice(events, hook.prompt, { blocks: readBlocks(), agentEvents: existsSync(agentPath()) ? readEvents({ scope: "agent" }).events : [], weights: fold(inForce(events)), picked, withheld: held, holdout: learn ? holdoutRate() : 0, holdoutKey: String(session) });
     if (slice) { process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: slice } })); recordUsage("prompt_slice"); }
     if (learn && (picked.length || held.length)) {
       const { episodePath } = await import("./lib/capture.mjs"); const p = episodePath(ledgerPath(), session);
@@ -1814,7 +1860,9 @@ async function cliGuard() {
   const host = hostOf(process.argv), cursor = host === "cursor";
   let raw = "";
   for await (const chunk of process.stdin) raw += chunk;
-  let payload; try { payload = normalizeHook(host, JSON.parse(raw)); } catch {
+  // a JSON value that is not an object (null, [], 42) is not a hook call either; null used to throw past this and print nothing, which a
+  // fail-closed Cursor hook reads as a deny (review 2026-10-21)
+  let payload; try { const j = JSON.parse(raw); if (!j || typeof j !== "object" || Array.isArray(j)) throw new Error("not an object"); payload = normalizeHook(host, j); } catch {
     // Not a hook call: allow. Say so under --verbose, because a miswired hook (or a shell that mangled the
     // JSON) is otherwise indistinguishable from "no evidence" (fresh-user run, 2026-09-09).
     if (process.argv.includes("--verbose")) process.stderr.write("memory-pulse guard: stdin was not hook JSON, allowing\n");
@@ -2594,7 +2642,7 @@ export function mergeCapsule(cap, { scope = "project" } = {}) {
   const fork = prefix ? (localRows[prefix - 1].t ?? 0) : 0;
   const branchForce = inForceSet(v.rows);
   const foreign = v.rows.slice(prefix);
-  const have = new Set(localRows.map(contentKey));
+  const have = new Set(localRows.map(contentKey)), localByKey = new Map(localRows.filter((r) => Number.isInteger(r.t)).map((r) => [contentKey(r), r.t]));
   const tMap = new Map(); for (const r of localRows) if (Number.isInteger(r.t) && r.t <= fork) tMap.set(r.t, r.t);
   const localCorr = inForce(localRows).filter((e) => e.kind === "correction" && Array.isArray(e.withdrawn));
   const id = cap.branch?.id ?? "main";
@@ -2605,12 +2653,20 @@ export function mergeCapsule(cap, { scope = "project" } = {}) {
     if (isRollback(r) || (Array.isArray(r.tags) && r.tags.some((t) => STATE_TAGS.includes(t)))) { atSource.push(fromT); continue; }
     if (Number.isInteger(fromT) && !branchForce.has(fromT)) { atSource.push(fromT); continue; }
     const key = contentKey(r);
-    if (have.has(key)) { skipped.push(fromT); continue; }
+    if (have.has(key)) { skipped.push(fromT); if (Number.isInteger(fromT) && localByKey.has(key)) tMap.set(fromT, localByKey.get(key)); continue; }
     if (instructionLike(r.note).length) { held.push(fromT); continue; }
     const row = { ...r }; delete row.hash; delete row.prev; delete row.gap_digest; delete row.legacy_digest;
     row.t = next++;
     row.origin = { branch: id, t: fromT ?? null, capsule: short(cap.digest) };
     if (Array.isArray(row.supersedes)) { const m = row.supersedes.map((t) => tMap.get(t)).filter((t) => Number.isInteger(t)); if (m.length) row.supersedes = m; else delete row.supersedes; }
+    if (Array.isArray(row.resolves)) { const m = row.resolves.map((t) => tMap.get(t)).filter((t) => Number.isInteger(t)); if (m.length) row.resolves = m; else delete row.resolves; }
+    // credit follows the memory it was earned by (review 2026-10-21: renumbered rows kept their credit keys, so Bob's credit retired an
+    // unrelated decision of Alice's); credit for a memory this merge does not carry is dropped, and a credit row left empty is not carried
+    if (row.credit && typeof row.credit === "object" && !Array.isArray(row.credit)) {
+      const c = {}; for (const [k, v] of Object.entries(row.credit)) { const to = tMap.get(Number(k)); if (Number.isInteger(to)) c[to] = v; }
+      if (!Object.keys(c).length) { skipped.push(fromT); continue; }
+      row.credit = c;
+    }
     if (r.kind === "correction" && Array.isArray(row.withdrawn)) for (const term of row.withdrawn) { const lc = localCorr.find((c) => c.withdrawn.includes(term) && canonicalJson(c.replacement ?? []) !== canonicalJson(row.replacement ?? [])); if (lc) conflicts.push({ term, local: lc.t, merged: row.t }); }
     chainAppend(ledger, row); carried.push(row.t); have.add(key); if (Number.isInteger(fromT)) tMap.set(fromT, row.t);
   }
@@ -2756,7 +2812,7 @@ if (isMain) {
   if (sub === "remember") { await cliRemember(); process.exit(0); }
   if (sub === "brief" && hostOf(process.argv) === "cursor") {
     // Cursor's sessionStart takes JSON: the brief rides in additional_context (cursor.com/docs/agent/hooks, read 2026-10-21)
-    try { readFileSync(0, "utf8"); } catch { /* the payload carries nothing the brief needs */ }
+    await stdinCapped(1500);   // the payload carries nothing the brief needs; read with a cap so an open pipe never blocks (final pass)
     let text = ""; const w = process.stdout.write.bind(process.stdout);
     process.stdout.write = (c, ...a) => { text += String(c); return true; };
     try { await cliBrief(); } catch { /* an empty brief */ } finally { process.stdout.write = w; }
@@ -2784,13 +2840,15 @@ if (isMain) {
   if (sub === "state") { await cliState(); process.exit(0); }
   if (sub === "login") { globalThis.__MEMORY_PULSE_CORE__ = { chainAppend, verifyChain, instructionLike, readEvents, buildCapsule, API, KEY }; const { cliLogin } = await import("./lib/login.mjs"); process.exit(await cliLogin(process.argv.slice(3), { api: API, version: PKG_VERSION })); }
   if (sub === "capture") { const { cliCapture } = await import("./lib/capture.mjs"); const host = hostOf(process.argv); process.exit(cliCapture({ ledgerPath, chainAppend, instructionLike, normalize: (h) => normalizeHook(host, h) })); }
-  if (sub === "consolidate") { const { cliConsolidate } = await import("./lib/capture.mjs"); const host = hostOf(process.argv); process.exit(cliConsolidate(process.argv.slice(3), { ledgerPath, readEvents, appendEvent, buildCapsule, normalize: (h) => normalizeHook(host, h) })); }
+  if (sub === "consolidate") { const { cliConsolidate } = await import("./lib/capture.mjs"); const host = hostOf(process.argv); process.exit(cliConsolidate(process.argv.slice(3), { ledgerPath, readEvents, appendEvent, buildCapsule, instructionLike, normalize: (h) => normalizeHook(host, h) })); }
   if (sub === "weights") {
-    const { fold, utility, retired } = await import("./lib/weights.mjs"); const events = readEvents().events, w = fold(events), byT = new Map(events.map((e) => [e.t, e]));
+    const { fold, utility, retired } = await import("./lib/weights.mjs"); const events = readEvents().events, w = fold(inForce(events)), byT = new Map(events.map((e) => [e.t, e]));
     const list = [...w].map(([t, c]) => ({ t, c, u: utility(c), e: byT.get(t) })).sort((a, b) => b.u.effect - a.u.effect || b.u.n - a.u.n || b.u.mean - a.u.mean);
     if (!list.length) { console.log("no weights yet: they come from check outcomes after a memory was injected (capture must be on)"); process.exit(0); }
     console.log("memory weights: shown = the next check after the memory was in the prompt (helped = it passed, not = it failed); withheld = the same when it was left out at random. Effect = the difference, counted once it has been withheld:");
-    for (const { t, c, u, e } of list) console.log(`  t${t}  shown: ${c.s} helped, ${c.f} not · withheld: ${c.s0} passed, ${c.f0} failed · effect ${u.effect >= 0 ? "+" : ""}${u.effect.toFixed(2)}${u.n0 ? ` [${u.effectLb.toFixed(2)}, ${u.effectUb.toFixed(2)}]` : ""}${retired(e ?? {}, c) ? "  RETIRED" : ""}  ${e ? `${e.cause} -> ${e.effect}`.slice(0, 110) : "(row not on this ledger)"}`);
+    const sign = (x) => `${x >= 0 ? "+" : ""}${x.toFixed(2)}`;
+    // the measured effect with its 95% interval; ranking uses it shrunk by how often the memory sat out, and only past the floor
+    for (const { t, c, u, e } of list) console.log(`  t${t}  shown: ${c.s} helped, ${c.f} not · withheld: ${c.s0} passed, ${c.f0} failed · ${u.n0 ? `effect ${sign(u.raw)} [${sign(u.effectLb)}, ${sign(u.effectUb)}]${u.n >= 6 && u.n0 >= 6 ? `, ranks at ${sign(u.effect)}` : ", not ranked yet"}` : "effect: not withheld yet"}${retired(e ?? {}, c) ? "  RETIRED" : ""}  ${e ? `${e.cause} -> ${e.effect}`.slice(0, 110) : "(row not on this ledger)"}`);
     process.exit(0);
   }
   if (sub === "adopt") { const { cliAdopt } = await import("./lib/adopt.mjs"); process.exit(cliAdopt(process.argv.slice(3), { readEvents, inForce, appendEvent, detectCorrection, detectProhibition, instructionLike })); }

@@ -58,7 +58,7 @@ engines); the test suite runs on 22 and 24.
 
 `remember` and `help` from the shell arrive in 0.5.9. npm served 0.5.8 on
 2026-09-09, where both exit 1 with `unknown command`. If npx serves an older
-cached release, pin this one: `npx -y memory-pulse@0.12.0`; from a checkout,
+cached release, pin this one: `npx -y memory-pulse@0.13.0`; from a checkout,
 run `node server.mjs`. Four more things in this README are
 0.5.9 behaviour and differ on 0.5.8: `guard --verbose` names non-JSON stdin
 on stderr (0.5.8 prints nothing), `handoff` with no transcript writes nothing
@@ -144,7 +144,7 @@ re-entered and guarded with nothing for anyone to install. A Codex clone still
 trusts the entries once via `/hooks`, and a scripted `codex exec` needs that
 trust in place beforehand.
 
-**Cursor.** Cursor has run hooks since 1.7, so `npx memory-pulse install-hook --cursor` (or `--cursor --project` for
+**Cursor.** Cursor runs hooks, so `npx memory-pulse install-hook --cursor` (or `--cursor --project` for
 `.cursor/hooks.json` in the repo) gives Cursor the same brief, guard and capture as Claude Code: the brief at session start,
 the guard on every write and shell command (fail-closed, so a broken guard blocks rather than passes), and capture with fixes and
 open threads. For the MCP tools, register `command: npx` with the args below in `.cursor/mcp.json` or `~/.cursor/mcp.json`.
@@ -190,7 +190,7 @@ and exits 0. The first `remember` creates `.memory-pulse/events.jsonl`, from a
 tool call or from the shell:
 
 ```
-npx -y memory-pulse@0.12.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
+npx -y memory-pulse@0.13.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 # before 0.6.0 is on npm, the same command from a checkout:
 git clone https://github.com/t-crew/memory-pulse.git && node memory-pulse/server.mjs remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 ```
@@ -432,7 +432,7 @@ the ledger, and the guard's message never suggests it.
 **What to commit.** `events.jsonl`, `invariants.jsonl` and, if one exists,
 `events.jsonl.quarantine/` (the record of what was moved aside). Keep
 `seal.rain`, `seal.resume.json`, `verify.cache.json`, `events.jsonl.lock`,
-`telemetry.rain`, `memory.rain` and `violations.jsonl` out of git; this repository's `.gitignore` carries that list, and nothing writes a
+`telemetry.rain`, `memory.rain`, `violations.jsonl` and `episodes/` out of git; this repository's `.gitignore` carries that list, and nothing writes a
 `.gitignore` for you below 500 events. The ledger is read from the directory
 the agent started in, so start at the repository root or set
 `MEMORY_PULSE_LEDGER`.
@@ -508,11 +508,12 @@ npx memory-pulse board claims                # every claim: open, upheld, refute
 This follows Self-Organizing Agent Teams ([arXiv 2609.22682](https://arxiv.org/abs/2609.22682)). Six of the twenty strategies its
 teams kept exist to keep a claim the consensus dropped in play, and its judge may reject an answer only by naming a specific defect.
 
-**It remembers what the agent did, on its own.** `install-hook` adds a capture hook after every tool call: an edit (file, lines
-changed), a command (scrubbed of secrets, with its outcome and first error line) or a read becomes one row in the session's episode,
-`.memory-pulse/episodes/<session>.jsonl`. No model runs and nothing leaves the machine; tool output is never stored, only its outcome.
-At the end of each turn the episode is consolidated: a command that failed and later passed becomes a fix ("`npm test` failed: …,
-passed after editing src/price.js"), and one still failing becomes an open thread. Each finding names the episode rows it rests on
+**It remembers what the agent did, on its own.** `install-hook` (and `--cursor`; not yet `--codex`) adds a capture hook after every
+tool call: an edit (file, lines changed), a command (scrubbed of secrets, with its outcome and first error line) or a read becomes one
+row in the session's episode, `.memory-pulse/episodes/<session>.jsonl`. No model runs and nothing leaves the machine; tool output is
+never stored, only its outcome. At the end of each turn the episode is consolidated: a check that failed and later passed becomes a fix
+("`npm test` failed: …, passed after editing src/price.js"). A check still failing when the session ends becomes an open thread, closed
+by a later fix or a passing run of the same check. Each finding names the episode rows it rests on
 and the chain head after them, and at the end of the session the episode is saved as a `.rain` capsule, so the evidence behind any
 finding can be checked without a key. The prompt hook brings a past fix back when you mention the same file. `--no-capture` leaves it out.
 

@@ -75,3 +75,16 @@ test("every host: a tool call is captured once; an exit code in tool_response de
   assert.equal(e.length, 1, "the same tool_use_id twice (two hosts reading one settings file) is one observation");
   assert.equal(e[0].obs.ok, false); assert.equal(e[0].obs.exit, 1);
 });
+
+test("review: the Cursor guard answers JSON even when stdin is the JSON value null or another non-object", async () => {
+  const f = fixture();
+  for (const input of ["null", "[]", "42", "\"x\""]) { const r = await run(f, ["guard", "--host", "cursor"], input); assert.deepEqual(JSON.parse(r.out), { permission: "allow" }, input); }
+});
+
+test("review: a check failed by its exit code alone (Codex, Cursor) keeps the runner's specific error", async () => {
+  const f = fixture();
+  await run(f, ["capture"], JSON.stringify({ session_id: "x1", cwd: f.work, hook_event_name: "PostToolUse", tool_name: "Bash", tool_use_id: "e1", tool_input: { command: "npm test" }, tool_response: { stdout: "✖ adds tax (2 ms)\nℹ fail 1", stderr: "", exit_code: 1 } }));
+  await run(f, ["capture", "--host", "cursor"], cur(f, "postToolUse", { tool_name: "Shell", tool_input: { command: "npm test" }, tool_output: JSON.stringify({ output: "✖ rounds refunds\nℹ fail 1", exitCode: 1 }), tool_use_id: "e2", cwd: f.work }));
+  const errs = [...episode(f, "x1"), ...episode(f, "conv-1")].filter((r) => r.obs?.op === "run").map((r) => r.obs.err);
+  assert.match(errs[0], /adds tax/); assert.match(errs[1], /rounds refunds/);
+});

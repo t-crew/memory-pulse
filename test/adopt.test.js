@@ -95,3 +95,15 @@ test("wrapped lines are read as one sentence, and a term led by a pronoun is nev
   assert.deepEqual(j.candidates.map((c) => c.withdrawn[0]).sort(), ["0.459", "npm"]);
   assert.equal(j.candidates.find((c) => c.withdrawn[0] === "npm").line, 3, "the line a wrapped sentence starts on");
 });
+
+test("review: a plain English word is not adopted as a ban (the guard would block it in prose); it is listed as not enforced", async () => {
+  const f = fixture();
+  writeFileSync(join(f.work, "CLAUDE.md"), "- Never use `requests` here; use `httpx`.\n- Use pnpm, not npm.\n");
+  writeFileSync(join(f.work, "AGENTS.md"), "");
+  const j = JSON.parse((await run(f, ["adopt", "--json"])).out);
+  assert.ok(!j.candidates.some((c) => c.withdrawn[0] === "requests")); assert.ok(j.skipped.some((c) => c.withdrawn[0] === "requests" && /plain word/.test(c.reason)));
+  const list = await run(f, ["adopt"]); assert.match(list.out, /not enforced[^\n]*requests/);
+  await run(f, ["adopt", "--yes"]);
+  const g = await run(f, ["guard"], JSON.stringify({ tool_name: "Edit", tool_input: { file_path: join(f.work, "server.js"), old_string: "a", new_string: "// Handles incoming HTTP requests" } }));
+  assert.equal(g.code, 0, g.all);
+});
