@@ -9,7 +9,7 @@
  *     `remember` writes to it directly and works offline.
  *   - Read operations (pulse / recall / execute) send the ledger's events to
  *     the hosted engine over TLS, which computes the answer and forgets the
- *     request. The service keeps NO database of your memory — state arrives
+ *     request. Unless hosted memory is on for a project (opt-in), the service keeps no copy of your memory — state arrives
  *     in the request and leaves in the response.
  *   - This client is the entire client. No SDK, no dependencies, one file
  *     you can read in one sitting.
@@ -467,7 +467,7 @@ export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn
 }
 
 // ------------------------------------------------------------- telemetry ----
-// The engine keeps no database, so telemetry lives HERE, beside your ledger,
+// The engine stores no telemetry, so it lives HERE, beside your ledger,
 // as a signed capsule the engine advances on every read call and hands back.
 // You own it; delete the file and it restarts from zero.
 const telemetryPath = () => join(dirname(ledgerPath()), "telemetry.rain");

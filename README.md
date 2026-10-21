@@ -559,14 +559,16 @@ What that turns on:
   project. You can commit it, grep it or delete it.
 - `remember` writes to it directly and **works offline**.
 - Read operations send the ledger's events to the hosted engine over TLS,
-  which computes the answer and forgets the request. **The service keeps no
-  database of your memory.** State arrives in the request and leaves in the
-  response.
+  which computes the answer and forgets the request. **Unless you turn on hosted
+  memory for a project (opt-in, in the console), the service keeps no copy of
+  your memory.** State arrives in the request and leaves in the response.
+  Hosted memory and the hosted board are stored until you turn them off,
+  which erases them.
 - Telemetry is a **signed capsule beside your ledger** at
   `.memory-pulse/telemetry.rain`. The engine advances it on each read call and
   hands it back without ever storing it. `stats` verifies the signature and
   `badge` turns it into a README badge. Delete the file and it restarts.
-- **State persistence, no database.** After a read the engine hands back a
+- **State persistence without storing your ledger.** After a read the engine hands back a
   signed **memory key** (`.memory-pulse/memory.rain`, git-ignored). The next
   read presents it and the engine resumes from it, ingesting only the events
   recorded since. The answer is byte-identical to a full rebuild. Any mismatch,
