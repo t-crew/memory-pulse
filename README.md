@@ -306,6 +306,7 @@ npx memory-pulse login          # connect this machine to a hosted project: appr
 npx memory-pulse logout         # remove the saved key from this machine (revoke it in the console to end it everywhere)
 npx memory-pulse capture        # PostToolUse hook (installed by install-hook): one observation per tool call into the session's episode, local, no model
 npx memory-pulse consolidate    # Stop / SessionEnd hook: fail-then-pass becomes a fix and still-failing an open thread, each pointing at its evidence
+npx memory-pulse weights        # each memory's weight, learned from check outcomes after it was injected; retired ones marked
 npx memory-pulse adopt          # the corrections you already keep (Claude Code feedback memories, CLAUDE.md, AGENTS.md, rules files), shown; --yes enforces them
 npx memory-pulse lint [--ci]    # do CLAUDE.md / AGENTS.md / .claude/rules still state a value the ledger retired?
 npx memory-pulse report         # correction re-violation scoreboard, computed locally

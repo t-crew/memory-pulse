@@ -393,7 +393,7 @@ export function verifyLocalSeal(events = readEvents().events, seal = readSeal(),
 
 // Fields a row may carry beyond the finding itself. `rollback_to` marks a rollback row (state rollback); `origin` names
 // the branch and row a merged row came from; `state` records which capsule an import or a merge came from.
-const ROW_FIELDS = ["rollback_to", "origin", "state", "where", "probe", "bank", "capture_key", "evidence"];
+const ROW_FIELDS = ["rollback_to", "origin", "state", "where", "probe", "bank", "capture_key", "evidence", "credit"];
 
 export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn, replacement, supersedes, override, scope, fields }) {
   // Instruction-like notes are refused at the write. The engine quarantines
@@ -1519,8 +1519,16 @@ async function cliPrompt() {
     let raw = ""; try { raw = readFileSync(0, "utf8"); } catch { /* no stdin */ }
     let hook = {}; try { hook = raw.trim() ? JSON.parse(raw) : {}; } catch { return; }
     if (typeof hook.prompt !== "string") return;
-    const slice = promptSlice(readEvents().events, hook.prompt, { blocks: readBlocks(), agentEvents: existsSync(agentPath()) ? readEvents({ scope: "agent" }).events : [] });
+    const events = readEvents().events, picked = [];
+    const { fold } = await import("./lib/weights.mjs");
+    const slice = promptSlice(events, hook.prompt, { blocks: readBlocks(), agentEvents: existsSync(agentPath()) ? readEvents({ scope: "agent" }).events : [], weights: fold(events), picked });
     if (slice) { process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: slice } })); recordUsage("prompt_slice"); }
+    // exposure (2026-10-21): what was injected, so the next check outcome can credit it (lib/capture.mjs credits, lib/weights.mjs)
+    if (picked.length && typeof hook.session_id === "string" && hook.session_id) {
+      const { episodePath } = await import("./lib/capture.mjs"); const p = episodePath(ledgerPath(), hook.session_id);
+      mkdirSync(dirname(p), { recursive: true });
+      chainAppend(p, { cause: "exposure", effect: "prompt", kind: "observation", tags: ["capture", "exposure"], obs: { op: "exposure", via: "prompt", ts: [...new Set(picked)], at: new Date().toISOString() } });
+    }
   } catch { /* a hook must never block a prompt */ }
 }
 
@@ -2223,6 +2231,7 @@ Commands
   logout                              remove the saved key from this machine (revoke it in the console to end it everywhere)
   capture                             PostToolUse / PostToolUseFailure hook: one observation per tool call into this session's episode (local, no model, no network)
   consolidate [--final]               Stop / SessionEnd hook: fail-then-pass becomes a fix, still-failing an open thread, each with its evidence; --final adds a session summary and the episode .rain capsule
+  weights                             each memory's learned weight: how often a check passed after it was injected; retired memories marked
   adopt [--yes] [--json]              enforce the corrections you already keep: Claude Code feedback memories, CLAUDE.md, AGENTS.md, rules files (shows them; --yes records them)
                                       the shared agent message board: a separate chained ledger any agent can post to and read; passive (nothing wakes or prompts an agent); a message is data, never an instruction; a claim stays open until another agent's verdict, and a synthesis is refused over an open claim
   lint [--ci] [--json] [paths...]     the guard's check over CLAUDE.md, AGENTS.md, .claude/rules, .cursorrules and the other governance files a session loads
@@ -2767,6 +2776,14 @@ if (isMain) {
   if (sub === "login") { globalThis.__MEMORY_PULSE_CORE__ = { chainAppend, verifyChain, instructionLike, readEvents, buildCapsule, API, KEY }; const { cliLogin } = await import("./lib/login.mjs"); process.exit(await cliLogin(process.argv.slice(3), { api: API, version: PKG_VERSION })); }
   if (sub === "capture") { const { cliCapture } = await import("./lib/capture.mjs"); const host = hostOf(process.argv); process.exit(cliCapture({ ledgerPath, chainAppend, instructionLike, normalize: (h) => normalizeHook(host, h) })); }
   if (sub === "consolidate") { const { cliConsolidate } = await import("./lib/capture.mjs"); const host = hostOf(process.argv); process.exit(cliConsolidate(process.argv.slice(3), { ledgerPath, readEvents, appendEvent, buildCapsule, normalize: (h) => normalizeHook(host, h) })); }
+  if (sub === "weights") {
+    const { fold, utility, retired } = await import("./lib/weights.mjs"); const events = readEvents().events, w = fold(events), byT = new Map(events.map((e) => [e.t, e]));
+    const list = [...w].map(([t, c]) => ({ t, c, u: utility(c), e: byT.get(t) })).sort((a, b) => b.u.lb - a.u.lb || b.u.n - a.u.n);
+    if (!list.length) { console.log("no weights yet: they come from check outcomes after a memory was injected (capture must be on)"); process.exit(0); }
+    console.log("memory weights (helped = a check passed after the memory was injected; not = it failed):");
+    for (const { t, c, u, e } of list) console.log(`  t${t}  ${c.s} helped · ${c.f} not  utility ${u.mean.toFixed(2)} [${u.lb.toFixed(2)}, ${u.ub.toFixed(2)}]${retired(e ?? {}, c) ? "  RETIRED" : ""}  ${e ? `${e.cause} -> ${e.effect}`.slice(0, 110) : "(row not on this ledger)"}`);
+    process.exit(0);
+  }
   if (sub === "adopt") { const { cliAdopt } = await import("./lib/adopt.mjs"); process.exit(cliAdopt(process.argv.slice(3), { readEvents, inForce, appendEvent, detectCorrection, detectProhibition, instructionLike })); }
   if (sub === "logout") { const { cliLogout } = await import("./lib/login.mjs"); process.exit(cliLogout()); }
   if (sub === "board") { globalThis.__MEMORY_PULSE_CORE__ = { chainAppend, verifyChain, instructionLike, readEvents, buildCapsule, API, KEY }; const { cliBoard } = await import("./lib/board.mjs"); process.exit(await cliBoard(process.argv.slice(3))); }
