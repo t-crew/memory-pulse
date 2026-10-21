@@ -212,7 +212,7 @@ test("findViolations only matches explicit withdrawn terms on corrections", asyn
 test("install-hook installs both hooks and stays idempotent", () => {
   const dir = mkdtempSync(join(tmpdir(), "mp-hook2-"));
   const run = () => execFileSync(process.execPath, [SERVER, "install-hook"], { env: { ...process.env, MEMORY_PULSE_SETTINGS_DIR: dir }, encoding: "utf8" });
-  assert.match(run(), /installed 4 hook/); // 0.7.0 adds UserPromptSubmit prompt
+  assert.match(run(), /installed 8 hook/); // 0.7.0 adds UserPromptSubmit prompt; 0.13.0 adds capture (PostToolUse, PostToolUseFailure), consolidate (Stop) and --final (SessionEnd)
   assert.match(run(), /already installed/);
   const s = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8"));
   // Bash joined the matcher when the guard learned to read a heredoc: a shell

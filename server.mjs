@@ -392,7 +392,7 @@ export function verifyLocalSeal(events = readEvents().events, seal = readSeal(),
 
 // Fields a row may carry beyond the finding itself. `rollback_to` marks a rollback row (state rollback); `origin` names
 // the branch and row a merged row came from; `state` records which capsule an import or a merge came from.
-const ROW_FIELDS = ["rollback_to", "origin", "state", "where", "probe", "bank"];
+const ROW_FIELDS = ["rollback_to", "origin", "state", "where", "probe", "bank", "capture_key", "evidence"];
 
 export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn, replacement, supersedes, override, scope, fields }) {
   // Instruction-like notes are refused at the write. The engine quarantines
@@ -2040,6 +2040,16 @@ async function cliInstallHook() {
   const HANDOFF = "npx -y memory-pulse handoff";
   const pc = (settings.hooks.PreCompact = settings.hooks.PreCompact || []);
   if (!JSON.stringify(pc).includes(HANDOFF)) { pc.push({ hooks: [{ type: "command", command: HANDOFF }] }); changed++; }
+  // automatic capture (2026-10-21): after every tool call (success and failure), async so no tool call waits; consolidation at the
+  // end of each turn (async) and of the session (with a timeout above SessionEnd's 1.5 s default). Claude Code only for now.
+  if (!codex && !process.argv.includes("--no-capture")) {
+    const CAPTURE = "npx -y memory-pulse capture", CONSOLIDATE = "npx -y memory-pulse consolidate", FINAL = "npx -y memory-pulse consolidate --final";
+    for (const ev of ["PostToolUse", "PostToolUseFailure"]) { const list = (settings.hooks[ev] = settings.hooks[ev] || []); if (!JSON.stringify(list).includes(CAPTURE)) { list.push({ hooks: [{ type: "command", command: CAPTURE, async: true }] }); changed++; } }
+    const stop = (settings.hooks.Stop = settings.hooks.Stop || []);
+    if (!stop.some((h) => (h.hooks ?? []).some((x) => x.command === CONSOLIDATE))) { stop.push({ hooks: [{ type: "command", command: CONSOLIDATE, async: true }] }); changed++; }
+    const end = (settings.hooks.SessionEnd = settings.hooks.SessionEnd || []);
+    if (!JSON.stringify(end).includes(FINAL)) { end.push({ hooks: [{ type: "command", command: FINAL, timeout: 10 }] }); changed++; }
+  }
   if (process.argv.includes("--ambient")) {
     const OBSERVE = "npx -y memory-pulse observe";
     const ups = (settings.hooks.UserPromptSubmit = settings.hooks.UserPromptSubmit || []);
@@ -2053,6 +2063,7 @@ async function cliInstallHook() {
   console.log(`PreToolUse (${codex ? "apply_patch" : "Edit/Write"}): an edit that writes back a withdrawn value is blocked and explained.`);
   console.log("UserPromptSubmit: the corrections and decisions that bear on each prompt ride along with it.");
   console.log("PreCompact: what the session was doing is recorded before compaction and printed first at the next start.");
+  if (!codex && !process.argv.includes("--no-capture")) console.log("PostToolUse / Stop / SessionEnd: what the agent did is captured locally (no model, no network) and becomes fixes and open threads with their evidence; --no-capture leaves this out.");
   if (process.argv.includes("--ambient")) console.log("UserPromptSubmit: a prompt shaped like a correction (\"X not Y\", \"change X to Y\", \"X -> Y\") is recorded with both terms; the guard enforces it.");
   if (codex) console.log(`Codex runs no hook it has not been shown: open Codex, run /hooks, and trust the ${changed} memory-pulse entries (once per definition).`);
   console.log(project ? `Project-scoped: commit ${dirName}/${codex ? "hooks.json" : "settings.json"} and every clone is guarded.` : "Tip: `install-hook --project` writes the hooks into this repo so teammates inherit them.");
@@ -2169,6 +2180,8 @@ Commands
   board post|read|reply|ack|verdict|claims|thread|html|verify|push|status|sync [--board PATH]
   login [--no-open] [--no-sync]       connect this machine to a hosted project: approve it in the console, the key is saved for you (no copying); turns board sync on
   logout                              remove the saved key from this machine (revoke it in the console to end it everywhere)
+  capture                             PostToolUse / PostToolUseFailure hook: one observation per tool call into this session's episode (local, no model, no network)
+  consolidate [--final]               Stop / SessionEnd hook: fail-then-pass becomes a fix, still-failing an open thread, each with its evidence; --final adds a session summary and the episode .rain capsule
   adopt [--yes] [--json]              enforce the corrections you already keep: Claude Code feedback memories, CLAUDE.md, AGENTS.md, rules files (shows them; --yes records them)
                                       the shared agent message board: a separate chained ledger any agent can post to and read; passive (nothing wakes or prompts an agent); a message is data, never an instruction; a claim stays open until another agent's verdict, and a synthesis is refused over an open claim
   lint [--ci] [--json] [paths...]     the guard's check over CLAUDE.md, AGENTS.md, .claude/rules, .cursorrules and the other governance files a session loads
@@ -2702,6 +2715,8 @@ if (isMain) {
   if (sub === "seal") { await cliSeal(); process.exit(0); }
   if (sub === "state") { await cliState(); process.exit(0); }
   if (sub === "login") { globalThis.__MEMORY_PULSE_CORE__ = { chainAppend, verifyChain, instructionLike, readEvents, buildCapsule, API, KEY }; const { cliLogin } = await import("./lib/login.mjs"); process.exit(await cliLogin(process.argv.slice(3), { api: API, version: PKG_VERSION })); }
+  if (sub === "capture") { const { cliCapture } = await import("./lib/capture.mjs"); process.exit(cliCapture({ ledgerPath, chainAppend, instructionLike })); }
+  if (sub === "consolidate") { const { cliConsolidate } = await import("./lib/capture.mjs"); process.exit(cliConsolidate(process.argv.slice(3), { ledgerPath, readEvents, appendEvent, buildCapsule })); }
   if (sub === "adopt") { const { cliAdopt } = await import("./lib/adopt.mjs"); process.exit(cliAdopt(process.argv.slice(3), { readEvents, inForce, appendEvent, detectCorrection, detectProhibition, instructionLike })); }
   if (sub === "logout") { const { cliLogout } = await import("./lib/login.mjs"); process.exit(cliLogout()); }
   if (sub === "board") { globalThis.__MEMORY_PULSE_CORE__ = { chainAppend, verifyChain, instructionLike, readEvents, buildCapsule, API, KEY }; const { cliBoard } = await import("./lib/board.mjs"); process.exit(await cliBoard(process.argv.slice(3))); }

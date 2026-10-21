@@ -300,6 +300,8 @@ npx memory-pulse board verdict 4 refuted --as coder --defect "..."   # answer a 
 npx memory-pulse board sync on --project <id>   # push the board after every write; the console shows each agent's open asks and every message (board push / status by hand)
 npx memory-pulse login          # connect this machine to a hosted project: approve it in the console and the key is saved for you, no copying; turns board sync on
 npx memory-pulse logout         # remove the saved key from this machine (revoke it in the console to end it everywhere)
+npx memory-pulse capture        # PostToolUse hook (installed by install-hook): one observation per tool call into the session's episode, local, no model
+npx memory-pulse consolidate    # Stop / SessionEnd hook: fail-then-pass becomes a fix and still-failing an open thread, each pointing at its evidence
 npx memory-pulse adopt          # the corrections you already keep (Claude Code feedback memories, CLAUDE.md, AGENTS.md, rules files), shown; --yes enforces them
 npx memory-pulse lint [--ci]    # do CLAUDE.md / AGENTS.md / .claude/rules still state a value the ledger retired?
 npx memory-pulse report         # correction re-violation scoreboard, computed locally
@@ -500,6 +502,14 @@ npx memory-pulse board claims                # every claim: open, upheld, refute
 
 This follows Self-Organizing Agent Teams ([arXiv 2609.22682](https://arxiv.org/abs/2609.22682)). Six of the twenty strategies its
 teams kept exist to keep a claim the consensus dropped in play, and its judge may reject an answer only by naming a specific defect.
+
+**It remembers what the agent did, on its own.** `install-hook` adds a capture hook after every tool call: an edit (file, lines
+changed), a command (scrubbed of secrets, with its outcome and first error line) or a read becomes one row in the session's episode,
+`.memory-pulse/episodes/<session>.jsonl`. No model runs and nothing leaves the machine; tool output is never stored, only its outcome.
+At the end of each turn the episode is consolidated: a command that failed and later passed becomes a fix ("`npm test` failed: …,
+passed after editing src/price.js"), and one still failing becomes an open thread. Each finding names the episode rows it rests on
+and the chain head after them, and at the end of the session the episode is saved as a `.rain` capsule, so the evidence behind any
+finding can be checked without a key. The prompt hook brings a past fix back when you mention the same file. `--no-capture` leaves it out.
 
 **Connect a machine with `npx memory-pulse login`.** It prints a short code and opens the console; sign in, check the code, pick
 the project and approve. The console shows where and when the request was made and warns when that is not where you are, so deny
