@@ -59,3 +59,39 @@ test("adopt --json lists the candidates for tools", async () => {
   assert.equal(j.candidates.length, 3); assert.ok(j.candidates.every((c) => c.withdrawn && c.source && c.line > 0));
   assert.equal(j.written, 0);
 });
+
+test("prose is not a correction: arrows, descriptions, measured changes and fragments are never adopted (Travis's own files, 2026-10-21)", async () => {
+  const f = fixture();
+  writeFileSync(join(f.work, "CLAUDE.md"), [
+    "The pattern is stage dataset → smoke kernel → full run → pull weights.",
+    "No buyer request was lost; the only posts in the window were deploy checks.",
+    "I measured: the rank cap (14 → 22) and the stub became real.",
+    "On 2026-08-10 the scrub renamed `WorldVector→EndpointIndex` and shipped.",
+    "Never use hue roughly 240–300 as an accent.",
+    "No retry loop around a submit, a deploy or a payment.",
+    "Use pnpm, not npm.",
+    "Never use em dashes.",
+  ].join("\n") + "\n");
+  writeFileSync(join(f.work, "AGENTS.md"), "");
+  const j = JSON.parse((await run(f, ["adopt", "--json"])).out);
+  const got = j.candidates.map((c) => c.withdrawn[0]).sort();
+  assert.deepEqual(got, ["0.459", "em dashes", "npm"], `adopted: ${got.join(", ")}`);
+});
+
+test("adopt --pick takes only the numbered candidates", async () => {
+  const f = fixture();
+  const list = (await run(f, ["adopt"])).out;
+  assert.match(list, /^\s*1\. /m); assert.match(list, /^\s*3\. /m);
+  const r = await run(f, ["adopt", "--pick", "2"]);
+  assert.equal(r.code, 0, r.all);
+  assert.equal(rows(f).filter((e) => e.kind === "correction").length, 1);
+});
+
+test("wrapped lines are read as one sentence, and a term led by a pronoun is never adopted", async () => {
+  const f = fixture();
+  writeFileSync(join(f.work, "CLAUDE.md"), "- Never cite its numbers, benchmarks, or\n  docs as current.\n- Use pnpm,\n  not npm.\n");
+  writeFileSync(join(f.work, "AGENTS.md"), "");
+  const j = JSON.parse((await run(f, ["adopt", "--json"])).out);
+  assert.deepEqual(j.candidates.map((c) => c.withdrawn[0]).sort(), ["0.459", "npm"]);
+  assert.equal(j.candidates.find((c) => c.withdrawn[0] === "npm").line, 3, "the line a wrapped sentence starts on");
+});
