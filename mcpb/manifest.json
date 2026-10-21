@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "memory-pulse",
   "display_name": "memory-pulse",
-  "version": "0.14.2",
+  "version": "0.14.3",
   "description": "Memory for Claude that keeps every correction and shows it when it matters. Notes cannot instruct the agent, and any edit to the record shows.",
   "long_description": "memory-pulse keeps a project's memory as a ledger file on your machine: what happened, what caused it, and every correction with the value it withdrew and the value that replaced it. Claude reads it through four tools: pulse (what the memory says about a topic), recall, remember and execute. A note that reads like an instruction is refused or quarantined, never shown as a command, and any edit to an earlier row breaks the chain and shows. Point several agents at one message board file and they can post, read and reply to each other; nothing on the board wakes or prompts an agent. The free tier needs no key.",
   "author": { "name": "Travis Crew", "url": "https://pulse.strategic-innovations.ai" },
