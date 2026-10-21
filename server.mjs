@@ -1675,6 +1675,22 @@ function captureInstalled() {
       if (realpathSync(process.env.CLAUDE_PLUGIN_ROOT) === own && hasCapture(JSON.parse(readFileSync(join(own, "hooks", "hooks.json"), "utf8")))) any = true;
     } catch { /* not this plugin */ }
   }
+  // the plugin, from Claude Code's own record of it (a CLI run has no CLAUDE_PLUGIN_ROOT, so mode soul warned wrongly on 2026-10-21): an
+  // enabled memory-pulse plugin whose hooks.json carries capture. A directory marketplace runs its source folder; otherwise the cache path.
+  if (!any) {
+    try {
+      const pdir = join(process.env.HOME || "", ".claude", "plugins");
+      const installed = JSON.parse(readFileSync(join(pdir, "installed_plugins.json"), "utf8"))?.plugins ?? {};
+      let markets = {}; try { markets = JSON.parse(readFileSync(join(pdir, "known_marketplaces.json"), "utf8")) ?? {}; } catch { markets = {}; }
+      const enabled = {}; for (const f of files) { try { Object.assign(enabled, JSON.parse(readFileSync(f, "utf8"))?.enabledPlugins ?? {}); } catch { /* none */ } }
+      for (const [id, list] of Object.entries(installed)) {
+        if (!/^memory-pulse@/.test(id) || enabled[id] === false) continue;
+        const market = markets[id.split("@")[1]]?.source;
+        const roots = [market?.source === "directory" ? market.path : null, ...(Array.isArray(list) ? list.map((x) => x?.installPath) : [])].filter((r) => typeof r === "string" && r);
+        if (roots.some((r) => { try { return hasCapture(JSON.parse(readFileSync(join(r, "hooks", "hooks.json"), "utf8"))); } catch { return false; } })) { any = true; break; }
+      }
+    } catch { /* no plugin record */ }
+  }
   return any;
 }
 
