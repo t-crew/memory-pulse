@@ -131,6 +131,7 @@ claude mcp add memory-pulse -- npx -y memory-pulse
 codex  mcp add memory-pulse -- npx -y memory-pulse
 npx memory-pulse install-hook            # Claude Code: ~/.claude/settings.json
 npx memory-pulse install-hook --codex    # Codex:       ~/.codex/hooks.json (then /hooks to trust each entry)
+npx memory-pulse install-hook --cursor   # Cursor:      ~/.cursor/hooks.json (brief, fail-closed guard, capture)
 ```
 
 `claude mcp add` without a scope registers the server for the current
@@ -143,11 +144,14 @@ re-entered and guarded with nothing for anyone to install. A Codex clone still
 trusts the entries once via `/hooks`, and a scripted `codex exec` needs that
 trust in place beforehand.
 
-**Cursor and other stdio clients.** Register `command: npx` with the args
-below in `.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (user). Hooks
-do not run in Cursor, so the brief and the guard are not available there;
-enforce in CI with `check --ci` and lint `.cursorrules` with `lint`. Written
-from Cursor's documented shape, not yet verified in Cursor on 2026-09-09.
+**Cursor.** Cursor has run hooks since 1.7, so `npx memory-pulse install-hook --cursor` (or `--cursor --project` for
+`.cursor/hooks.json` in the repo) gives Cursor the same brief, guard and capture as Claude Code: the brief at session start,
+the guard on every write and shell command (fail-closed, so a broken guard blocks rather than passes), and capture with fixes and
+open threads. For the MCP tools, register `command: npx` with the args below in `.cursor/mcp.json` or `~/.cursor/mcp.json`.
+Written from Cursor's hook reference (cursor.com/docs/agent/hooks, read 2026-10-21) and tested against its documented payloads;
+not yet run inside Cursor itself.
+
+**Other stdio clients.** The same MCP entry works in any client that speaks MCP over stdio.
 
 ```json
 { "mcpServers": { "memory-pulse": { "command": "npx", "args": ["-y", "memory-pulse"], "env": { "MEMORY_PULSE_KEY": "" } } } }

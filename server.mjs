@@ -44,6 +44,7 @@ import { promptSlice as promptSliceWith, editSlice as editSliceWith } from "./li
 import { recordUsage, consentState, setConsent, hasConsentAnswer, resetInstall, usagePayload, maybeSendUsage } from "./lib/usage.mjs";
 import { lessonBank as lessonBankWith, screenLesson, bankSummary, bankLabel, lessonHead, isLesson, lessonKey, PROBE_EFFECT } from "./lib/lessons.mjs";
 import { savedKey } from "./lib/login.mjs";
+import { hostOf, normalizeHook } from "./lib/hosts.mjs";
 
 const API = (process.env.MEMORY_PULSE_API ?? "https://pulse.strategic-innovations.ai").replace(/\/$/, "");
 const KEY = process.env.MEMORY_PULSE_KEY || savedKey() || null;        // env first, then the key `memory-pulse login` saved
@@ -1791,12 +1792,16 @@ async function cliGuard() {
     console.log(r.written ? `override recorded at t${r.t}: "${term}"${path ? ` under ${path}` : " (any path)"} — counted as a false block in your report` : `not recorded: ${r.reason}`);
     process.exit(r.written ? 0 : 1);
   }
+  // Cursor (2026-10-21) blocks a preToolUse call whose hook prints no JSON or invalid JSON, so on Cursor every path answers
+  // {"permission": ...}; the payload is mapped onto Claude Code's shape first (lib/hosts.mjs).
+  const host = hostOf(process.argv), cursor = host === "cursor";
   let raw = "";
   for await (const chunk of process.stdin) raw += chunk;
-  let payload; try { payload = JSON.parse(raw); } catch {
+  let payload; try { payload = normalizeHook(host, JSON.parse(raw)); } catch {
     // Not a hook call: allow. Say so under --verbose, because a miswired hook (or a shell that mangled the
     // JSON) is otherwise indistinguishable from "no evidence" (fresh-user run, 2026-09-09).
     if (process.argv.includes("--verbose")) process.stderr.write("memory-pulse guard: stdin was not hook JSON, allowing\n");
+    if (cursor) process.stdout.write(JSON.stringify({ permission: "allow" }));
     return;
   }
   // Claude Code sends one file per Edit/Write; Codex sends one apply_patch
@@ -1827,6 +1832,7 @@ async function cliGuard() {
   recordUsage("guard_check");
   if (!blocked.length) {
     if (warnings.size) process.stderr.write([...warnings].join("\n") + "\n");
+    if (cursor) { process.stdout.write(JSON.stringify({ permission: "allow" })); return; }
     // Allowed: add the memory that bears on this file as context. Never a permissionDecision — "allow" would skip the
     // user's permission prompt (docs/HOST_FACTS.md); the guard only blocks or informs.
     try {
@@ -1871,6 +1877,11 @@ async function cliGuard() {
     : sealStale
       ? `Your rows verify (chain OK) but the engine's last seal no longer matches them: either something rewrote the ledger and re-chained it, or the engine sealed a different view. \`memory-pulse verify --json\` shows both sides. If you trust the file as it stands: \`${envPrefix}memory-pulse seal accept "<why>"\` records that decision as a ledger row and sets the old seal aside; the next engine call issues a fresh one.`
       : 'Use the corrected value (mentioning both old and new in a comparison is fine), record a new correction if the old one is wrong, or `memory-pulse guard allow "<term>" --path <prefix> "<reason>"` if this is a false block.';
+  if (cursor) {
+    const plain = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+    process.stdout.write(JSON.stringify({ permission: "deny", user_message: `memory-pulse guard: blocked.\n${plain}`, agent_message: `memory-pulse guard blocked this edit.\n${plain}\n${hint}` }));
+    process.exit(0);
+  }
   process.stderr.write(`${C.red(C.bold("memory-pulse guard: blocked."))}\n${lines.join("\n")}\n${C.dim(hint)}\n`);
   process.exit(2);
 }
@@ -2006,7 +2017,37 @@ async function cliBench() {
 
 // `npx memory-pulse install-hook` — make re-entry automatic: a Claude Code
 // SessionStart hook that runs the brief. Idempotent; merges, never clobbers.
+// `install-hook --cursor` (2026-10-21): Cursor's own hooks.json (version 1; cursor.com/docs/agent/hooks, read 2026-10-21). The guard
+// runs on preToolUse with failClosed, so a crashed or timed-out guard blocks instead of letting the edit through.
+function installCursorHooks() {
+  const project = process.argv.includes("--project");
+  const dir = process.env.MEMORY_PULSE_SETTINGS_DIR || (project ? join(process.cwd(), ".cursor") : join(process.env.HOME || "", ".cursor"));
+  const file = join(dir, "hooks.json");
+  let cfg = { version: 1, hooks: {} };
+  if (existsSync(file)) { try { cfg = JSON.parse(readFileSync(file, "utf8")); } catch { console.error(`refusing to touch ${file}: it is not valid JSON`); process.exit(1); } }
+  cfg.version = cfg.version ?? 1; cfg.hooks = cfg.hooks || {};
+  const want = [
+    ["sessionStart", { command: "npx -y memory-pulse brief --host cursor" }],
+    ["preToolUse", { command: "npx -y memory-pulse guard --host cursor", matcher: "Write|Shell", failClosed: true, timeout: 30 }],
+    ...(process.argv.includes("--no-capture") ? [] : [
+      ["postToolUse", { command: "npx -y memory-pulse capture --host cursor" }],
+      ["postToolUseFailure", { command: "npx -y memory-pulse capture --host cursor" }],
+      ["stop", { command: "npx -y memory-pulse consolidate --host cursor" }],
+      ["sessionEnd", { command: "npx -y memory-pulse consolidate --final --host cursor", timeout: 10 }],
+    ]),
+  ];
+  let changed = 0;
+  for (const [ev, h] of want) { const list = (cfg.hooks[ev] = cfg.hooks[ev] || []); if (!list.some((x) => x.command === h.command)) { list.push(h); changed++; } }
+  if (!changed) { console.log("hooks already installed — nothing to do"); return; }
+  mkdirSync(dir, { recursive: true }); writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n");
+  console.log(`installed ${changed} hook(s) in ${file}`);
+  console.log("sessionStart: each Cursor session starts with the ledger's brief.");
+  console.log("preToolUse (Write/Shell): an edit that writes back a withdrawn value is denied and explained; failClosed, so a broken guard blocks rather than passes.");
+  if (!process.argv.includes("--no-capture")) console.log("postToolUse / stop / sessionEnd: what the agent did is captured locally and becomes fixes and open threads with their evidence.");
+}
+
 async function cliInstallHook() {
+  if (process.argv.includes("--cursor")) return installCursorHooks();
   // --project writes to <repo>/.claude/settings.json so the hooks TRAVEL WITH
   // THE REPO: a teammate who clones is guarded without installing anything.
   // (Adversarial review, 2026-08-31: a user-scope hook does not spread.)
@@ -2695,6 +2736,15 @@ if (isMain) {
   const sub = process.argv[2];
   if (sub === "help" || sub === "--help" || sub === "-h" || process.argv.slice(2).some((a) => a === "--help" || a === "-h")) { cliHelp(); process.exit(0); }
   if (sub === "remember") { await cliRemember(); process.exit(0); }
+  if (sub === "brief" && hostOf(process.argv) === "cursor") {
+    // Cursor's sessionStart takes JSON: the brief rides in additional_context (cursor.com/docs/agent/hooks, read 2026-10-21)
+    try { readFileSync(0, "utf8"); } catch { /* the payload carries nothing the brief needs */ }
+    let text = ""; const w = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (c, ...a) => { text += String(c); return true; };
+    try { await cliBrief(); } catch { /* an empty brief */ } finally { process.stdout.write = w; }
+    process.stdout.write(JSON.stringify(text.trim() ? { additional_context: text.trim().slice(0, 20000) } : {}));
+    process.exit(0);
+  }
   if (sub === "brief") { await cliBrief(); await sendUsageQuietly(); process.exit(0); }
   if (sub === "telemetry") { await cliTelemetry(); process.exit(0); }
   if (sub === "scaffold") { await cliScaffold(); process.exit(0); }
@@ -2715,8 +2765,8 @@ if (isMain) {
   if (sub === "seal") { await cliSeal(); process.exit(0); }
   if (sub === "state") { await cliState(); process.exit(0); }
   if (sub === "login") { globalThis.__MEMORY_PULSE_CORE__ = { chainAppend, verifyChain, instructionLike, readEvents, buildCapsule, API, KEY }; const { cliLogin } = await import("./lib/login.mjs"); process.exit(await cliLogin(process.argv.slice(3), { api: API, version: PKG_VERSION })); }
-  if (sub === "capture") { const { cliCapture } = await import("./lib/capture.mjs"); process.exit(cliCapture({ ledgerPath, chainAppend, instructionLike })); }
-  if (sub === "consolidate") { const { cliConsolidate } = await import("./lib/capture.mjs"); process.exit(cliConsolidate(process.argv.slice(3), { ledgerPath, readEvents, appendEvent, buildCapsule })); }
+  if (sub === "capture") { const { cliCapture } = await import("./lib/capture.mjs"); const host = hostOf(process.argv); process.exit(cliCapture({ ledgerPath, chainAppend, instructionLike, normalize: (h) => normalizeHook(host, h) })); }
+  if (sub === "consolidate") { const { cliConsolidate } = await import("./lib/capture.mjs"); const host = hostOf(process.argv); process.exit(cliConsolidate(process.argv.slice(3), { ledgerPath, readEvents, appendEvent, buildCapsule, normalize: (h) => normalizeHook(host, h) })); }
   if (sub === "adopt") { const { cliAdopt } = await import("./lib/adopt.mjs"); process.exit(cliAdopt(process.argv.slice(3), { readEvents, inForce, appendEvent, detectCorrection, detectProhibition, instructionLike })); }
   if (sub === "logout") { const { cliLogout } = await import("./lib/login.mjs"); process.exit(cliLogout()); }
   if (sub === "board") { globalThis.__MEMORY_PULSE_CORE__ = { chainAppend, verifyChain, instructionLike, readEvents, buildCapsule, API, KEY }; const { cliBoard } = await import("./lib/board.mjs"); process.exit(await cliBoard(process.argv.slice(3))); }
