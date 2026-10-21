@@ -66,10 +66,13 @@ test("consolidate turns fail-then-pass into a fix finding and a still-failing co
   const found = ledger(f).filter((r) => (r.tags ?? []).includes("captured"));
   const fix = found.find((r) => r.tags.includes("fix")), open = found.find((r) => r.tags.includes("open"));
   assert.ok(fix, "a fix finding"); assert.match(fix.cause, /npm test/); assert.match(fix.cause, /rounds the refund total/); assert.match(fix.effect, /src\/price\.js/);
-  assert.ok(open, "an open thread"); assert.match(open.cause, /npm run lint/);
+  assert.equal(open, undefined, "open threads wait for the end of the session (replay of real sessions, 2026-10-21)");
+  await run(f, ["consolidate", "--final"], JSON.stringify({ session_id: SID, cwd: f.work, hook_event_name: "SessionEnd", reason: "exit" }));
+  const open2 = ledger(f).find((r) => (r.tags ?? []).includes("open")); assert.ok(open2, "an open thread at the end"); assert.match(open2.cause, /npm (run )?lint/);
   assert.equal(fix.evidence.episode, SID); assert.equal(fix.evidence.rows.length, 3); assert.match(fix.evidence.head, /^[0-9a-f]{64}$/);
-  await run(f, ["consolidate"], JSON.stringify({ session_id: SID, cwd: f.work, hook_event_name: "Stop" }));
-  assert.equal(ledger(f).filter((r) => (r.tags ?? []).includes("captured")).length, found.length, "consolidating again adds nothing");
+  const n = ledger(f).filter((r) => (r.tags ?? []).includes("captured")).length;
+  await run(f, ["consolidate", "--final"], JSON.stringify({ session_id: SID, cwd: f.work, hook_event_name: "SessionEnd", reason: "exit" }));
+  assert.equal(ledger(f).filter((r) => (r.tags ?? []).includes("captured")).length, n, "consolidating again adds nothing");
 });
 
 test("consolidate --final adds a session summary and exports the episode as a .rain capsule that verifies", async () => {
@@ -100,4 +103,35 @@ test("install-hook adds the capture and consolidate hooks once; --no-capture lea
   const g = fixture(); await run(g, ["install-hook", "--no-capture"]);
   const t = JSON.parse(readFileSync(join(g.home, ".claude", "settings.json"), "utf8"));
   assert.equal((t.hooks.PostToolUse ?? []).length, 0);
+});
+
+
+test("real sessions (replay, 2026-10-21): only checks make fixes and threads; denials are not failures; one check written two ways is one", async () => {
+  const f = fixture();
+  await run(f, ["capture"], fail(f, "Bash", { command: "cat > x.py <<'EOF'\nprint(1)\nEOF\npython3 x.py | tail -1" }, "Exit code 1\nTraceback (most recent call last):"));
+  await run(f, ["capture"], fail(f, "Bash", { command: "npm test" }, "The server-side auto mode classifier gave no verdict (error), so auto mode cannot determine the safety of Bash"));
+  await run(f, ["capture"], fail(f, "Bash", { command: "python3 -m pytest -q test_cart.py 2>&1 | tail -1" }, "Exit code 1\nFAILED test_cart.py::test_total - assert 3 == 4"));
+  await run(f, ["capture"], ok(f, "Edit", { file_path: join(f.work, "cart.py"), old_string: "x", new_string: "y" }, { filePath: join(f.work, "cart.py"), structuredPatch: [{ lines: ["-x", "+y"] }] }));
+  await run(f, ["capture"], ok(f, "Bash", { command: "cd ~/w && pytest test_cart.py -x" }, { stdout: "1 passed", stderr: "", interrupted: false }));
+  const e = episode(f).filter((r) => r.kind === "observation");
+  assert.equal(e[1].obs.denied, true, "a permission refusal is recorded as a denial");
+  await run(f, ["consolidate", "--final"], JSON.stringify({ session_id: SID, cwd: f.work, hook_event_name: "SessionEnd", reason: "exit" }));
+  const found = ledger(f).filter((r) => (r.tags ?? []).includes("captured") && !(r.tags ?? []).includes("session"));
+  assert.equal(found.length, 1, found.map((r) => r.cause).join(" | "));
+  assert.ok(found[0].tags.includes("fix")); assert.match(found[0].cause, /pytest test_cart\.py/); assert.match(found[0].effect, /cart\.py/);
+});
+
+test("a check's outcome comes from its own summary when the pipeline hides the exit code (real sessions pipe tests through grep or tail)", async () => {
+  const f = fixture();
+  const piped = "npm test 2>&1 | grep -E '^ℹ (pass|fail)'";
+  await run(f, ["capture"], ok(f, "Bash", { command: piped }, { stdout: "ℹ pass 241\nℹ fail 2", stderr: "", interrupted: false }));
+  await run(f, ["capture"], ok(f, "Edit", { file_path: join(f.work, "lib", "board.mjs"), old_string: "a", new_string: "b" }, { filePath: join(f.work, "lib", "board.mjs"), structuredPatch: [{ lines: ["-a", "+b"] }] }));
+  await run(f, ["capture"], ok(f, "Bash", { command: "npm test 2>&1 | tail -3" }, { stdout: "ℹ tests 243\nℹ pass 243\nℹ fail 0", stderr: "", interrupted: false }));
+  await run(f, ["capture"], ok(f, "Bash", { command: "python3 -m pytest -q tests/ 2>&1 | tail -1" }, { stdout: "3 failed, 40 passed in 2.1s", stderr: "", interrupted: false }));
+  const e = episode(f).filter((r) => r.kind === "observation");
+  assert.equal(e[0].obs.ok, false); assert.match(e[0].obs.err, /fail 2/);
+  assert.equal(e[2].obs.ok, true); assert.equal(e[3].obs.ok, false); assert.match(e[3].obs.err, /3 failed/);
+  await run(f, ["consolidate"], JSON.stringify({ session_id: SID, cwd: f.work, hook_event_name: "Stop" }));
+  const fix = ledger(f).find((r) => (r.tags ?? []).includes("fix"));
+  assert.ok(fix); assert.match(fix.cause, /npm test/); assert.match(fix.effect, /lib\/board\.mjs/);
 });
