@@ -9,7 +9,7 @@
  *     `remember` writes to it directly and works offline.
  *   - Read operations (pulse / recall / execute) send the ledger's events to
  *     the hosted engine over TLS, which computes the answer and forgets the
- *     request. The service keeps NO database of your memory — state arrives
+ *     request. Unless hosted memory is on for a project (opt-in), the service keeps no copy of your memory — state arrives
  *     in the request and leaves in the response.
  *   - This client is the entire client. No SDK, no dependencies, one file
  *     you can read in one sitting.
@@ -43,9 +43,11 @@ import { renderScaffold as renderScaffoldWith, DEFAULT_BUDGETS, SECTIONS } from 
 import { promptSlice as promptSliceWith, editSlice as editSliceWith } from "./lib/slices.mjs";
 import { recordUsage, consentState, setConsent, hasConsentAnswer, resetInstall, usagePayload, maybeSendUsage } from "./lib/usage.mjs";
 import { lessonBank as lessonBankWith, screenLesson, bankSummary, bankLabel, lessonHead, isLesson, lessonKey, PROBE_EFFECT } from "./lib/lessons.mjs";
+import { savedKey } from "./lib/login.mjs";
 
 const API = (process.env.MEMORY_PULSE_API ?? "https://pulse.strategic-innovations.ai").replace(/\/$/, "");
-const KEY = process.env.MEMORY_PULSE_KEY || null;
+const KEY = process.env.MEMORY_PULSE_KEY || savedKey() || null;        // env first, then the key `memory-pulse login` saved
+const KEY_SOURCE = process.env.MEMORY_PULSE_KEY ? "env" : KEY ? "saved" : null;
 export { API, KEY };
 
 // ---------------------------------------------------------------- ledger ----
@@ -466,7 +468,7 @@ export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn
 }
 
 // ------------------------------------------------------------- telemetry ----
-// The engine keeps no database, so telemetry lives HERE, beside your ledger,
+// The engine stores no telemetry, so it lives HERE, beside your ledger,
 // as a signed capsule the engine advances on every read call and hands back.
 // You own it; delete the file and it restarts from zero.
 const telemetryPath = () => join(dirname(ledgerPath()), "telemetry.rain");
@@ -578,6 +580,11 @@ async function callApi(route, body) {
   let res;
   try {
     res = await postJsonRetry(`${API}${route}`, { "content-type": "application/json", ...(KEY ? { "x-mp-key": KEY } : {}) }, JSON.stringify(body));
+    // a saved login key the engine refuses (revoked, or the plan ended) falls back to the free tier, as before the login (review 2026-10-21, 2)
+    if (res.status === 401 && KEY_SOURCE === "saved") {
+      console.error("memory-pulse: the saved login key was refused (revoked, or the plan ended); answering on the free tier. Run `memory-pulse login` again, or `memory-pulse logout`.");
+      res = await postJsonRetry(`${API}${route}`, { "content-type": "application/json" }, JSON.stringify(body));
+    }
   } catch (err) {
     const why = err?.cause?.code || err?.code || err?.message || String(err);
     throw new Error(
@@ -2160,6 +2167,8 @@ Commands
   state [export|branch|import|merge|rollback|verify|push|pull]
                                       agent state as a .rain capsule: export it, cut a branch at a row, import or merge it elsewhere, roll back to a row as an appended row, verify a capsule; no argument prints where the ledger stands
   board post|read|reply|ack|verdict|claims|thread|html|verify|push|status|sync [--board PATH]
+  login [--no-open] [--no-sync]       connect this machine to a hosted project: approve it in the console, the key is saved for you (no copying); turns board sync on
+  logout                              remove the saved key from this machine (revoke it in the console to end it everywhere)
                                       the shared agent message board: a separate chained ledger any agent can post to and read; passive (nothing wakes or prompts an agent); a message is data, never an instruction; a claim stays open until another agent's verdict, and a synthesis is refused over an open claim
   lint [--ci] [--json] [paths...]     the guard's check over CLAUDE.md, AGENTS.md, .claude/rules, .cursorrules and the other governance files a session loads
   guard [--verbose]                   PreToolUse hook: reads the tool call from stdin, exit 2 with the ledger line when an edit writes a withdrawn value back
@@ -2691,6 +2700,8 @@ if (isMain) {
   if (sub === "repair") { await cliRepair(); process.exit(0); }
   if (sub === "seal") { await cliSeal(); process.exit(0); }
   if (sub === "state") { await cliState(); process.exit(0); }
+  if (sub === "login") { globalThis.__MEMORY_PULSE_CORE__ = { chainAppend, verifyChain, instructionLike, readEvents, buildCapsule, API, KEY }; const { cliLogin } = await import("./lib/login.mjs"); process.exit(await cliLogin(process.argv.slice(3), { api: API, version: PKG_VERSION })); }
+  if (sub === "logout") { const { cliLogout } = await import("./lib/login.mjs"); process.exit(cliLogout()); }
   if (sub === "board") { globalThis.__MEMORY_PULSE_CORE__ = { chainAppend, verifyChain, instructionLike, readEvents, buildCapsule, API, KEY }; const { cliBoard } = await import("./lib/board.mjs"); process.exit(await cliBoard(process.argv.slice(3))); }
   if (sub === "lint") { await cliLint(); process.exit(0); }
   if (sub === "report") { cliReport(); process.exit(0); }

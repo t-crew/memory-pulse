@@ -58,7 +58,7 @@ engines); the test suite runs on 22 and 24.
 
 `remember` and `help` from the shell arrive in 0.5.9. npm served 0.5.8 on
 2026-09-09, where both exit 1 with `unknown command`. If npx serves an older
-cached release, pin this one: `npx -y memory-pulse@0.11.0`; from a checkout,
+cached release, pin this one: `npx -y memory-pulse@0.12.0`; from a checkout,
 run `node server.mjs`. Four more things in this README are
 0.5.9 behaviour and differ on 0.5.8: `guard --verbose` names non-JSON stdin
 on stderr (0.5.8 prints nothing), `handoff` with no transcript writes nothing
@@ -186,7 +186,7 @@ and exits 0. The first `remember` creates `.memory-pulse/events.jsonl`, from a
 tool call or from the shell:
 
 ```
-npx -y memory-pulse@0.11.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
+npx -y memory-pulse@0.12.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 # before 0.6.0 is on npm, the same command from a checkout:
 git clone https://github.com/t-crew/memory-pulse.git && node memory-pulse/server.mjs remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 ```
@@ -298,6 +298,8 @@ npx memory-pulse board post --from blue --to science --kind request --title "aud
 npx memory-pulse board read --as science      # unread messages for an agent; also reply, ack, thread, html (the board view), verify
 npx memory-pulse board verdict 4 refuted --as coder --defect "..."   # answer a claim; a refutation names its defect; claims lists every claim and its standing
 npx memory-pulse board sync on --project <id>   # push the board after every write; the console shows each agent's open asks and every message (board push / status by hand)
+npx memory-pulse login          # connect this machine to a hosted project: approve it in the console and the key is saved for you, no copying; turns board sync on
+npx memory-pulse logout         # remove the saved key from this machine (revoke it in the console to end it everywhere)
 npx memory-pulse lint [--ci]    # do CLAUDE.md / AGENTS.md / .claude/rules still state a value the ledger retired?
 npx memory-pulse report         # correction re-violation scoreboard, computed locally
 npx memory-pulse bench          # instant measured metrics on YOUR ledger
@@ -498,6 +500,14 @@ npx memory-pulse board claims                # every claim: open, upheld, refute
 This follows Self-Organizing Agent Teams ([arXiv 2609.22682](https://arxiv.org/abs/2609.22682)). Six of the twenty strategies its
 teams kept exist to keep a claim the consensus dropped in play, and its judge may reject an answer only by naming a specific defect.
 
+**Connect a machine with `npx memory-pulse login`.** It prints a short code and opens the console; sign in, check the code, pick
+the project and approve. The console shows where and when the request was made and warns when that is not where you are, so deny
+anything you did not just start. The key is saved to `~/.config/memory-pulse/key` (only you can read it) and every command uses it
+when `MEMORY_PULSE_KEY` is unset, sent only to the engine it came from; if it is revoked, commands fall back to the free tier and say
+so. Login also turns board sync on for the board in the current folder and pushes it. Logging in again replaces the key this machine
+was using (the CLI sends a hash of that key to show it holds it), so keys do not pile up; a login from a machine without one adds a key. `npx memory-pulse
+logout` removes the saved key; revoke it in the console to end it everywhere.
+
 **See your agents' board in the console.** With hosted memory on for a project (Starter, Pro, Enterprise), `board push` sends the
 board there with the project's key, and `board sync on --project <id>` pushes after every post, reply, ack and verdict, from the CLI
 and from the MCP tools. Sign in at the console, open the project's Board: each agent's open asks, what it is waiting on, its open
@@ -552,14 +562,16 @@ What that turns on:
   project. You can commit it, grep it or delete it.
 - `remember` writes to it directly and **works offline**.
 - Read operations send the ledger's events to the hosted engine over TLS,
-  which computes the answer and forgets the request. **The service keeps no
-  database of your memory.** State arrives in the request and leaves in the
-  response.
+  which computes the answer and forgets the request. **Unless you turn on hosted
+  memory for a project (opt-in, in the console), the service keeps no copy of
+  your memory.** State arrives in the request and leaves in the response.
+  Hosted memory and the hosted board are stored until you turn them off,
+  which erases them.
 - Telemetry is a **signed capsule beside your ledger** at
   `.memory-pulse/telemetry.rain`. The engine advances it on each read call and
   hands it back without ever storing it. `stats` verifies the signature and
   `badge` turns it into a README badge. Delete the file and it restarts.
-- **State persistence, no database.** After a read the engine hands back a
+- **State persistence without storing your ledger.** After a read the engine hands back a
   signed **memory key** (`.memory-pulse/memory.rain`, git-ignored). The next
   read presents it and the engine resumes from it, ingesting only the events
   recorded since. The answer is byte-identical to a full rebuild. Any mismatch,
