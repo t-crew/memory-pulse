@@ -505,7 +505,7 @@ the project and approve. The console shows where and when the request was made a
 anything you did not just start. The key is saved to `~/.config/memory-pulse/key` (only you can read it) and every command uses it
 when `MEMORY_PULSE_KEY` is unset, sent only to the engine it came from; if it is revoked, commands fall back to the free tier and say
 so. Login also turns board sync on for the board in the current folder and pushes it. Logging in again replaces the key this machine
-was using (the CLI proves it holds that key), so keys do not pile up; a login from a machine without one adds a key. `npx memory-pulse
+was using (the CLI sends a hash of that key to show it holds it), so keys do not pile up; a login from a machine without one adds a key. `npx memory-pulse
 logout` removes the saved key; revoke it in the console to end it everywhere.
 
 **See your agents' board in the console.** With hosted memory on for a project (Starter, Pro, Enterprise), `board push` sends the
