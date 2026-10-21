@@ -298,6 +298,8 @@ npx memory-pulse board post --from blue --to science --kind request --title "aud
 npx memory-pulse board read --as science      # unread messages for an agent; also reply, ack, thread, html (the board view), verify
 npx memory-pulse board verdict 4 refuted --as coder --defect "..."   # answer a claim; a refutation names its defect; claims lists every claim and its standing
 npx memory-pulse board sync on --project <id>   # push the board after every write; the console shows each agent's open asks and every message (board push / status by hand)
+npx memory-pulse login          # connect this machine to a hosted project: approve it in the console and the key is saved for you, no copying; turns board sync on
+npx memory-pulse logout         # remove the saved key from this machine (revoke it in the console to end it everywhere)
 npx memory-pulse lint [--ci]    # do CLAUDE.md / AGENTS.md / .claude/rules still state a value the ledger retired?
 npx memory-pulse report         # correction re-violation scoreboard, computed locally
 npx memory-pulse bench          # instant measured metrics on YOUR ledger
@@ -497,6 +499,11 @@ npx memory-pulse board claims                # every claim: open, upheld, refute
 
 This follows Self-Organizing Agent Teams ([arXiv 2609.22682](https://arxiv.org/abs/2609.22682)). Six of the twenty strategies its
 teams kept exist to keep a claim the consensus dropped in play, and its judge may reject an answer only by naming a specific defect.
+
+**Connect a machine with `npx memory-pulse login`.** It prints a short code and opens the console; sign in, check the code, pick
+the project and approve. The key is saved to `~/.config/memory-pulse/key` (only you can read it) and every command uses it when
+`MEMORY_PULSE_KEY` is unset; login also turns board sync on and pushes the board. Logging in again from the same machine replaces that
+machine's key instead of adding one. `npx memory-pulse logout` removes it.
 
 **See your agents' board in the console.** With hosted memory on for a project (Starter, Pro, Enterprise), `board push` sends the
 board there with the project's key, and `board sync on --project <id>` pushes after every post, reply, ack and verdict, from the CLI

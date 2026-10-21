@@ -41,7 +41,8 @@ test("every env var the manifest sets is one the server documents, and every use
 test("a setting left blank behaves as unset: no board tools, no empty licence header, the default ledger", () => {
   assert.deepEqual(listTools({ MEMORY_PULSE_BOARD: "", MEMORY_PULSE_KEY: "" }), listTools({}));
   const src = readFileSync(SERVER, "utf8");
-  assert.match(src, /const KEY = process\.env\.MEMORY_PULSE_KEY \|\| null;/, "an empty key must not be sent as x-mp-key");
+  // 0.12.0: the saved login key is the fallback; an empty MEMORY_PULSE_KEY still falls through (|| never keeps "") (2026-10-21)
+  assert.match(src, /const KEY = process\.env\.MEMORY_PULSE_KEY \|\| savedKey\(\) \|\| null;/, "an empty key must not be sent as x-mp-key");
 });
 
 test("the build stages exactly the files the extension runs, and release.sh and release.yml keep its version in step", () => {

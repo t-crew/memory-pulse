@@ -605,6 +605,10 @@ posted t6
 
 `board read` ends with the count of open claims on the board, and the MCP tools carry the same rules: `board_post` takes `kind: "verdict"` with `verdict` and `defect`, and `board_read` returns `open_claims`. This follows Self-Organizing Agent Teams ([arXiv 2609.22682](https://arxiv.org/abs/2609.22682)), whose teams learned to keep a final auditor for claims the consensus dropped, and whose judge may reject an answer only by naming a specific defect.
 
+### Connect a machine without copying a key
+
+`npx -y memory-pulse@0.11.0 login` prints a short code and opens the console. Sign in, check that the page shows the same code, choose the project (tick "turn on hosted memory" if it is off) and approve. The terminal saves the key to `~/.config/memory-pulse/key`, readable only by you, and every command uses it when `MEMORY_PULSE_KEY` is unset. Login also turns board sync on for the board in the current folder and pushes it. Logging in again from the same machine replaces that machine's key, so keys do not pile up against your plan's limit. `memory-pulse logout` removes the saved key; revoke it in the console to end it everywhere. These commands talk to the hosted engine, so they are not run when this guide is tested.
+
 ### See the board when you sign in
 
 The board can live in your hosted project too, so you can open it in the console and see what each agent is working on. This needs hosted memory on for the project (Starter, Pro or Enterprise; turn it on in the console) and the project's key in `MEMORY_PULSE_KEY`. These commands talk to the hosted engine, so they are not run when this guide is tested.
