@@ -45,7 +45,7 @@ import { recordUsage, consentState, setConsent, hasConsentAnswer, resetInstall, 
 import { lessonBank as lessonBankWith, screenLesson, bankSummary, bankLabel, lessonHead, isLesson, lessonKey, PROBE_EFFECT } from "./lib/lessons.mjs";
 import { savedKey } from "./lib/login.mjs";
 import { hostOf, normalizeHook } from "./lib/hosts.mjs";
-import { SOUL_WRITE, RESERVED, soulState, soulLines, soulGuard, cliSoul, cliUser, setSection, chainedOnly, heldFromMerge, taintOf } from "./lib/soul.mjs";
+import { SOUL_WRITE, RESERVED, soulState, soulLines, soulGuard, cliSoul, cliUser, setSection, chainedOnly, heldFromMerge, taintOf, soulCapsule, verifySoulCapsule, continuityLine } from "./lib/soul.mjs";
 
 const API = (process.env.MEMORY_PULSE_API ?? "https://pulse.strategic-innovations.ai").replace(/\/$/, "");
 const KEY = process.env.MEMORY_PULSE_KEY || savedKey() || null;        // env first, then the key `memory-pulse login` saved
@@ -892,7 +892,7 @@ export function identityBlock(led) {
   const name = self ? String(shown(self)).split(/[;.\n]/)[0].trim() : "unnamed agent";
   const lines = [`AGENT IDENTITY — ${name} (agent ledger: ${events.length} rows, head ${chain.head ? chain.head.slice(0, 12) : "none"}${chain.ok ? "" : ", CHAIN BROKEN"}, seal ${seal?.digest ? seal.digest.slice(0, 12) : "not yet"})`];
   if (self) lines.push(`  self: ${shown(self)}`);
-  if (soulOn) { let digest = null; try { digest = createHash("sha256").update(readFileSync(led.path)).digest("hex"); } catch { digest = null; } lines.push(...soulLines(soulState(events), { instructionLike, held: HELD, digest, unchained: c.unchained })); }
+  if (soulOn) { let digest = null; try { digest = createHash("sha256").update(readFileSync(led.path)).digest("hex"); } catch { digest = null; } lines.push(...soulLines(soulState(events), { instructionLike, held: HELD, digest, unchained: c.unchained, continuity: BRIEF_CONTINUITY })); }
   lines.push(`  fingerprint: chain head ${chain.head ?? "none"}${seal?.issued ? ` · sealed ${seal.issued}` : ""} — the same memory as last session iff these match`);
   if (rules.length) { lines.push(`  standing rules (${rules.length}):`); for (const r of rules) lines.push(`    rule: ${shown(r)} (t${r.t})`); }
   if (prefs.length) { lines.push(`  preferences (${prefs.length}):`); for (const p of prefs) lines.push(`    preference: ${shown(p)} (t${p.t})`); }
@@ -1100,6 +1100,17 @@ async function cliMode() {
     console.log(`agent ledger: ${agentPath()}`); console.log('Give the agent its soul once, from a terminal: memory-pulse soul "<persona, voice, values>", memory-pulse user "<who you are>", memory-pulse identity "<name>, <role>". Every brief, in every tool, then starts with them and a fingerprint; the agent can propose changes, only you approve them. Already on OpenClaw? memory-pulse soul import --openclaw'); }
   if (want === "agent") { console.log(`agent ledger: ${agentPath()}`); console.log("Set the agent's self once: memory-pulse identity \"<name>, <role>; <stance>\" — then every brief, in every tool, starts with who the agent is, what it has learned, and a fingerprint of which memory it is running on."); }
 }
+// soul as state (lib/soul.mjs): the capsule of the agent ledger as it stands, and the continuity line the brief computes once
+const capsulePath = () => join(dirname(agentPath()), "soul.rain");
+const ledgerFingerprint = () => { try { return createHash("sha256").update(readFileSync(agentPath())).digest("hex"); } catch { return null; } };
+function soulCapsuleNow() {
+  const led = existsSync(agentPath()) ? readEvents({ scope: "agent" }) : { events: [] }; const events = inForce(chainedOnly(led.events).rows);
+  let lessons = []; try { lessons = lessonBank(events).bank.map((c) => ({ t: c.t, text: c.text })); } catch { lessons = []; }
+  let head = null; try { head = verifyChain(agentPath()).head ?? null; } catch { head = null; }
+  return soulCapsule(events, { lessons, fingerprint: ledgerFingerprint(), head });
+}
+let BRIEF_CONTINUITY = null;
+
 // What lib/soul.mjs needs from the server. episode(): capture's record of this session (Claude Code gives every command
 // CLAUDE_CODE_SESSION_ID), which is how a soul change knows whether its session read outside content.
 function soulCore() {
@@ -1109,7 +1120,7 @@ function soulCore() {
     try { const p = join(dirname(ledgerPath()), "episodes", `${String(session).replace(/[^\w.-]/g, "_").slice(0, 80)}.jsonl`); return existsSync(p) ? readFileSync(p, "utf8").split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean) : []; } catch { return []; }
   };
   const block = () => { const prev = process.env.MEMORY_PULSE_MODE; process.env.MEMORY_PULSE_MODE = "soul"; try { return existsSync(agentPath()) ? identityBlock(readEvents({ scope: "agent" })) : ""; } finally { if (prev === undefined) delete process.env.MEMORY_PULSE_MODE; else process.env.MEMORY_PULSE_MODE = prev; } };
-  return { appendEvent, agentEvents: () => (existsSync(agentPath()) ? readEvents({ scope: "agent" }).events : []), inForce, instructionLike, slug, soulMode: () => currentMode() === "soul", session: () => session, episode, identityBlock: block, agentDir: dirname(agentPath()) };
+  return { appendEvent, agentEvents: () => (existsSync(agentPath()) ? readEvents({ scope: "agent" }).events : []), inForce, instructionLike, slug, soulMode: () => currentMode() === "soul", session: () => session, episode, identityBlock: block, agentDir: dirname(agentPath()), capsuleNow: soulCapsuleNow, capsulePath, ledgerFingerprint };
 }
 
 async function cliIdentity() {
@@ -1238,7 +1249,7 @@ function scaffoldFor(led, opts = {}) {
     if (currentMode() === "soul" && agentEvents.length) {
       const c = chainedOnly(agentEvents); agentRows = c.rows;
       let digest = null; try { digest = createHash("sha256").update(readFileSync(agentPath())).digest("hex"); } catch { digest = null; }
-      soul = soulLines(soulState(inForce(agentRows)), { instructionLike, held: HELD, digest, unchained: c.unchained });
+      soul = soulLines(soulState(inForce(agentRows)), { instructionLike, held: HELD, digest, unchained: c.unchained, continuity: BRIEF_CONTINUITY });
     }
     const budgets = soul.length && !opts.budgets ? { ...DEFAULT_BUDGETS, identity: 3200 } : undefined;
     return renderScaffold(led.events, { agentEvents: agentRows, withIdentity: agentLike(), soulLines: soul, blocks: readBlocks(), chain: chain.ok ? null : chain, ...(budgets ? { budgets } : {}), ...opts });
@@ -1538,6 +1549,14 @@ async function cliBrief() {
     if (rate > 0) hide = new Set(led0.events.filter((e) => eligible(e) && !decided(w.get(e.t)) && withhold(`${session}|${e.t}`, rate)).map((e) => e.t));
   }
   const led = led0, events = hide.size ? led0.events.filter((e) => !hide.has(e.t)) : led0.events;
+  // soul as state: what changed since the capsule the last brief wrote; then this brief's capsule replaces it
+  if (currentMode() === "soul" && existsSync(agentPath())) {
+    try {
+      let prev = null; try { const p = JSON.parse(readFileSync(capsulePath(), "utf8")); if (verifySoulCapsule(p).ok) prev = p; } catch { prev = null; }
+      const next = soulCapsuleNow(); BRIEF_CONTINUITY = continuityLine(prev, next);
+      writeFileSync(capsulePath(), JSON.stringify(next, null, 2) + "\n");
+    } catch { BRIEF_CONTINUITY = null; }
+  }
   const bi = process.argv.indexOf("--budget");
   const budget = bi >= 0 ? Number(process.argv[bi + 1]) : (process.env.MEMORY_PULSE_BRIEF_BUDGET ? Number(process.env.MEMORY_PULSE_BRIEF_BUDGET) : undefined);
   if (budget !== undefined && !(Number.isFinite(budget) && budget >= 1)) { console.error("brief --budget takes a positive number of tokens"); process.exit(1); }
