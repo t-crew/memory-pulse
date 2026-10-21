@@ -105,6 +105,14 @@ test("review 2: mode soul installs the taint hook and leaving soul mode removes 
   run(f, ["mode", "agent"]); assert.ok(!(hooks().PreToolUse ?? []).some((h) => /memory-pulse taint/.test(JSON.stringify(h))));
 });
 
+test("live false positive (2026-10-21): a write elsewhere in a command that only reads the agent ledger is not a raw edit of it", () => {
+  const f = fixture(); soul(f); const ag = f.agent;
+  const g = (command) => run(f, ["guard"], JSON.stringify({ hook_event_name: "PreToolUse", session_id: "s", cwd: f.work, tool_name: "Bash", tool_input: { command } })).code;
+  assert.equal(g(`cat > /tmp/speed.mjs <<'EOF'\nconst rows = readFileSync("${ag}", "utf8");\nEOF`), 0, "a heredoc to a scratch file that reads the ledger");
+  assert.equal(g(`wc -l ${ag} > /tmp/count.txt`), 0, "reading it with the output redirected elsewhere");
+  for (const command of [`echo x >> ${ag}`, `cp /tmp/x ${ag}`, `echo x | tee -a ${ag}`, `sed -i '' 's/a/b/' ${ag}`, `mv /tmp/x ${ag}`, "rm -rf ~/.memory-pulse"]) assert.equal(g(command), 2, command);
+});
+
 test("live false positive (2026-10-21): an unrelated unset in a tainted session is not a session-variable tamper", () => {
   const f = fixture(); soul(f); pre(f, "dirty", "WebFetch", {});
   for (const command of ["unset HTTP_PROXY HTTPS_PROXY; npm view memory-pulse@0.14.1 version", "env -u HTTP_PROXY npx -y memory-pulse brief"]) assert.equal(guard(f, "dirty", command).code, 0, command);
