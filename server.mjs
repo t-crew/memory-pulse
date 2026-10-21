@@ -44,6 +44,7 @@ import { promptSlice as promptSliceWith, editSlice as editSliceWith } from "./li
 import { recordUsage, consentState, setConsent, hasConsentAnswer, resetInstall, usagePayload, maybeSendUsage } from "./lib/usage.mjs";
 import { lessonBank as lessonBankWith, screenLesson, bankSummary, bankLabel, lessonHead, isLesson, lessonKey, PROBE_EFFECT } from "./lib/lessons.mjs";
 import { savedKey } from "./lib/login.mjs";
+import { hostOf, normalizeHook } from "./lib/hosts.mjs";
 
 const API = (process.env.MEMORY_PULSE_API ?? "https://pulse.strategic-innovations.ai").replace(/\/$/, "");
 const KEY = process.env.MEMORY_PULSE_KEY || savedKey() || null;        // env first, then the key `memory-pulse login` saved
@@ -288,8 +289,11 @@ function appendRowLocked(path, event) {
   return event;
 }
 // The one writer. A bad tail is moved aside before anything is chained onto it.
-export function chainAppend(path, event) {
+// `unless(path)`, when given, is checked under the lock: a row that must be written once (capture's tool_use_id) stays once even when two
+// hook processes append at the same moment (review 2026-10-21: three parallel captures of one call wrote three rows)
+export function chainAppend(path, event, { unless } = {}) {
   return withLedgerLock(path, () => {
+    if (unless && existsSync(path) && unless(path)) return { written: false, reason: "already recorded" };
     const info = existsSync(path) ? inspectChain(path) : { ok: true };
     if (!info.ok && info.tail?.allBad) quarantineTailLocked(path);
     return appendRowLocked(path, event);
@@ -392,7 +396,7 @@ export function verifyLocalSeal(events = readEvents().events, seal = readSeal(),
 
 // Fields a row may carry beyond the finding itself. `rollback_to` marks a rollback row (state rollback); `origin` names
 // the branch and row a merged row came from; `state` records which capsule an import or a merge came from.
-const ROW_FIELDS = ["rollback_to", "origin", "state", "where", "probe", "bank"];
+const ROW_FIELDS = ["rollback_to", "origin", "state", "where", "probe", "bank", "capture_key", "evidence", "credit", "resolves"];
 
 export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn, replacement, supersedes, override, scope, fields }) {
   // Instruction-like notes are refused at the write. The engine quarantines
@@ -405,7 +409,10 @@ export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn
   // A duplicate is the same cause, effect, note AND terms. The old rule ignored the terms, so the product's
   // own hint ("record it again with withdrawn") was refused as a duplicate (daily-use review, 2026-09-09).
   const norm = (a) => JSON.stringify(Array.isArray(a) ? a.map((w) => String(w).trim()).filter(Boolean) : []);
-  const dup = events.find((e) => e.cause === cause && e.effect === effect && (e.note ?? "") === (note ?? "") && norm(e.withdrawn) === norm(withdrawn) && norm(e.replacement) === norm(replacement));
+  // a captured row (capture_key) names one event: the same words from another session are a new row (re-review 2026-10-21: a check that
+  // failed again after its thread closed, and the pass after it, were refused as duplicates)
+  const ck = fields && typeof fields.capture_key === "string" ? fields.capture_key : null;
+  const dup = events.find((e) => e.cause === cause && e.effect === effect && (e.note ?? "") === (note ?? "") && norm(e.withdrawn) === norm(withdrawn) && norm(e.replacement) === norm(replacement) && (ck === null || e.capture_key === ck));
   if (dup) return { written: false, reason: "duplicate", t: dup.t, ledger: path, hint: "Nothing written: a row with the same cause, effect, note and terms is refused as a duplicate. Record it again with withdrawn (and replacement) to add terms, or change the note if this is a new finding." };
   // t is assigned by the writer under the ledger lock (two writers never share one); this is only the order of keys.
   const event = { t: undefined, cause, effect, kind: kind || "event" };
@@ -459,7 +466,10 @@ export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn
     event.probe = { lesson: lesson.t, key: lessonKey(lesson), outcome: m[2], where: m[3] || "unspecified" };
     if (!event.tags?.includes("lesson-probe")) event.tags = [...(event.tags ?? []), "lesson-probe"];
   }
-  try { chainAppend(path, event); }
+  // a captured row is checked again under the lock: a Stop and a SessionEnd consolidation running at once both read the ledger before
+  // either wrote (final pass 2026-10-21)
+  const ckLine = ck ? `"capture_key":${JSON.stringify(ck)}` : null;
+  try { const r = chainAppend(path, event, ckLine ? { unless: (p) => readFileSync(p, "utf8").includes(ckLine) } : {}); if (r && r.written === false) return { written: false, reason: "duplicate", ledger: path }; }
   catch (e) { if (e.code === "ELEDGERLOCKED") return { written: false, reason: e.message, ledger: path, hint: "Another writer holds the ledger lock; nothing was written. Retry, or remove the lock file if its holder is gone." }; throw e; }
   // Echo the canonical stored event back. A shell-quoting accident once ate a
   // word from a note SILENTLY; the caller must be able to see what the ledger
@@ -1455,10 +1465,39 @@ async function cliObserve() {
   } catch { /* silent */ }
 }
 
+// The SessionStart payload, when the brief runs as a Claude Code hook (stdin a pipe, CLAUDE_PROJECT_DIR set): never read from a terminal
+// or outside a hook, so a manual `memory-pulse brief` never waits on stdin. Read to EOF asynchronously with a cap: a synchronous read
+// returned nothing when the payload came a few milliseconds after the start (re-review 2026-10-21).
+function hookStdin(timeoutMs = 1500) {
+  if (process.stdin.isTTY || !process.env.CLAUDE_PROJECT_DIR) return Promise.resolve(null);
+  return stdinCapped(timeoutMs);
+}
+// stdin to EOF, or whatever arrived within the cap, as JSON (null when empty or not JSON). Never blocks past the cap.
+function stdinCapped(timeoutMs = 1500) {
+  if (process.stdin.isTTY) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    let raw = "", done = false;
+    const finish = () => { if (done) return; done = true; clearTimeout(timer); process.stdin.removeAllListeners("data"); process.stdin.pause(); try { resolve(raw.trim() ? JSON.parse(raw) : null); } catch { resolve(null); } };
+    const timer = setTimeout(finish, timeoutMs);
+    process.stdin.setEncoding("utf8"); process.stdin.on("data", (c) => { raw += c; }); process.stdin.on("end", finish); process.stdin.on("error", finish);
+  });
+}
+
 async function cliBrief() {
-  const led = readEvents();
-  const { events } = led;
-  if (!events.length) return;
+  const led0 = readEvents();
+  if (!led0.events.length) return;
+  // withholding (lib/weights.mjs): a memory sitting out this session is left out of the brief too, or the sat-out arm would still have
+  // seen it at session start (review 2026-10-21). The same draw as the prompt hook; corrections never sit out.
+  const hookIn = await hookStdin(), session = typeof hookIn?.session_id === "string" && hookIn.session_id ? hookIn.session_id : null;
+  // the local render hides a sat-out row but still reads it (a hidden fix still closes its thread: re-review 2026-10-21); the engine is
+  // sent the rows without it
+  let hide = new Set();
+  if (session && captureInstalled()) {
+    const { withhold, holdoutRate } = await import("./lib/weights.mjs"); const rate = holdoutRate();
+    const eligible = (e) => e.kind !== "correction" && Array.isArray(e.tags) && e.tags.some((x) => x === "decision" || x === "state" || x === "fix");
+    if (rate > 0) hide = new Set(led0.events.filter((e) => eligible(e) && withhold(`${session}|${e.t}`, rate)).map((e) => e.t));
+  }
+  const led = led0, events = hide.size ? led0.events.filter((e) => !hide.has(e.t)) : led0.events;
   const bi = process.argv.indexOf("--budget");
   const budget = bi >= 0 ? Number(process.argv[bi + 1]) : (process.env.MEMORY_PULSE_BRIEF_BUDGET ? Number(process.env.MEMORY_PULSE_BRIEF_BUDGET) : undefined);
   if (budget !== undefined && !(Number.isFinite(budget) && budget >= 1)) { console.error("brief --budget takes a positive number of tokens"); process.exit(1); }
@@ -1468,7 +1507,7 @@ async function cliBrief() {
   const mode = process.env.MEMORY_PULSE_BRIEF;
   const engine = mode !== "scaffold" && !process.argv.includes("--scaffold") &&
     (mode === "engine" || process.argv.includes("--engine") || bi >= 0 || process.env.MEMORY_PULSE_BRIEF_BUDGET || process.env.MEMORY_PULSE_BRIEF_TIER || process.env.MEMORY_PULSE_KEY);
-  if (!engine) { const { text } = scaffoldFor(led); if (text) { process.stdout.write(text + "\n"); recordUsage("scaffold"); } return; }
+  if (!engine) { const { text } = scaffoldFor(led, { hide }); if (text) { process.stdout.write(text + "\n"); recordUsage("scaffold"); } return; }
   try {
     const out = await callApi("/v1/pulse", { events, ...(tier ? { tier } : {}), ...(budget ? { budget } : {}) });
     const head = [loadedLine(led, events, { keyStatus: out.keyStatus, tier: out.tier ?? tier, chars: out.text?.length, budget })];
@@ -1482,12 +1521,12 @@ async function cliBrief() {
     const sd = sealDriftLine(out); if (sd) tail.push(sd);
     const foot = telemetryFooter(out.telemetry);
     if (foot) tail.push(foot);
-    const forRoom = (room) => scaffoldFor(led, { withIdentity: false, budgets: { identity: 0, corrections: Math.floor(room * 0.6), state: Math.floor(room * 0.15), findings: Math.floor(room * 0.15), threads: Math.floor(room * 0.1) } }).text;
+    const forRoom = (room) => scaffoldFor(led, { hide, withIdentity: false, budgets: { identity: 0, corrections: Math.floor(room * 0.6), state: Math.floor(room * 0.15), findings: Math.floor(room * 0.15), threads: Math.floor(room * 0.1) } }).text;
     process.stdout.write(composeBrief({ head, text: out.text ?? "", tail }, forRoom) + "\n");
   } catch (e) {
     // A dead network must not break session start — and must not hand it nothing: the local scaffold, labelled as such.
     process.stdout.write(`memory-pulse: brief unavailable (${String(e?.message ?? e).split(".")[0]})\n`);
-    const { text } = scaffoldFor(led); if (text) process.stdout.write(text + "\n");
+    const { text } = scaffoldFor(led, { hide }); if (text) process.stdout.write(text + "\n");
   }
 }
 
@@ -1512,14 +1551,39 @@ async function cliScaffold() {
   if (text) { process.stdout.write(text + "\n"); recordUsage("scaffold"); }
 }
 
+// Is the capture hook installed where Claude Code would read it (user, project or local settings; MEMORY_PULSE_SETTINGS_DIR in tests)?
+function captureInstalled() {
+  const proj = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const files = [process.env.MEMORY_PULSE_SETTINGS_DIR && join(process.env.MEMORY_PULSE_SETTINGS_DIR, "settings.json"), join(process.env.HOME || "", ".claude", "settings.json"),
+                 join(proj, ".claude", "settings.json"), join(proj, ".claude", "settings.local.json")].filter(Boolean);
+  // a hook entry that can run, not any mention (a permission allow-list entry matched before), and not with every hook disabled
+  const isCapture = (c) => typeof c === "string" && /memory-pulse(?:@[\w.^~-]+)?"?\s+capture\b|server\.mjs"?\s+capture\b/.test(c);
+  let any = false;
+  for (const f of files) {
+    let j; try { j = JSON.parse(readFileSync(f, "utf8")); } catch { continue; }
+    if (j?.disableAllHooks === true) return false;
+    for (const ev of ["PostToolUse", "PostToolUseFailure"]) for (const m of Array.isArray(j?.hooks?.[ev]) ? j.hooks[ev] : []) for (const h of Array.isArray(m?.hooks) ? m.hooks : []) if (isCapture(h?.command)) any = true;
+  }
+  return any;
+}
+
 // UserPromptSubmit hook: inject the slice of the memory that bears on this prompt. Silent when nothing does; exit 0 always.
 async function cliPrompt() {
   try {
     let raw = ""; try { raw = readFileSync(0, "utf8"); } catch { /* no stdin */ }
     let hook = {}; try { hook = raw.trim() ? JSON.parse(raw) : {}; } catch { return; }
     if (typeof hook.prompt !== "string") return;
-    const slice = promptSlice(readEvents().events, hook.prompt, { blocks: readBlocks(), agentEvents: existsSync(agentPath()) ? readEvents({ scope: "agent" }).events : [] });
+    const events = readEvents().events, picked = [], held = [];
+    const { fold, holdoutRate } = await import("./lib/weights.mjs");
+    // exposure and withholding (2026-10-21) only when capture is installed: without it nothing would ever credit them (lib/weights.mjs)
+    const session = typeof hook.session_id === "string" && hook.session_id ? hook.session_id : null, learn = session && captureInstalled();
+    const slice = promptSlice(events, hook.prompt, { blocks: readBlocks(), agentEvents: existsSync(agentPath()) ? readEvents({ scope: "agent" }).events : [], weights: fold(inForce(events)), picked, withheld: held, holdout: learn ? holdoutRate() : 0, holdoutKey: String(session) });
     if (slice) { process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: slice } })); recordUsage("prompt_slice"); }
+    if (learn && (picked.length || held.length)) {
+      const { episodePath } = await import("./lib/capture.mjs"); const p = episodePath(ledgerPath(), session);
+      mkdirSync(dirname(p), { recursive: true });
+      chainAppend(p, { cause: "exposure", effect: "prompt", kind: "observation", tags: ["capture", "exposure"], obs: { op: "exposure", via: "prompt", ts: [...new Set(picked)], held: [...new Set(held)], at: new Date().toISOString() } });
+    }
   } catch { /* a hook must never block a prompt */ }
 }
 
@@ -1791,12 +1855,18 @@ async function cliGuard() {
     console.log(r.written ? `override recorded at t${r.t}: "${term}"${path ? ` under ${path}` : " (any path)"} — counted as a false block in your report` : `not recorded: ${r.reason}`);
     process.exit(r.written ? 0 : 1);
   }
+  // Cursor (2026-10-21) blocks a preToolUse call whose hook prints no JSON or invalid JSON, so on Cursor every path answers
+  // {"permission": ...}; the payload is mapped onto Claude Code's shape first (lib/hosts.mjs).
+  const host = hostOf(process.argv), cursor = host === "cursor";
   let raw = "";
   for await (const chunk of process.stdin) raw += chunk;
-  let payload; try { payload = JSON.parse(raw); } catch {
+  // a JSON value that is not an object (null, [], 42) is not a hook call either; null used to throw past this and print nothing, which a
+  // fail-closed Cursor hook reads as a deny (review 2026-10-21)
+  let payload; try { const j = JSON.parse(raw); if (!j || typeof j !== "object" || Array.isArray(j)) throw new Error("not an object"); payload = normalizeHook(host, j); } catch {
     // Not a hook call: allow. Say so under --verbose, because a miswired hook (or a shell that mangled the
     // JSON) is otherwise indistinguishable from "no evidence" (fresh-user run, 2026-09-09).
     if (process.argv.includes("--verbose")) process.stderr.write("memory-pulse guard: stdin was not hook JSON, allowing\n");
+    if (cursor) process.stdout.write(JSON.stringify({ permission: "allow" }));
     return;
   }
   // Claude Code sends one file per Edit/Write; Codex sends one apply_patch
@@ -1827,6 +1897,7 @@ async function cliGuard() {
   recordUsage("guard_check");
   if (!blocked.length) {
     if (warnings.size) process.stderr.write([...warnings].join("\n") + "\n");
+    if (cursor) { process.stdout.write(JSON.stringify({ permission: "allow" })); return; }
     // Allowed: add the memory that bears on this file as context. Never a permissionDecision — "allow" would skip the
     // user's permission prompt (docs/HOST_FACTS.md); the guard only blocks or informs.
     try {
@@ -1871,6 +1942,11 @@ async function cliGuard() {
     : sealStale
       ? `Your rows verify (chain OK) but the engine's last seal no longer matches them: either something rewrote the ledger and re-chained it, or the engine sealed a different view. \`memory-pulse verify --json\` shows both sides. If you trust the file as it stands: \`${envPrefix}memory-pulse seal accept "<why>"\` records that decision as a ledger row and sets the old seal aside; the next engine call issues a fresh one.`
       : 'Use the corrected value (mentioning both old and new in a comparison is fine), record a new correction if the old one is wrong, or `memory-pulse guard allow "<term>" --path <prefix> "<reason>"` if this is a false block.';
+  if (cursor) {
+    const plain = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+    process.stdout.write(JSON.stringify({ permission: "deny", user_message: `memory-pulse guard: blocked.\n${plain}`, agent_message: `memory-pulse guard blocked this edit.\n${plain}\n${hint}` }));
+    process.exit(0);
+  }
   process.stderr.write(`${C.red(C.bold("memory-pulse guard: blocked."))}\n${lines.join("\n")}\n${C.dim(hint)}\n`);
   process.exit(2);
 }
@@ -2006,7 +2082,37 @@ async function cliBench() {
 
 // `npx memory-pulse install-hook` — make re-entry automatic: a Claude Code
 // SessionStart hook that runs the brief. Idempotent; merges, never clobbers.
+// `install-hook --cursor` (2026-10-21): Cursor's own hooks.json (version 1; cursor.com/docs/agent/hooks, read 2026-10-21). The guard
+// runs on preToolUse with failClosed, so a crashed or timed-out guard blocks instead of letting the edit through.
+function installCursorHooks() {
+  const project = process.argv.includes("--project");
+  const dir = process.env.MEMORY_PULSE_SETTINGS_DIR || (project ? join(process.cwd(), ".cursor") : join(process.env.HOME || "", ".cursor"));
+  const file = join(dir, "hooks.json");
+  let cfg = { version: 1, hooks: {} };
+  if (existsSync(file)) { try { cfg = JSON.parse(readFileSync(file, "utf8")); } catch { console.error(`refusing to touch ${file}: it is not valid JSON`); process.exit(1); } }
+  cfg.version = cfg.version ?? 1; cfg.hooks = cfg.hooks || {};
+  const want = [
+    ["sessionStart", { command: "npx -y memory-pulse brief --host cursor" }],
+    ["preToolUse", { command: "npx -y memory-pulse guard --host cursor", matcher: "Write|Shell", failClosed: true, timeout: 30 }],
+    ...(process.argv.includes("--no-capture") ? [] : [
+      ["postToolUse", { command: "npx -y memory-pulse capture --host cursor" }],
+      ["postToolUseFailure", { command: "npx -y memory-pulse capture --host cursor" }],
+      ["stop", { command: "npx -y memory-pulse consolidate --host cursor" }],
+      ["sessionEnd", { command: "npx -y memory-pulse consolidate --final --host cursor", timeout: 10 }],
+    ]),
+  ];
+  let changed = 0;
+  for (const [ev, h] of want) { const list = (cfg.hooks[ev] = cfg.hooks[ev] || []); if (!list.some((x) => x.command === h.command)) { list.push(h); changed++; } }
+  if (!changed) { console.log("hooks already installed — nothing to do"); return; }
+  mkdirSync(dir, { recursive: true }); writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n");
+  console.log(`installed ${changed} hook(s) in ${file}`);
+  console.log("sessionStart: each Cursor session starts with the ledger's brief.");
+  console.log("preToolUse (Write/Shell): an edit that writes back a withdrawn value is denied and explained; failClosed, so a broken guard blocks rather than passes.");
+  if (!process.argv.includes("--no-capture")) console.log("postToolUse / stop / sessionEnd: what the agent did is captured locally and becomes fixes and open threads with their evidence.");
+}
+
 async function cliInstallHook() {
+  if (process.argv.includes("--cursor")) return installCursorHooks();
   // --project writes to <repo>/.claude/settings.json so the hooks TRAVEL WITH
   // THE REPO: a teammate who clones is guarded without installing anything.
   // (Adversarial review, 2026-08-31: a user-scope hook does not spread.)
@@ -2040,6 +2146,16 @@ async function cliInstallHook() {
   const HANDOFF = "npx -y memory-pulse handoff";
   const pc = (settings.hooks.PreCompact = settings.hooks.PreCompact || []);
   if (!JSON.stringify(pc).includes(HANDOFF)) { pc.push({ hooks: [{ type: "command", command: HANDOFF }] }); changed++; }
+  // automatic capture (2026-10-21): after every tool call (success and failure), async so no tool call waits; consolidation at the
+  // end of each turn (async) and of the session (with a timeout above SessionEnd's 1.5 s default). Claude Code only for now.
+  if (!codex && !process.argv.includes("--no-capture")) {
+    const CAPTURE = "npx -y memory-pulse capture", CONSOLIDATE = "npx -y memory-pulse consolidate", FINAL = "npx -y memory-pulse consolidate --final";
+    for (const ev of ["PostToolUse", "PostToolUseFailure"]) { const list = (settings.hooks[ev] = settings.hooks[ev] || []); if (!JSON.stringify(list).includes(CAPTURE)) { list.push({ hooks: [{ type: "command", command: CAPTURE, async: true }] }); changed++; } }
+    const stop = (settings.hooks.Stop = settings.hooks.Stop || []);
+    if (!stop.some((h) => (h.hooks ?? []).some((x) => x.command === CONSOLIDATE))) { stop.push({ hooks: [{ type: "command", command: CONSOLIDATE, async: true }] }); changed++; }
+    const end = (settings.hooks.SessionEnd = settings.hooks.SessionEnd || []);
+    if (!JSON.stringify(end).includes(FINAL)) { end.push({ hooks: [{ type: "command", command: FINAL, timeout: 10 }] }); changed++; }
+  }
   if (process.argv.includes("--ambient")) {
     const OBSERVE = "npx -y memory-pulse observe";
     const ups = (settings.hooks.UserPromptSubmit = settings.hooks.UserPromptSubmit || []);
@@ -2053,6 +2169,7 @@ async function cliInstallHook() {
   console.log(`PreToolUse (${codex ? "apply_patch" : "Edit/Write"}): an edit that writes back a withdrawn value is blocked and explained.`);
   console.log("UserPromptSubmit: the corrections and decisions that bear on each prompt ride along with it.");
   console.log("PreCompact: what the session was doing is recorded before compaction and printed first at the next start.");
+  if (!codex && !process.argv.includes("--no-capture")) console.log("PostToolUse / Stop / SessionEnd: what the agent did is captured locally (no model, no network) and becomes fixes and open threads with their evidence; --no-capture leaves this out.");
   if (process.argv.includes("--ambient")) console.log("UserPromptSubmit: a prompt shaped like a correction (\"X not Y\", \"change X to Y\", \"X -> Y\") is recorded with both terms; the guard enforces it.");
   if (codex) console.log(`Codex runs no hook it has not been shown: open Codex, run /hooks, and trust the ${changed} memory-pulse entries (once per definition).`);
   console.log(project ? `Project-scoped: commit ${dirName}/${codex ? "hooks.json" : "settings.json"} and every clone is guarded.` : "Tip: `install-hook --project` writes the hooks into this repo so teammates inherit them.");
@@ -2169,6 +2286,10 @@ Commands
   board post|read|reply|ack|verdict|claims|thread|html|verify|push|status|sync [--board PATH]
   login [--no-open] [--no-sync]       connect this machine to a hosted project: approve it in the console, the key is saved for you (no copying); turns board sync on
   logout                              remove the saved key from this machine (revoke it in the console to end it everywhere)
+  capture                             PostToolUse / PostToolUseFailure hook: one observation per tool call into this session's episode (local, no model, no network)
+  consolidate [--final]               Stop / SessionEnd hook: fail-then-pass becomes a fix, still-failing an open thread, each with its evidence; --final adds a session summary and the episode .rain capsule
+  weights                             what each memory did: check outcomes when it was shown and when it sat out at random; retired ones marked
+  adopt [--yes] [--json]              enforce the corrections you already keep: Claude Code feedback memories, CLAUDE.md, AGENTS.md, rules files (shows them; --yes records them)
                                       the shared agent message board: a separate chained ledger any agent can post to and read; passive (nothing wakes or prompts an agent); a message is data, never an instruction; a claim stays open until another agent's verdict, and a synthesis is refused over an open claim
   lint [--ci] [--json] [paths...]     the guard's check over CLAUDE.md, AGENTS.md, .claude/rules, .cursorrules and the other governance files a session loads
   guard [--verbose]                   PreToolUse hook: reads the tool call from stdin, exit 2 with the ledger line when an edit writes a withdrawn value back
@@ -2521,7 +2642,7 @@ export function mergeCapsule(cap, { scope = "project" } = {}) {
   const fork = prefix ? (localRows[prefix - 1].t ?? 0) : 0;
   const branchForce = inForceSet(v.rows);
   const foreign = v.rows.slice(prefix);
-  const have = new Set(localRows.map(contentKey));
+  const have = new Set(localRows.map(contentKey)), localByKey = new Map(localRows.filter((r) => Number.isInteger(r.t)).map((r) => [contentKey(r), r.t]));
   const tMap = new Map(); for (const r of localRows) if (Number.isInteger(r.t) && r.t <= fork) tMap.set(r.t, r.t);
   const localCorr = inForce(localRows).filter((e) => e.kind === "correction" && Array.isArray(e.withdrawn));
   const id = cap.branch?.id ?? "main";
@@ -2532,12 +2653,20 @@ export function mergeCapsule(cap, { scope = "project" } = {}) {
     if (isRollback(r) || (Array.isArray(r.tags) && r.tags.some((t) => STATE_TAGS.includes(t)))) { atSource.push(fromT); continue; }
     if (Number.isInteger(fromT) && !branchForce.has(fromT)) { atSource.push(fromT); continue; }
     const key = contentKey(r);
-    if (have.has(key)) { skipped.push(fromT); continue; }
+    if (have.has(key)) { skipped.push(fromT); if (Number.isInteger(fromT) && localByKey.has(key)) tMap.set(fromT, localByKey.get(key)); continue; }
     if (instructionLike(r.note).length) { held.push(fromT); continue; }
     const row = { ...r }; delete row.hash; delete row.prev; delete row.gap_digest; delete row.legacy_digest;
     row.t = next++;
     row.origin = { branch: id, t: fromT ?? null, capsule: short(cap.digest) };
     if (Array.isArray(row.supersedes)) { const m = row.supersedes.map((t) => tMap.get(t)).filter((t) => Number.isInteger(t)); if (m.length) row.supersedes = m; else delete row.supersedes; }
+    if (Array.isArray(row.resolves)) { const m = row.resolves.map((t) => tMap.get(t)).filter((t) => Number.isInteger(t)); if (m.length) row.resolves = m; else delete row.resolves; }
+    // credit follows the memory it was earned by (review 2026-10-21: renumbered rows kept their credit keys, so Bob's credit retired an
+    // unrelated decision of Alice's); credit for a memory this merge does not carry is dropped, and a credit row left empty is not carried
+    if (row.credit && typeof row.credit === "object" && !Array.isArray(row.credit)) {
+      const c = {}; for (const [k, v] of Object.entries(row.credit)) { const to = tMap.get(Number(k)); if (Number.isInteger(to)) c[to] = v; }
+      if (!Object.keys(c).length) { skipped.push(fromT); continue; }
+      row.credit = c;
+    }
     if (r.kind === "correction" && Array.isArray(row.withdrawn)) for (const term of row.withdrawn) { const lc = localCorr.find((c) => c.withdrawn.includes(term) && canonicalJson(c.replacement ?? []) !== canonicalJson(row.replacement ?? [])); if (lc) conflicts.push({ term, local: lc.t, merged: row.t }); }
     chainAppend(ledger, row); carried.push(row.t); have.add(key); if (Number.isInteger(fromT)) tMap.set(fromT, row.t);
   }
@@ -2681,6 +2810,15 @@ if (isMain) {
   const sub = process.argv[2];
   if (sub === "help" || sub === "--help" || sub === "-h" || process.argv.slice(2).some((a) => a === "--help" || a === "-h")) { cliHelp(); process.exit(0); }
   if (sub === "remember") { await cliRemember(); process.exit(0); }
+  if (sub === "brief" && hostOf(process.argv) === "cursor") {
+    // Cursor's sessionStart takes JSON: the brief rides in additional_context (cursor.com/docs/agent/hooks, read 2026-10-21)
+    await stdinCapped(1500);   // the payload carries nothing the brief needs; read with a cap so an open pipe never blocks (final pass)
+    let text = ""; const w = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (c, ...a) => { text += String(c); return true; };
+    try { await cliBrief(); } catch { /* an empty brief */ } finally { process.stdout.write = w; }
+    process.stdout.write(JSON.stringify(text.trim() ? { additional_context: text.trim().slice(0, 20000) } : {}));
+    process.exit(0);
+  }
   if (sub === "brief") { await cliBrief(); await sendUsageQuietly(); process.exit(0); }
   if (sub === "telemetry") { await cliTelemetry(); process.exit(0); }
   if (sub === "scaffold") { await cliScaffold(); process.exit(0); }
@@ -2701,6 +2839,19 @@ if (isMain) {
   if (sub === "seal") { await cliSeal(); process.exit(0); }
   if (sub === "state") { await cliState(); process.exit(0); }
   if (sub === "login") { globalThis.__MEMORY_PULSE_CORE__ = { chainAppend, verifyChain, instructionLike, readEvents, buildCapsule, API, KEY }; const { cliLogin } = await import("./lib/login.mjs"); process.exit(await cliLogin(process.argv.slice(3), { api: API, version: PKG_VERSION })); }
+  if (sub === "capture") { const { cliCapture } = await import("./lib/capture.mjs"); const host = hostOf(process.argv); process.exit(cliCapture({ ledgerPath, chainAppend, instructionLike, normalize: (h) => normalizeHook(host, h) })); }
+  if (sub === "consolidate") { const { cliConsolidate } = await import("./lib/capture.mjs"); const host = hostOf(process.argv); process.exit(cliConsolidate(process.argv.slice(3), { ledgerPath, readEvents, appendEvent, buildCapsule, instructionLike, normalize: (h) => normalizeHook(host, h) })); }
+  if (sub === "weights") {
+    const { fold, utility, retired } = await import("./lib/weights.mjs"); const events = readEvents().events, w = fold(inForce(events)), byT = new Map(events.map((e) => [e.t, e]));
+    const list = [...w].map(([t, c]) => ({ t, c, u: utility(c), e: byT.get(t) })).sort((a, b) => b.u.effect - a.u.effect || b.u.n - a.u.n || b.u.mean - a.u.mean);
+    if (!list.length) { console.log("no weights yet: they come from check outcomes after a memory was injected (capture must be on)"); process.exit(0); }
+    console.log("memory weights: shown = the next check after the memory was in the prompt (helped = it passed, not = it failed); withheld = the same when it was left out at random. Effect = the difference, counted once it has been withheld:");
+    const sign = (x) => `${x >= 0 ? "+" : ""}${x.toFixed(2)}`;
+    // the measured effect with its 95% interval; ranking uses it shrunk by how often the memory sat out, and only past the floor
+    for (const { t, c, u, e } of list) console.log(`  t${t}  shown: ${c.s} helped, ${c.f} not · withheld: ${c.s0} passed, ${c.f0} failed · ${u.n0 ? `effect ${sign(u.raw)} [${sign(u.effectLb)}, ${sign(u.effectUb)}]${u.n >= 6 && u.n0 >= 6 ? `, ranks at ${sign(u.effect)}` : ", not ranked yet"}` : "effect: not withheld yet"}${retired(e ?? {}, c) ? "  RETIRED" : ""}  ${e ? `${e.cause} -> ${e.effect}`.slice(0, 110) : "(row not on this ledger)"}`);
+    process.exit(0);
+  }
+  if (sub === "adopt") { const { cliAdopt } = await import("./lib/adopt.mjs"); process.exit(cliAdopt(process.argv.slice(3), { readEvents, inForce, appendEvent, detectCorrection, detectProhibition, instructionLike })); }
   if (sub === "logout") { const { cliLogout } = await import("./lib/login.mjs"); process.exit(cliLogout()); }
   if (sub === "board") { globalThis.__MEMORY_PULSE_CORE__ = { chainAppend, verifyChain, instructionLike, readEvents, buildCapsule, API, KEY }; const { cliBoard } = await import("./lib/board.mjs"); process.exit(await cliBoard(process.argv.slice(3))); }
   if (sub === "lint") { await cliLint(); process.exit(0); }
