@@ -45,6 +45,7 @@ import { recordUsage, consentState, setConsent, hasConsentAnswer, resetInstall, 
 import { lessonBank as lessonBankWith, screenLesson, bankSummary, bankLabel, lessonHead, isLesson, lessonKey, PROBE_EFFECT } from "./lib/lessons.mjs";
 import { savedKey } from "./lib/login.mjs";
 import { hostOf, normalizeHook } from "./lib/hosts.mjs";
+import { SOUL_WRITE, RESERVED, soulState, soulLines, soulGuard, cliSoul, cliUser, setSection, chainedOnly, heldFromMerge, taintOf } from "./lib/soul.mjs";
 
 const API = (process.env.MEMORY_PULSE_API ?? "https://pulse.strategic-innovations.ai").replace(/\/$/, "");
 const KEY = process.env.MEMORY_PULSE_KEY || savedKey() || null;        // env first, then the key `memory-pulse login` saved
@@ -396,9 +397,15 @@ export function verifyLocalSeal(events = readEvents().events, seal = readSeal(),
 
 // Fields a row may carry beyond the finding itself. `rollback_to` marks a rollback row (state rollback); `origin` names
 // the branch and row a merged row came from; `state` records which capsule an import or a merge came from.
-const ROW_FIELDS = ["rollback_to", "origin", "state", "where", "probe", "bank", "capture_key", "evidence", "credit", "resolves"];
+const ROW_FIELDS = ["rollback_to", "origin", "state", "where", "probe", "bank", "capture_key", "evidence", "credit", "resolves", "proposal", "decides", "journal", "export", "provenance"];
 
-export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn, replacement, supersedes, override, scope, fields }) {
+export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn, replacement, supersedes, override, scope, fields, owner }) {
+  // soul mode (lib/soul.mjs): the soul, the user notes, decisions on held changes, the export record and the journal are written through
+  // the soul commands and the session-end hook, which hold SOUL_WRITE (a Symbol: remember and the MCP tool pass JSON, which cannot carry
+  // one), so every change is screened, checked for outside content in its session, and kept with where it came from; in soul mode the
+  // identity goes the same way
+  if (Array.isArray(tags) && owner !== SOUL_WRITE && tags.some((t) => RESERVED.includes(t) || (t === "identity" && scope === "agent" && currentMode() === "soul")))
+    return { written: false, reason: "the soul, the user notes, the identity and the journal are written through memory-pulse soul, memory-pulse user and memory-pulse identity, so each change is screened and kept with where it came from", hint: 'memory-pulse soul "<text>" (or user / identity)' };
   // Instruction-like notes are refused at the write. The engine quarantines
   // them at read time too (and reports it), but a note that would be rendered
   // into every future session as an instruction should never reach the ledger.
@@ -874,7 +881,8 @@ const tagged = (events, tag) => events.filter((e) => Array.isArray(e.tags) && e.
 const HELD = "[held back: note reads like an instruction]";
 const shown = (e) => (instructionLike(e?.note).length ? HELD : (e?.note ?? e?.effect));
 export function identityBlock(led) {
-  const events = inForce(led?.events ?? []); if (!events.length) return "";
+  const soulOn = currentMode() === "soul", c = soulOn ? chainedOnly(led?.events ?? []) : { rows: led?.events ?? [], unchained: [] };
+  const events = inForce(c.rows); if (!events.length) return "";
   const self = tagged(events, "identity").filter((e) => e.pinned).slice(-1)[0] ?? tagged(events, "identity").slice(-1)[0];
   // the brief must arrive whatever a row says: a lesson bank that throws costs the lesson lines, never the block (review 3)
   const rules = tagged(events, "rule"), prefs = tagged(events, "preference");
@@ -884,6 +892,7 @@ export function identityBlock(led) {
   const name = self ? String(shown(self)).split(/[;.\n]/)[0].trim() : "unnamed agent";
   const lines = [`AGENT IDENTITY — ${name} (agent ledger: ${events.length} rows, head ${chain.head ? chain.head.slice(0, 12) : "none"}${chain.ok ? "" : ", CHAIN BROKEN"}, seal ${seal?.digest ? seal.digest.slice(0, 12) : "not yet"})`];
   if (self) lines.push(`  self: ${shown(self)}`);
+  if (soulOn) { let digest = null; try { digest = createHash("sha256").update(readFileSync(led.path)).digest("hex"); } catch { digest = null; } lines.push(...soulLines(soulState(events), { instructionLike, held: HELD, digest, unchained: c.unchained })); }
   lines.push(`  fingerprint: chain head ${chain.head ?? "none"}${seal?.issued ? ` · sealed ${seal.issued}` : ""} — the same memory as last session iff these match`);
   if (rules.length) { lines.push(`  standing rules (${rules.length}):`); for (const r of rules) lines.push(`    rule: ${shown(r)} (t${r.t})`); }
   if (prefs.length) { lines.push(`  preferences (${prefs.length}):`); for (const p of prefs) lines.push(`    preference: ${shown(p)} (t${p.t})`); }
@@ -1054,10 +1063,12 @@ export function guardVerdict(action, { events, invariants = [], health = null } 
 const modeConfigPath = () => join(dirname(agentPath()), "config.json");
 export function currentMode() {
   if (process.env.MEMORY_PULSE_MODE) return process.env.MEMORY_PULSE_MODE;
-  try { return JSON.parse(readFileSync(modeConfigPath(), "utf8")).mode === "agent" ? "agent" : "deliberate"; } catch { return "deliberate"; }
+  try { const m = JSON.parse(readFileSync(modeConfigPath(), "utf8")).mode; return m === "agent" || m === "soul" ? m : "deliberate"; } catch { return "deliberate"; }
 }
+// agent and soul mode both keep the agent ledger and print the identity block; soul mode adds the soul, the user, the journal (lib/soul.mjs)
+export const agentLike = (m = currentMode()) => m === "agent" || m === "soul";
 export function setMode(mode) {
-  if (!["agent", "deliberate"].includes(mode)) throw new Error("mode must be agent or deliberate");
+  if (!["agent", "soul", "deliberate"].includes(mode)) throw new Error("mode must be agent, soul or deliberate");
   const home = process.env.MEMORY_PULSE_SETTINGS_DIR || join(process.env.HOME || "", ".claude");
   const file = join(home, "settings.json");
   let settings = {}; if (existsSync(file)) { try { settings = JSON.parse(readFileSync(file, "utf8")); } catch { throw new Error(`refusing to touch ${file}: it is not valid JSON`); } }
@@ -1067,26 +1078,46 @@ export function setMode(mode) {
   for (const [event, cmd] of Object.entries(wanted)) {
     const arr = (settings.hooks[event] = settings.hooks[event] || []);
     const has = JSON.stringify(arr).includes(cmd);
-    if (mode === "agent" && !has) { arr.push({ hooks: [{ type: "command", command: cmd }] }); installed++; }
+    if (agentLike(mode) && !has) { arr.push({ hooks: [{ type: "command", command: cmd }] }); installed++; }
     if (mode === "deliberate" && has) { settings.hooks[event] = arr.filter((h) => !JSON.stringify(h).includes(cmd)); removed++; }
   }
   mkdirSync(home, { recursive: true }); writeFileSync(file, JSON.stringify(settings, null, 2) + "\n");
   mkdirSync(dirname(modeConfigPath()), { recursive: true }); writeFileSync(modeConfigPath(), JSON.stringify({ mode }, null, 2) + "\n");
-  if (mode === "agent" && !existsSync(agentPath())) writeFileSync(agentPath(), "");
+  if (agentLike(mode) && !existsSync(agentPath())) { mkdirSync(dirname(agentPath()), { recursive: true }); writeFileSync(agentPath(), ""); }
   return { mode, installed, removed, settings: file };
 }
 async function cliMode() {
   const want = process.argv[3];
-  if (!want) { const m = currentMode(); console.log(`mode: ${m}${m === "agent" ? ` — agent ledger ${agentPath()}` : " (default) — run \`memory-pulse mode agent\` for a persistent agent identity that grows across every chat"}`); return; }
-  if (!["agent", "deliberate"].includes(want)) { console.error(`mode must be agent or deliberate (got "${want}")`); process.exit(1); }
+  if (!want) { const m = currentMode(); console.log(`mode: ${m}${agentLike(m) ? ` — agent ledger ${agentPath()}` : " (default) — run \`memory-pulse mode agent\` for a persistent agent identity that grows across every chat, or \`memory-pulse mode soul\` to give it a soul as well"}`); return; }
+  if (!["agent", "soul", "deliberate"].includes(want)) { console.error(`mode must be agent, soul or deliberate (got "${want}")`); process.exit(1); }
   let r; try { r = setMode(want); } catch (e) { console.error(String(e?.message ?? e)); process.exit(1); }
   console.log(`mode: ${r.mode} — ${r.installed} hook(s) installed, ${r.removed} removed in ${r.settings}`);
+  if (want === "soul") {
+    // soul mode leans on two hooks it does not install itself: the guard (raw edits of the agent ledger) and capture (which sessions read
+    // outside content, so a soul change from one is held)
+    if (!hookInstalled(/memory-pulse(?:@[\w.^~-]+)?"?\s+guard\b|server\.mjs"?\s+guard\b/, ["PreToolUse"])) console.log("warning: no guard hook found (npx memory-pulse install-hook, or the plugin): without it raw edits of the agent ledger are not blocked");
+    if (!captureInstalled()) console.log("warning: no capture hook found (npx memory-pulse install-hook, or the plugin): without it a session's outside content is not seen, so no soul change is ever held");
+    console.log(`agent ledger: ${agentPath()}`); console.log('Give the agent its soul once, from a terminal: memory-pulse soul "<persona, voice, values>", memory-pulse user "<who you are>", memory-pulse identity "<name>, <role>". Every brief, in every tool, then starts with them and a fingerprint; the agent can propose changes, only you approve them. Already on OpenClaw? memory-pulse soul import --openclaw'); }
   if (want === "agent") { console.log(`agent ledger: ${agentPath()}`); console.log("Set the agent's self once: memory-pulse identity \"<name>, <role>; <stance>\" — then every brief, in every tool, starts with who the agent is, what it has learned, and a fingerprint of which memory it is running on."); }
 }
+// What lib/soul.mjs needs from the server. episode(): capture's record of this session (Claude Code gives every command
+// CLAUDE_CODE_SESSION_ID), which is how a soul change knows whether its session read outside content.
+function soulCore() {
+  const session = process.env.CLAUDE_CODE_SESSION_ID || null;
+  const episode = () => {
+    if (!session) return [];
+    try { const p = join(dirname(ledgerPath()), "episodes", `${String(session).replace(/[^\w.-]/g, "_").slice(0, 80)}.jsonl`); return existsSync(p) ? readFileSync(p, "utf8").split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean) : []; } catch { return []; }
+  };
+  const block = () => { const prev = process.env.MEMORY_PULSE_MODE; process.env.MEMORY_PULSE_MODE = "soul"; try { return existsSync(agentPath()) ? identityBlock(readEvents({ scope: "agent" })) : ""; } finally { if (prev === undefined) delete process.env.MEMORY_PULSE_MODE; else process.env.MEMORY_PULSE_MODE = prev; } };
+  return { appendEvent, agentEvents: () => (existsSync(agentPath()) ? readEvents({ scope: "agent" }).events : []), inForce, instructionLike, slug, soulMode: () => currentMode() === "soul", session: () => session, episode, identityBlock: block, agentDir: dirname(agentPath()) };
+}
+
 async function cliIdentity() {
   const note = process.argv.slice(3).filter((a) => !a.startsWith("--")).join(" ").trim();
   if (!note) { console.error('usage: memory-pulse identity "<name>, <role>; <stance>"'); process.exit(1); }
-  const r = appendEvent({ cause: "identity-set", effect: slug(note.split(/[;,]/)[0]), note, tags: ["identity"], pinned: true, scope: "agent" });
+  // soul mode: the identity is written like the soul (screened, held if the session read outside content, kept with its provenance)
+  if (currentMode() === "soul") process.exit(setSection(soulCore(), "identity", note));
+  const r = appendEvent({ cause: "identity-set", effect: slug(note.split(/[;,]/)[0]), note, tags: ["identity"], pinned: true, scope: "agent", owner: SOUL_WRITE });
   console.log(r.written ? `identity recorded on the agent ledger (t=${r.t}) — pinned; supersede it by recording a new one` : `identity not recorded (${r.reason})`);
 }
 
@@ -1202,7 +1233,15 @@ function scaffoldFor(led, opts = {}) {
   try {
     const agentEvents = existsSync(agentPath()) ? readEvents({ scope: "agent" }).events : [];
     const chain = verifyChain(led.path);
-    return renderScaffold(led.events, { agentEvents, withIdentity: currentMode() === "agent", blocks: readBlocks(), chain: chain.ok ? null : chain, ...opts });
+    // soul mode (lib/soul.mjs): only rows written through memory-pulse count; the fingerprint is the sha256 of the agent ledger's bytes
+    let agentRows = agentEvents, soul = [];
+    if (currentMode() === "soul" && agentEvents.length) {
+      const c = chainedOnly(agentEvents); agentRows = c.rows;
+      let digest = null; try { digest = createHash("sha256").update(readFileSync(agentPath())).digest("hex"); } catch { digest = null; }
+      soul = soulLines(soulState(inForce(agentRows)), { instructionLike, held: HELD, digest, unchained: c.unchained });
+    }
+    const budgets = soul.length && !opts.budgets ? { ...DEFAULT_BUDGETS, identity: 3200 } : undefined;
+    return renderScaffold(led.events, { agentEvents: agentRows, withIdentity: agentLike(), soulLines: soul, blocks: readBlocks(), chain: chain.ok ? null : chain, ...(budgets ? { budgets } : {}), ...opts });
   } catch (e) {
     return { text: `memory-pulse: the local memory could not be rendered (${String(e?.message ?? e).split("\n")[0]}); run memory-pulse verify`, sections: [] };
   }
@@ -1210,7 +1249,7 @@ function scaffoldFor(led, opts = {}) {
 export function offlineBrief(led, allEvents, { now = Date.now(), recent = 8 } = {}) {
   const events = inForce(allEvents); const rolledBack = allEvents.length - events.length;
   const lines = [`memory-pulse: engine unreachable — local render from ${events.length} events (corrections and recency only; no salience ranking)${rolledBack ? ` · ${rolledBack} row(s) rolled back, kept on record` : ""}`];
-  if (currentMode() === "agent" && existsSync(agentPath())) { const ib = identityBlock(readEvents({ scope: "agent" })); if (ib) lines.push(ib); }
+  if (agentLike() && existsSync(agentPath())) { const ib = identityBlock(readEvents({ scope: "agent" })); if (ib) lines.push(ib); }
   const hl = handoffLine(events, { now }); if (hl) lines.push(hl);
   const retired = supersededSet(events);
   const corr = events.filter((e) => e.kind === "correction" && !retired.has(e.t)).reverse().slice(0, 20);
@@ -1485,7 +1524,8 @@ function stdinCapped(timeoutMs = 1500) {
 
 async function cliBrief() {
   const led0 = readEvents();
-  if (!led0.events.length) return;
+  // silent in a project with no ledger, unless soul mode carries the agent's soul there (agent mode stays silent, as before)
+  if (!led0.events.length && !(currentMode() === "soul" && existsSync(agentPath()) && readEvents({ scope: "agent" }).events.length)) return;
   // withholding (lib/weights.mjs): a memory sitting out this session is left out of the brief too, or the sat-out arm would still have
   // seen it at session start (review 2026-10-21). The same draw as the prompt hook; corrections never sit out.
   const hookIn = await hookStdin(), session = typeof hookIn?.session_id === "string" && hookIn.session_id ? hookIn.session_id : null;
@@ -1511,7 +1551,7 @@ async function cliBrief() {
   try {
     const out = await callApi("/v1/pulse", { events, ...(tier ? { tier } : {}), ...(budget ? { budget } : {}) });
     const head = [loadedLine(led, events, { keyStatus: out.keyStatus, tier: out.tier ?? tier, chars: out.text?.length, budget })];
-    if (currentMode() === "agent" && existsSync(agentPath())) { const ib = identityBlock(readEvents({ scope: "agent" })); if (ib) head.push(ib); }
+    if (agentLike() && existsSync(agentPath())) { const ib = identityBlock(readEvents({ scope: "agent" })); if (ib) head.push(ib); }
     const hl = handoffLine(events); if (hl) head.push(hl);
     const tail = [];
     const risk = atRiskLines(events); if (risk) tail.push(risk);
@@ -1549,6 +1589,15 @@ async function cliScaffold() {
   const budgets = all ? Object.fromEntries(SECTIONS.map((x) => [x, Infinity])) : undefined;
   const { text } = scaffoldFor(readEvents(), { only, ...(budgets ? { budgets } : {}) });
   if (text) { process.stdout.write(text + "\n"); recordUsage("scaffold"); }
+}
+
+// Is a hook whose command matches `re` installed under one of `events`, where Claude Code would read it (user, project, local settings)?
+function hookInstalled(re, events) {
+  const proj = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const files = [process.env.MEMORY_PULSE_SETTINGS_DIR && join(process.env.MEMORY_PULSE_SETTINGS_DIR, "settings.json"), join(process.env.HOME || "", ".claude", "settings.json"),
+                 join(proj, ".claude", "settings.json"), join(proj, ".claude", "settings.local.json")].filter(Boolean);
+  return files.some((f) => { let j; try { j = JSON.parse(readFileSync(f, "utf8")); } catch { return false; }
+    return events.some((ev) => (Array.isArray(j?.hooks?.[ev]) ? j.hooks[ev] : []).some((m) => (Array.isArray(m?.hooks) ? m.hooks : []).some((h) => typeof h?.command === "string" && re.test(h.command)))); });
 }
 
 // Is the capture hook installed where Claude Code would read it (user, project or local settings; MEMORY_PULSE_SETTINGS_DIR in tests)?
@@ -1877,6 +1926,16 @@ async function cliGuard() {
     if (process.argv.includes("--verbose")) process.stderr.write("memory-pulse guard: stdin was not hook JSON, allowing\n");
     if (cursor) process.stdout.write(JSON.stringify({ permission: "allow" }));
     return;
+  }
+  // soul mode (lib/soul.mjs): the agent writes its soul through memory-pulse; a raw edit of the agent ledger file is blocked so every
+  // entry stays chained
+  if (currentMode() === "soul") {
+    let why = null;
+    try { why = soulGuard(payload, { agentDir: dirname(agentPath()) }); } catch { why = null; }
+    if (why) {
+      if (cursor) { process.stdout.write(JSON.stringify({ permission: "deny", user_message: `memory-pulse guard: blocked. ${why}`, agent_message: `memory-pulse guard blocked this: ${why}` })); return; }
+      process.stderr.write(`memory-pulse guard: blocked (soul mode). ${why}\n`); process.exit(2);
+    }
   }
   // Claude Code sends one file per Edit/Write; Codex sends one apply_patch
   // that may touch several. Either way: one check per file, its own path.
@@ -2310,8 +2369,10 @@ Commands
   badge                               README badge markdown from the capsule's counters
   install-hook [--codex] [--project] [--ambient]
                                       write four hooks (SessionStart brief, UserPromptSubmit prompt, PreToolUse guard, PreCompact handoff) into ~/.claude/settings.json; --codex targets ~/.codex/hooks.json; --project writes them into the repo; --ambient adds the UserPromptSubmit observer
-  mode [agent|deliberate]             show or set the mode; agent adds a Stop and a UserPromptSubmit hook and an agent ledger at ~/.memory-pulse/agent/
+  mode [agent|soul|deliberate]        show or set the mode; agent adds a Stop and a UserPromptSubmit hook and an agent ledger at ~/.memory-pulse/agent/; soul adds a soul
   identity "<name>, <role>; <stance>" pin the agent's self on the agent ledger (agent mode prints it first in every brief)
+  soul ["<text>"|confirm|reject|history|revert|import|export]  soul mode: the agent's own persona; held changes; versions; OpenClaw import/export
+  user ["<text>"|propose "<text>"]   soul mode: the agent's notes about the person it works with
   lesson [bank|probe|freeze|thaw] [--scope agent|project]
                                       the lesson bank the identity block prints: at most ten, chosen by where a lesson held, not by age; probe <t> held|failed [--where P] records that evidence; freeze pins a reviewed bank, thaw releases it
   handoff                             PreCompact hook: record what the session was doing from the transcript on stdin
@@ -2667,6 +2728,16 @@ export function mergeCapsule(cap, { scope = "project" } = {}) {
     const row = { ...r }; delete row.hash; delete row.prev; delete row.gap_digest; delete row.legacy_digest;
     row.t = next++;
     row.origin = { branch: id, t: fromT ?? null, capsule: short(cap.digest) };
+    // soul mode: a soul, user or identity row from another branch is held as a change to confirm; its decisions, exports and journal stay
+    // with it (lib/soul.mjs heldFromMerge)
+    if (scope === "agent" && currentMode() === "soul") {
+      const h = heldFromMerge(r, id);
+      if (h === null) { atSource.push(fromT); next--; continue; }
+      if (h) {
+        if (localRows.some((x) => x.origin?.branch === id && x.origin?.t === fromT)) { skipped.push(fromT); next--; continue; }
+        chainAppend(ledger, { ...h, t: row.t, origin: row.origin }); carried.push(row.t); have.add(key); if (Number.isInteger(fromT)) tMap.set(fromT, row.t); continue;
+      }
+    }
     if (Array.isArray(row.supersedes)) { const m = row.supersedes.map((t) => tMap.get(t)).filter((t) => Number.isInteger(t)); if (m.length) row.supersedes = m; else delete row.supersedes; }
     if (Array.isArray(row.resolves)) { const m = row.resolves.map((t) => tMap.get(t)).filter((t) => Number.isInteger(t)); if (m.length) row.resolves = m; else delete row.resolves; }
     // credit follows the memory it was earned by (review 2026-10-21: renumbered rows kept their credit keys, so Bob's credit retired an
@@ -2798,6 +2869,8 @@ async function cliState() {
   }
   if (op === "rollback") {
     const to = flag("to") != null ? Number(flag("to")) : NaN; const why = pos.join(" ").trim();
+    // soul mode: rolling back the agent ledger changes the soul, so it is refused from a session that read outside content
+    if (scope === "agent" && currentMode() === "soul") { const taint = taintOf(soulCore().episode()); if (taint.length) { console.error(`memory-pulse state rollback: not from a session that read outside content (${taint.join(", ")}); the agent ledger holds the soul. Run it from a clean session.`); process.exit(1); } }
     const r = rollbackTo(to, why, { scope });
     if (!r.written) { console.error(`memory-pulse state rollback: ${r.reason}`); process.exit(1); }
     console.log(`state rollback: recorded at t${r.t} — ${r.outOfForce.length} row(s) after t=${r.to} are out of force (${r.corrections} correction(s) among them); every row stays on the record`);
@@ -2849,7 +2922,10 @@ if (isMain) {
   if (sub === "state") { await cliState(); process.exit(0); }
   if (sub === "login") { globalThis.__MEMORY_PULSE_CORE__ = { chainAppend, verifyChain, instructionLike, readEvents, buildCapsule, API, KEY }; const { cliLogin } = await import("./lib/login.mjs"); process.exit(await cliLogin(process.argv.slice(3), { api: API, version: PKG_VERSION })); }
   if (sub === "capture") { const { cliCapture } = await import("./lib/capture.mjs"); const host = hostOf(process.argv); process.exit(cliCapture({ ledgerPath, chainAppend, instructionLike, normalize: (h) => normalizeHook(host, h) })); }
-  if (sub === "consolidate") { const { cliConsolidate } = await import("./lib/capture.mjs"); const host = hostOf(process.argv); process.exit(cliConsolidate(process.argv.slice(3), { ledgerPath, readEvents, appendEvent, buildCapsule, instructionLike, normalize: (h) => normalizeHook(host, h) })); }
+  if (sub === "consolidate") { const { cliConsolidate } = await import("./lib/capture.mjs"); const host = hostOf(process.argv); process.exit(cliConsolidate(process.argv.slice(3), { ledgerPath, readEvents, appendEvent, buildCapsule, instructionLike, normalize: (h) => normalizeHook(host, h),
+    // soul mode: each session's end adds a dated journal entry on the agent ledger (lib/soul.mjs)
+    journal: currentMode() === "soul" ? (j) => appendEvent({ cause: "journal", effect: `${j.date}-${slug(j.project)}-${slug(String(j.session)).slice(0, 12)}`, note: j.note, tags: ["journal"], scope: "agent", owner: SOUL_WRITE, fields: { journal: { date: j.date, project: j.project, session: j.session } } }) : null })); }
+  if (sub === "soul" || sub === "user") process.exit(sub === "soul" ? cliSoul(process.argv.slice(3), soulCore()) : cliUser(process.argv.slice(3), soulCore()));
   if (sub === "weights") {
     const { fold, utility, retired } = await import("./lib/weights.mjs"); const events = readEvents().events, w = fold(inForce(events)), byT = new Map(events.map((e) => [e.t, e]));
     const list = [...w].map(([t, c]) => ({ t, c, u: utility(c), e: byT.get(t) })).sort((a, b) => b.u.effect - a.u.effect || b.u.n - a.u.n || b.u.mean - a.u.mean);

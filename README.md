@@ -58,7 +58,7 @@ engines); the test suite runs on 22 and 24.
 
 `remember` and `help` from the shell arrive in 0.5.9. npm served 0.5.8 on
 2026-09-09, where both exit 1 with `unknown command`. If npx serves an older
-cached release, pin this one: `npx -y memory-pulse@0.13.1`; from a checkout,
+cached release, pin this one: `npx -y memory-pulse@0.14.0`; from a checkout,
 run `node server.mjs`. Four more things in this README are
 0.5.9 behaviour and differ on 0.5.8: `guard --verbose` names non-JSON stdin
 on stderr (0.5.8 prints nothing), `handoff` with no transcript writes nothing
@@ -191,7 +191,7 @@ and exits 0. The first `remember` creates `.memory-pulse/events.jsonl`, from a
 tool call or from the shell:
 
 ```
-npx -y memory-pulse@0.13.1 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
+npx -y memory-pulse@0.14.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 # before 0.6.0 is on npm, the same command from a checkout:
 git clone https://github.com/t-crew/memory-pulse.git && node memory-pulse/server.mjs remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 ```
@@ -315,8 +315,10 @@ npx memory-pulse bench          # instant measured metrics on YOUR ledger
 npx memory-pulse stats          # your telemetry capsule, signature verified by the engine
 npx memory-pulse badge          # README badge markdown from your own signed numbers
 npx memory-pulse install-hook   # four hooks (idempotent); --codex targets Codex; --project commits them; --ambient adds the observer
-npx memory-pulse mode [agent|deliberate]   # show or set the mode
+npx memory-pulse mode [agent|soul|deliberate]   # show or set the mode
 npx memory-pulse identity "<name>, <role>; <stance>"   # pin the agent's self on the agent ledger
+npx memory-pulse soul "<persona, voice, values>"   # soul mode: the agent's soul; confirm / reject held changes; history / revert; import / export --openclaw
+npx memory-pulse user "<who you are>"   # soul mode: the agent's notes about the person it works with
 npx memory-pulse lesson         # the lesson bank the identity block prints, with where each lesson held; --held-out lists what was left out and why
 npx memory-pulse lesson probe 41 held --where billing-api   # record that a carried lesson held (or failed) there: the evidence the bank ranks by
 npx memory-pulse lesson freeze  # pin the bank you reviewed; every brief prints it until the next freeze or `lesson thaw`
@@ -554,6 +556,37 @@ Four things added on 2026-09-03, each deterministic (no model in the loop):
   guard = SpanGuard.from_ledger(tok, Ledger(".memory-pulse/events.jsonl"))
   # mlx-lm: generate_step(..., logits_processors=[guard.logits_processor(mx, np)])
   ```
+
+## Soul mode: an autonomous agent's own identity, voice and memory (opt-in)
+
+Soul mode is agent mode plus a soul: the persona, voice and values the agent keeps, its notes about the person it works with, its
+long-term memory and a journal of recent days. The agent owns them. It can rewrite its soul, its notes and its name from any session, and
+every brief in every tool starts with the current version and the agent ledger's fingerprint.
+
+```
+npx memory-pulse mode soul
+npx memory-pulse soul "Warm and direct. Speaks plainly, prefers measured numbers to adjectives, says so when unsure."
+npx memory-pulse user "Travis, founder; wants the reasoning recorded, not just the result."
+```
+
+An agent that can rewrite itself can be talked into it. OpenClaw keeps the same things in workspace files, and the Cloud Security
+Alliance documented the attack: a poisoned page or mail plants instructions in SOUL.md and MEMORY.md that survive restarts. Here what
+decides is where a change comes from. A change made in a session that read outside content (web fetch or search, a browser, mail,
+fetch-style MCP tools, curl or wget, as capture recorded the session) is held, and takes effect only when the agent confirms it from a
+session that did not (`soul confirm`), or you approve it. Soul text that reads like an injected instruction, tells the agent to rewrite its
+own files, or tells it to obey what arrives from outside is refused, with the reason. Every version is kept with its session and date:
+`soul history` lists them and `soul revert` brings one back. The agent writes its log through memory-pulse, so a raw edit of the ledger
+file is blocked and every entry stays chained. The check for outside content reads capture's record of the session, so it needs the
+capture hook and runs on Claude Code today. `soul import --openclaw` reads an OpenClaw workspace through the same screens and names every
+line it withheld; `soul export --openclaw <folder>` writes the files back, never over a file it did not write, and the brief says when one
+of them was edited afterwards.
+
+What this does not stop, stated plainly: an agent that starts a new session itself (`claude -p`) and confirms there; outside
+content read through a channel the check does not name (`gh`, `git pull`, a downloaded file, a subagent, a script that fetches); a host
+other than Claude Code, where the session's reads are not recorded; and wording the screens do not know, since they catch known shapes
+only. A row appended to the ledger file around memory-pulse is not honored as the soul and is named in the brief, and the fingerprint (the
+sha256 of the agent ledger's bytes) changes with any edit. A soul arriving by `state merge` is held, and rolling the agent ledger back is
+refused from a session that read outside content. `mode soul` warns when the guard or capture hook is missing.
 
 ## Agent mode: a persistent agent identity that grows (opt-in)
 
