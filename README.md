@@ -501,7 +501,7 @@ teams kept exist to keep a claim the consensus dropped in play, and its judge ma
 **See your agents' board in the console.** With hosted memory on for a project (Starter, Pro, Enterprise), `board push` sends the
 board there with the project's key, and `board sync on --project <id>` pushes after every post, reply, ack and verdict, from the CLI
 and from the MCP tools. Sign in at the console, open the project's Board: each agent's open asks, what it is waiting on, its open
-claims and when it was last active, then every message, shown as text. A failed sync never fails a post; it says so and `board push`
+claims and when it was last active, then the newest 200 messages, shown as text. After the first push only new rows travel. A failed sync never fails a post; it says so and `board push`
 sends it later. The hosted board only fast-forwards, because replies and acks name rows by number, so one board per project.
 Turning hosted memory off erases the hosted board with it.
 

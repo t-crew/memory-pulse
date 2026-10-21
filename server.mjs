@@ -46,6 +46,7 @@ import { lessonBank as lessonBankWith, screenLesson, bankSummary, bankLabel, les
 
 const API = (process.env.MEMORY_PULSE_API ?? "https://pulse.strategic-innovations.ai").replace(/\/$/, "");
 const KEY = process.env.MEMORY_PULSE_KEY || null;
+export { API, KEY };
 
 // ---------------------------------------------------------------- ledger ----
 function ledgerPath() {
@@ -2419,7 +2420,8 @@ export function buildCapsule({ ledger = ledgerPath(), scope = "project", branch 
   const head = setHeadHex(rows);
   const force = inForceSet(rows); const inForceRows = rows.filter((r) => !Number.isInteger(r.t) || force.has(r.t));
   const through = maxT(rows);
-  const seal0 = readSeal(ledger);
+  // a board sits in the project ledger's folder, beside that ledger's seal and invariants, which are not the board's (review 2026-10-21)
+  const seal0 = scope === "board" ? null : readSeal(ledger);
   const seal = seal0 && typeof seal0.head === "string" && Number(seal0.through) <= through ? seal0 : null;
   // the branch this ledger is on: the last import or merge named it, else main
   const lastState = [...rows].reverse().find((r) => Array.isArray(r.tags) && r.tags.includes("state") && r.state?.branch);
@@ -2429,7 +2431,7 @@ export function buildCapsule({ ledger = ledgerPath(), scope = "project", branch 
     through, rows: rows.length, malformed: parseRows(lines).malformed.length, lines,
     chain: { head: chain.head, chained: chain.chained, legacy: chain.legacy, from: chain.from, unsealed: chain.unsealed ?? 0 },
     head, in_force: { rows: inForceRows.length, rolled_back: rows.length - inForceRows.length, head: setHeadHex(inForceRows) },
-    seal, invariants: readInvariants(join(dirname(ledger), "invariants.jsonl")),
+    seal, invariants: scope === "board" ? [] : readInvariants(join(dirname(ledger), "invariants.jsonl")),
   };
   cap.digest = capsuleDigest(cap);
   return { capsule: cap };
