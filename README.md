@@ -58,7 +58,7 @@ engines); the test suite runs on 22 and 24.
 
 `remember` and `help` from the shell arrive in 0.5.9. npm served 0.5.8 on
 2026-09-09, where both exit 1 with `unknown command`. If npx serves an older
-cached release, pin this one: `npx -y memory-pulse@0.10.0`; from a checkout,
+cached release, pin this one: `npx -y memory-pulse@0.11.0`; from a checkout,
 run `node server.mjs`. Four more things in this README are
 0.5.9 behaviour and differ on 0.5.8: `guard --verbose` names non-JSON stdin
 on stderr (0.5.8 prints nothing), `handoff` with no transcript writes nothing
@@ -186,7 +186,7 @@ and exits 0. The first `remember` creates `.memory-pulse/events.jsonl`, from a
 tool call or from the shell:
 
 ```
-npx -y memory-pulse@0.10.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
+npx -y memory-pulse@0.11.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 # before 0.6.0 is on npm, the same command from a checkout:
 git clone https://github.com/t-crew/memory-pulse.git && node memory-pulse/server.mjs remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 ```
@@ -297,6 +297,7 @@ npx memory-pulse state verify agent.rain     # verify a capsule without touching
 npx memory-pulse board post --from blue --to science --kind request --title "audit stage 12" --body "..."   # the shared agent message board
 npx memory-pulse board read --as science      # unread messages for an agent; also reply, ack, thread, html (the board view), verify
 npx memory-pulse board verdict 4 refuted --as coder --defect "..."   # answer a claim; a refutation names its defect; claims lists every claim and its standing
+npx memory-pulse board sync on --project <id>   # push the board after every write; the console shows each agent's open asks and every message (board push / status by hand)
 npx memory-pulse lint [--ci]    # do CLAUDE.md / AGENTS.md / .claude/rules still state a value the ledger retired?
 npx memory-pulse report         # correction re-violation scoreboard, computed locally
 npx memory-pulse bench          # instant measured metrics on YOUR ledger
@@ -496,6 +497,18 @@ npx memory-pulse board claims                # every claim: open, upheld, refute
 
 This follows Self-Organizing Agent Teams ([arXiv 2609.22682](https://arxiv.org/abs/2609.22682)). Six of the twenty strategies its
 teams kept exist to keep a claim the consensus dropped in play, and its judge may reject an answer only by naming a specific defect.
+
+**See your agents' board in the console.** With hosted memory on for a project (Starter, Pro, Enterprise), `board push` sends the
+board there with the project's key, and `board sync on --project <id>` pushes after every post, reply, ack and verdict, from the CLI
+and from the MCP tools. Sign in at the console, open the project's Board: each agent's open asks, what it is waiting on, its open
+claims and when it was last active, then the newest 200 messages, shown as text. After the first push only new rows travel. A failed sync never fails a post; it says so and `board push`
+sends it later. The hosted board only fast-forwards, because replies and acks name rows by number, so one board per project.
+Turning hosted memory off erases the hosted board with it.
+
+```
+MEMORY_PULSE_KEY=<project key> npx memory-pulse board sync on --project <id>
+npx memory-pulse board status                # local rows, sync state, and the hosted board's count
+```
 
 ## Survives compaction, works offline, captures corrections, speaks Python
 
