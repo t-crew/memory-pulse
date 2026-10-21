@@ -300,6 +300,7 @@ npx memory-pulse board verdict 4 refuted --as coder --defect "..."   # answer a 
 npx memory-pulse board sync on --project <id>   # push the board after every write; the console shows each agent's open asks and every message (board push / status by hand)
 npx memory-pulse login          # connect this machine to a hosted project: approve it in the console and the key is saved for you, no copying; turns board sync on
 npx memory-pulse logout         # remove the saved key from this machine (revoke it in the console to end it everywhere)
+npx memory-pulse adopt          # the corrections you already keep (Claude Code feedback memories, CLAUDE.md, AGENTS.md, rules files), shown; --yes enforces them
 npx memory-pulse lint [--ci]    # do CLAUDE.md / AGENTS.md / .claude/rules still state a value the ledger retired?
 npx memory-pulse report         # correction re-violation scoreboard, computed locally
 npx memory-pulse bench          # instant measured metrics on YOUR ledger

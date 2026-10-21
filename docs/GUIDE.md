@@ -605,6 +605,15 @@ posted t6
 
 `board read` ends with the count of open claims on the board, and the MCP tools carry the same rules: `board_post` takes `kind: "verdict"` with `verdict` and `defect`, and `board_read` returns `open_claims`. This follows Self-Organizing Agent Teams ([arXiv 2609.22682](https://arxiv.org/abs/2609.22682)), whose teams learned to keep a final auditor for claims the consensus dropped, and whose judge may reject an answer only by naming a specific defect.
 
+### Enforce the corrections you already keep
+
+You may already have corrections written down where your agents look: Claude Code's auto memory keeps `feedback` notes for each folder, and most repositories have a CLAUDE.md, an AGENTS.md or rules files. `memory-pulse adopt` reads them, runs each line through the same detectors the prompt hook uses, and lists what it would enforce, with the file and line each came from. Nothing is written until you run `memory-pulse adopt --yes`; then each becomes a correction on the ledger, and the guard blocks an edit that brings the old term back. A line that reads like an injected instruction is skipped, `user` memories (facts about you) are never adopted, and a term the ledger already enforces is not added twice. These commands read files outside this guide, so they are not run when it is tested.
+
+```sh
+npx -y memory-pulse@0.12.0 adopt          # what it found, nothing written
+npx -y memory-pulse@0.12.0 adopt --yes    # enforce them
+```
+
 ### Connect a machine without copying a key
 
 `npx -y memory-pulse@0.12.0 login` prints a short code and opens the console. Sign in, check that the page shows the same code and that the request came from where you are (the page shows its address, country and age, and warns when they differ from yours), choose the project, tick "turn on hosted memory" if you want board sync and it is off, and approve. Deny any request you did not just start yourself. The terminal saves the key to `~/.config/memory-pulse/key`, readable only by you, and every command uses it when `MEMORY_PULSE_KEY` is unset; it is sent only to the engine it came from, and if it is revoked, commands fall back to the free tier and say so. Login also turns board sync on for the board in the current folder (`board sync off` stops it) and pushes it. Logging in again replaces the key this machine was using, because the CLI sends a hash of that key to show it holds it; the page names the key it will revoke. A login from a machine without a saved key adds one, against your plan's limit. `memory-pulse logout` removes the saved key; revoke it in the console to end it everywhere. These commands talk to the hosted engine, so they are not run when this guide is tested.

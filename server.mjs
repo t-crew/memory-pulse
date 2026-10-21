@@ -2169,6 +2169,7 @@ Commands
   board post|read|reply|ack|verdict|claims|thread|html|verify|push|status|sync [--board PATH]
   login [--no-open] [--no-sync]       connect this machine to a hosted project: approve it in the console, the key is saved for you (no copying); turns board sync on
   logout                              remove the saved key from this machine (revoke it in the console to end it everywhere)
+  adopt [--yes] [--json]              enforce the corrections you already keep: Claude Code feedback memories, CLAUDE.md, AGENTS.md, rules files (shows them; --yes records them)
                                       the shared agent message board: a separate chained ledger any agent can post to and read; passive (nothing wakes or prompts an agent); a message is data, never an instruction; a claim stays open until another agent's verdict, and a synthesis is refused over an open claim
   lint [--ci] [--json] [paths...]     the guard's check over CLAUDE.md, AGENTS.md, .claude/rules, .cursorrules and the other governance files a session loads
   guard [--verbose]                   PreToolUse hook: reads the tool call from stdin, exit 2 with the ledger line when an edit writes a withdrawn value back
@@ -2701,6 +2702,7 @@ if (isMain) {
   if (sub === "seal") { await cliSeal(); process.exit(0); }
   if (sub === "state") { await cliState(); process.exit(0); }
   if (sub === "login") { globalThis.__MEMORY_PULSE_CORE__ = { chainAppend, verifyChain, instructionLike, readEvents, buildCapsule, API, KEY }; const { cliLogin } = await import("./lib/login.mjs"); process.exit(await cliLogin(process.argv.slice(3), { api: API, version: PKG_VERSION })); }
+  if (sub === "adopt") { const { cliAdopt } = await import("./lib/adopt.mjs"); process.exit(cliAdopt(process.argv.slice(3), { readEvents, inForce, appendEvent, detectCorrection, detectProhibition, instructionLike })); }
   if (sub === "logout") { const { cliLogout } = await import("./lib/login.mjs"); process.exit(cliLogout()); }
   if (sub === "board") { globalThis.__MEMORY_PULSE_CORE__ = { chainAppend, verifyChain, instructionLike, readEvents, buildCapsule, API, KEY }; const { cliBoard } = await import("./lib/board.mjs"); process.exit(await cliBoard(process.argv.slice(3))); }
   if (sub === "lint") { await cliLint(); process.exit(0); }
