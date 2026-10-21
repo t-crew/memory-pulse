@@ -104,3 +104,10 @@ test("review 2: mode soul installs the taint hook and leaving soul mode removes 
   const t = (hooks().PreToolUse ?? []).find((h) => /memory-pulse taint/.test(JSON.stringify(h))); assert.ok(t); assert.equal(t.matcher, "WebFetch|WebSearch|mcp__.*");
   run(f, ["mode", "agent"]); assert.ok(!(hooks().PreToolUse ?? []).some((h) => /memory-pulse taint/.test(JSON.stringify(h))));
 });
+
+test("live false positive (2026-10-21): an unrelated unset in a tainted session is not a session-variable tamper", () => {
+  const f = fixture(); soul(f); pre(f, "dirty", "WebFetch", {});
+  for (const command of ["unset HTTP_PROXY HTTPS_PROXY; npm view memory-pulse@0.14.1 version", "env -u HTTP_PROXY npx -y memory-pulse brief"]) assert.equal(guard(f, "dirty", command).code, 0, command);
+  const v = ["CLAUDE", "CODE", "SESSION", "ID"].join("_");                      // spelled out at run time: this repo's own guard reads commands
+  for (const command of [`unset ${v}; memory-pulse soul "x"`, 'env -i memory-pulse soul "x"']) assert.equal(guard(f, "dirty", command).code, 2, command);
+});

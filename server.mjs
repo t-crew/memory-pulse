@@ -46,7 +46,7 @@ import { lessonBank as lessonBankWith, screenLesson, bankSummary, bankLabel, les
 import { savedKey } from "./lib/login.mjs";
 import { hostOf, normalizeHook } from "./lib/hosts.mjs";
 import { SOUL_WRITE, RESERVED, soulState, soulLines, soulGuard, cliSoul, cliUser, setSection, chainedOnly, heldFromMerge, taintOf, soulCapsule, verifySoulCapsule, continuityLine, soulScreen,
-         isExternalTool, externalCmd, markTaint, taintMarked, soulTaintGuard } from "./lib/soul.mjs";
+         isExternalTool, externalCmd, externalWhat, markTaint, taintMarked, soulTaintGuard } from "./lib/soul.mjs";
 
 const API = (process.env.MEMORY_PULSE_API ?? "https://pulse.strategic-innovations.ai").replace(/\/$/, "");
 const KEY = process.env.MEMORY_PULSE_KEY || savedKey() || null;        // env first, then the key `memory-pulse login` saved
@@ -2005,7 +2005,7 @@ async function cliGuard() {
       why = soulGuard(payload, { agentDir: dirname(agentPath()) });
       // the host's session id, not the variable a command reads; a fetch in this very command marks the session first
       const sid = typeof payload.session_id === "string" && payload.session_id ? payload.session_id : null, cmd = payload.tool_name === "Bash" ? payload.tool_input?.command : null;
-      if (sid && typeof cmd === "string" && externalCmd(cmd)) markTaint(dirname(agentPath()), sid, String(cmd).trim().split(/\s+/)[0]);
+      if (sid && typeof cmd === "string" && externalCmd(cmd)) markTaint(dirname(agentPath()), sid, externalWhat(cmd) ?? "a fetch command");
       if (!why && sid && typeof cmd === "string") why = soulTaintGuard(cmd, sessionTaint(sid));
     } catch { why = null; }
     if (why) {
