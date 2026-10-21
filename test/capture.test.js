@@ -135,3 +135,15 @@ test("a check's outcome comes from its own summary when the pipeline hides the e
   const fix = ledger(f).find((r) => (r.tags ?? []).includes("fix"));
   assert.ok(fix); assert.match(fix.cause, /npm test/); assert.match(fix.effect, /lib\/board\.mjs/);
 });
+
+test("a failed check keeps its specific error, not just the count line (measured 2026-10-21: count lines carry no signature)", async () => {
+  const C = await import("../lib/capture.mjs");
+  const py = C.checkOutcome("tests/test_cart.py F.\n\n=== FAILURES ===\nE       AssertionError: assert 3 == 4\nFAILED tests/test_cart.py::test_total - AssertionError: assert 3 == 4\n1 failed, 1 passed in 0.24s", "");
+  assert.equal(py.ok, false); assert.match(py.line, /AssertionError: assert 3 == 4/); assert.match(py.summary, /1 failed/);
+  const node = C.checkOutcome("✖ rounds the refund total (2.1ms)\n  TypeError: Cannot read properties of undefined (reading 'total')\nℹ fail 1", "");
+  assert.match(node.line, /TypeError: Cannot read properties of undefined/);
+  const ts = C.checkOutcome("src/a.ts(3,5): error TS2322: Type 'string' is not assignable to type 'number'.", "");
+  assert.match(ts.line, /error TS2322/);
+  const bare = C.checkOutcome("ℹ pass 3\nℹ fail 2", "");
+  assert.equal(bare.ok, false); assert.equal(bare.line, "ℹ fail 2", "with nothing more specific, the count line is all there is");
+});
