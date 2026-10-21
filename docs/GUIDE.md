@@ -374,6 +374,27 @@ mode: deliberate (default)
 
 Three things to know. A correction on the agent ledger blocks the same edit in every project while the file exists, in either mode. `mode deliberate` removes the two hooks and leaves both ledgers in place, so those corrections keep binding until you delete `~/.memory-pulse/agent/`. The Stop hook writes decision rows into the project ledger, which is committed with the repository.
 
+### Soul mode
+
+Soul mode is agent mode plus a soul: the persona, voice and values the agent keeps, a profile of the person it works with, its long-term memory and a journal of recent days. They live on the agent ledger, chained like every row, and every brief in every tool starts with them and the ledger's fingerprint, also in a project that has no ledger of its own.
+
+OpenClaw keeps the same things in workspace files (SOUL.md, IDENTITY.md, USER.md, MEMORY.md and a log per day). A file anything can write can be rewritten by a prompt injection, and the Cloud Security Alliance documented exactly that: instructions planted in SOUL.md and MEMORY.md that survive restarts. Here the soul, the user profile and the identity change only through their own commands, run by you. `remember` and the MCP tool cannot write them, ambient capture never does, and with the guard installed the agent's own tools cannot run those commands, write the agent ledger or edit the exported files. A script that goes around memory-pulse altogether can still append a row, so what holds is that a change shows: the soul line cites its row, and an edit to an earlier row breaks the chain the brief checks. The agent can propose a change; you approve or reject it. Soul text is screened: a line that reads like an injected instruction, tells the agent to rewrite its own files, or tells it to obey what arrives in email or web pages is refused, with the reason.
+
+```sh
+npx -y memory-pulse@0.13.1 mode soul
+npx -y memory-pulse@0.13.1 identity "Blue, research agent for Travis"
+npx -y memory-pulse@0.13.1 soul "Warm and direct. Speaks plainly, prefers measured numbers to adjectives, says so when unsure."
+npx -y memory-pulse@0.13.1 user "Travis, founder; wants the reasoning recorded, not just the result."
+npx -y memory-pulse@0.13.1 soul propose "Warm, direct, and a little dry."
+npx -y memory-pulse@0.13.1 soul approve 5
+```
+
+The fifth line is what the agent may run; the sixth is yours, with the row number the proposal printed. With capture on, each session's end adds a dated journal entry, and the brief shows the last three days.
+
+Coming from OpenClaw, `soul import --openclaw` reads `~/.openclaw/workspace`, or a folder you name, through the same screens, and lists every line it withheld by file and line. `soul export --openclaw <folder>` writes SOUL.md, IDENTITY.md, USER.md and MEMORY.md back from the ledger. It never overwrites a file it did not write (`--force` keeps the old one as a `.bak`), and if a file it wrote is edited later, the next brief says that file differs from the sealed soul.
+
+These commands change your agent ledger and your settings, so this guide's test does not run them.
+
 ## 10. Teams and CI
 
 Commit `.memory-pulse/events.jsonl` and `.memory-pulse/invariants.jsonl`. Leave out the caches: `seal.rain`, `seal.resume.json`, `telemetry.rain`, `memory.rain`, `violations.jsonl` (local block records) and `episodes/` (capture's session records). The client repository's own `.gitignore` carries that list; nothing writes a `.gitignore` for you below 500 events.

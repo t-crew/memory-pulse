@@ -93,7 +93,7 @@ test("mode <bad> prints one line and exits 1, with no stack trace", () => {
   const { run } = mk();
   const r = run(["mode", "bogus"]);
   assert.equal(r.status, 1);
-  assert.match(r.stderr, /mode must be agent or deliberate/);
+  assert.match(r.stderr, /mode must be agent, soul or deliberate/);   // soul mode added 2026-10-21 (stated)
   assert.doesNotMatch(r.stderr, /\n\s+at /);
 });
 

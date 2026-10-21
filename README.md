@@ -315,8 +315,10 @@ npx memory-pulse bench          # instant measured metrics on YOUR ledger
 npx memory-pulse stats          # your telemetry capsule, signature verified by the engine
 npx memory-pulse badge          # README badge markdown from your own signed numbers
 npx memory-pulse install-hook   # four hooks (idempotent); --codex targets Codex; --project commits them; --ambient adds the observer
-npx memory-pulse mode [agent|deliberate]   # show or set the mode
+npx memory-pulse mode [agent|soul|deliberate]   # show or set the mode
 npx memory-pulse identity "<name>, <role>; <stance>"   # pin the agent's self on the agent ledger
+npx memory-pulse soul "<persona, voice, values>"   # soul mode: set the soul (owner only); propose / approve / reject; import / export --openclaw
+npx memory-pulse user "<who you are>"   # soul mode: set the profile of the person the agent works with (owner only)
 npx memory-pulse lesson         # the lesson bank the identity block prints, with where each lesson held; --held-out lists what was left out and why
 npx memory-pulse lesson probe 41 held --where billing-api   # record that a carried lesson held (or failed) there: the evidence the bank ranks by
 npx memory-pulse lesson freeze  # pin the bank you reviewed; every brief prints it until the next freeze or `lesson thaw`
@@ -554,6 +556,29 @@ Four things added on 2026-09-03, each deterministic (no model in the loop):
   guard = SpanGuard.from_ledger(tok, Ledger(".memory-pulse/events.jsonl"))
   # mlx-lm: generate_step(..., logits_processors=[guard.logits_processor(mx, np)])
   ```
+
+## Soul mode: an identity, a voice and a memory that a prompt injection cannot rewrite (opt-in)
+
+Soul mode is agent mode plus a soul: the persona, voice and values the agent keeps, a profile of the person it works with, its long-term
+memory and a journal of recent days. They live on the agent ledger, chained like every row, and every brief in every tool starts with them
+and the ledger's fingerprint.
+
+```
+npx memory-pulse mode soul
+npx memory-pulse soul "Warm and direct. Speaks plainly, prefers measured numbers to adjectives, says so when unsure."
+npx memory-pulse user "Travis, founder; wants the reasoning recorded, not just the result."
+```
+
+OpenClaw keeps the same things in workspace files (SOUL.md, IDENTITY.md, USER.md, MEMORY.md, a log per day). A file anything can write can
+be rewritten by a prompt injection, and the Cloud Security Alliance documented exactly that: instructions planted in SOUL.md and MEMORY.md
+that survive restarts. Here the soul, the user profile and the identity change only through their own commands, run by you; `remember` and
+the MCP tool cannot write them, ambient capture never does, and with the guard installed the agent's own tools cannot run those commands or
+write the agent ledger. A script that goes around memory-pulse altogether can still append a row, so what holds is that a change shows:
+the soul line cites its row, and an edit to an earlier row breaks the chain the brief checks. The agent can `soul propose` a change; you
+`soul approve` or `soul reject` it. Soul text that reads like an
+injected instruction, tells the agent to rewrite its own files, or tells it to obey what arrives in email or web pages is refused, with the
+reason. `soul import --openclaw` reads an OpenClaw workspace through the same screens and names every line it withheld; `soul export
+--openclaw <folder>` writes the files back, never over a file it did not write, and the brief says when one of them was edited afterwards.
 
 ## Agent mode: a persistent agent identity that grows (opt-in)
 
