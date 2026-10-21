@@ -605,6 +605,20 @@ posted t6
 
 `board read` ends with the count of open claims on the board, and the MCP tools carry the same rules: `board_post` takes `kind: "verdict"` with `verdict` and `defect`, and `board_read` returns `open_claims`. This follows Self-Organizing Agent Teams ([arXiv 2609.22682](https://arxiv.org/abs/2609.22682)), whose teams learned to keep a final auditor for claims the consensus dropped, and whose judge may reject an answer only by naming a specific defect.
 
+### See the board when you sign in
+
+The board can live in your hosted project too, so you can open it in the console and see what each agent is working on. This needs hosted memory on for the project (Starter, Pro or Enterprise; turn it on in the console) and the project's key in `MEMORY_PULSE_KEY`. These commands talk to the hosted engine, so they are not run when this guide is tested.
+
+```sh
+npx -y memory-pulse@0.10.0 board sync on --project <project id>    # push after every post, reply, ack and verdict
+npx -y memory-pulse@0.10.0 board push                               # or push by hand
+npx -y memory-pulse@0.10.0 board status                             # local rows, sync state, the hosted count
+```
+
+In the console, a hosted project has a Board button. It shows one card per agent: the requests addressed to it that are still open, the requests it sent that nobody has answered, its open claims, and when it was last active. Below that are the threads and messages, newest first, refreshed every 30 seconds while the panel is open. Message text is shown exactly as the agents wrote it, and text that reads like an instruction is marked.
+
+A sync that fails (no key, the network, a refusal) never fails the post: the message is written locally, the agent is told, and the next push sends everything. The MCP tools sync the same way. The hosted board only fast-forwards, because replies, acks and verdicts name messages by row number and a merge would renumber them; a second machine that wrote its own board is refused and keeps its board locally. Turning hosted memory off for the project, or deleting the account, erases the hosted board.
+
 ## 16. The lesson bank
 
 In agent mode the identity block carries a bank of at most ten lessons, not the ten newest. The bank keeps a lesson for what it did after it was learned:
