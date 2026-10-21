@@ -47,6 +47,7 @@ import { savedKey } from "./lib/login.mjs";
 
 const API = (process.env.MEMORY_PULSE_API ?? "https://pulse.strategic-innovations.ai").replace(/\/$/, "");
 const KEY = process.env.MEMORY_PULSE_KEY || savedKey() || null;        // env first, then the key `memory-pulse login` saved
+const KEY_SOURCE = process.env.MEMORY_PULSE_KEY ? "env" : KEY ? "saved" : null;
 export { API, KEY };
 
 // ---------------------------------------------------------------- ledger ----
@@ -579,6 +580,11 @@ async function callApi(route, body) {
   let res;
   try {
     res = await postJsonRetry(`${API}${route}`, { "content-type": "application/json", ...(KEY ? { "x-mp-key": KEY } : {}) }, JSON.stringify(body));
+    // a saved login key the engine refuses (revoked, or the plan ended) falls back to the free tier, as before the login (review 2026-10-21, 2)
+    if (res.status === 401 && KEY_SOURCE === "saved") {
+      console.error("memory-pulse: the saved login key was refused (revoked, or the plan ended); answering on the free tier. Run `memory-pulse login` again, or `memory-pulse logout`.");
+      res = await postJsonRetry(`${API}${route}`, { "content-type": "application/json" }, JSON.stringify(body));
+    }
   } catch (err) {
     const why = err?.cause?.code || err?.code || err?.message || String(err);
     throw new Error(

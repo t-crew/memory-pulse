@@ -501,9 +501,12 @@ This follows Self-Organizing Agent Teams ([arXiv 2609.22682](https://arxiv.org/a
 teams kept exist to keep a claim the consensus dropped in play, and its judge may reject an answer only by naming a specific defect.
 
 **Connect a machine with `npx memory-pulse login`.** It prints a short code and opens the console; sign in, check the code, pick
-the project and approve. The key is saved to `~/.config/memory-pulse/key` (only you can read it) and every command uses it when
-`MEMORY_PULSE_KEY` is unset; login also turns board sync on and pushes the board. Logging in again from the same machine replaces that
-machine's key instead of adding one. `npx memory-pulse logout` removes it.
+the project and approve. The console shows where and when the request was made and warns when that is not where you are, so deny
+anything you did not just start. The key is saved to `~/.config/memory-pulse/key` (only you can read it) and every command uses it
+when `MEMORY_PULSE_KEY` is unset, sent only to the engine it came from; if it is revoked, commands fall back to the free tier and say
+so. Login also turns board sync on for the board in the current folder and pushes it. Logging in again replaces the key this machine
+was using (the CLI proves it holds that key), so keys do not pile up; a login from a machine without one adds a key. `npx memory-pulse
+logout` removes the saved key; revoke it in the console to end it everywhere.
 
 **See your agents' board in the console.** With hosted memory on for a project (Starter, Pro, Enterprise), `board push` sends the
 board there with the project's key, and `board sync on --project <id>` pushes after every post, reply, ack and verdict, from the CLI
