@@ -230,7 +230,7 @@ exit 0
 
 ## 5. The brief: the organized memory, tiers, what prints
 
-The SessionStart hook prints the organized memory, built locally from the ledger in five sections: identity and rules, corrections in force, project state, recent findings and open threads. Every line cites its row, and the whole fits under the 10,000 characters a hook can inject. With a key, `--engine` or `--budget`, `brief` prints the engine's ranked brief instead. An engine brief longer than 9,500 characters gives way to the organized memory, because the host would otherwise cut it to a 2,000-character preview. `scaffold` prints the organized memory on demand, and `--section` with `--all` prints one section in full.
+The SessionStart hook prints the organized memory, built locally from the ledger in five sections: identity and rules, corrections in force, project state, recent findings and open threads. Every line cites its row, and the whole fits under the 10,000 characters a hook can inject. With a key, `--engine` or `--budget`, `brief` prints the engine's ranked brief instead. An engine brief longer than 9,500 characters gives way to the organized memory, because the host would otherwise cut it to a 2,000-character preview. `scaffold` prints the organized memory on demand, and `--section` with `--all` prints one section in full. A finding, state or decision row that states a value a correction in force withdrew carries the correction beside it, as in `Production runs Postgres 14 on the primary. (t4; withdrawn at t5: "Postgres 14" → use Postgres 16)`, so the brief never presents a withdrawn value as current.
 
 ```sh run
 npx -y memory-pulse@0.14.4 scaffold --section corrections
@@ -274,7 +274,7 @@ Tiers and the budget that selects them, from the engine's `src/disclose.js` and 
 
 Tokens are estimated at 3.8 characters each. `--budget 1500` therefore gives the index tier; write `--budget 2000` for a brief. `MEMORY_PULSE_BRIEF_BUDGET` and `MEMORY_PULSE_BRIEF_TIER` set the same for the hook, which takes no arguments. The brief costs context: 5,153 chars, about 1,350 tokens, on the 852-event ledger of the project that builds memory-pulse, 2026-09-01.
 
-Two differences between the renders. The engine's brief cites each correction as `cause -> effect (tN)` with its note and prints no withdrawn terms, and it lists superseded rows; the local render prints `withdrawn: a, b → replacement` and filters superseded rows. The engine-backed brief opens with the provenance line: events loaded, the sha256 of the bytes read, how many corrections are in force and how many terms they carry, tier and chars, so a session can tell whether its memory arrived whole. The local render opens with `memory-pulse: engine unreachable — local render from N events` and carries no sha256 and no binding count; `lint` prints the provenance line offline. `pinned: true` raises a row's salience floor; it does not guarantee a place in a small tier.
+Two differences between the renders. The engine's brief cites each correction as `cause -> effect (tN)`, then `withdrawn "a" → use b` when the row carries withdrawn terms, then its note; enforced corrections come first, newest first, and a note is shortened or dropped before a correction is; it lists superseded rows. The local render prints `withdrawn: a, b → replacement` and filters superseded rows. The engine-backed brief opens with the provenance line: events loaded, the sha256 of the bytes read, how many corrections are in force and how many terms they carry, tier and chars, so a session can tell whether its memory arrived whole. The local render opens with `memory-pulse: engine unreachable — local render from N events` and carries no sha256 and no binding count; `lint` prints the provenance line offline. `pinned: true` raises a row's salience floor; it does not guarantee a place in a small tier.
 
 ## 6. recall and execute
 
@@ -405,7 +405,7 @@ The ledger is read from the directory the agent started in. Start the agent at t
 
 Two branches that both append conflict on merge, because rows chain on `t` and `prev`. Never keep both sides: take one, re-record the losing rows with `remember`, and run `verify`.
 
-Invariants are declared, never inferred: one JSON object per line in `.memory-pulse/invariants.jsonl`. A `warn` rule reports; a `block` rule blocks. `lint` runs the same check over the governance files a session loads:
+Invariants are declared, never inferred: one JSON object per line in `.memory-pulse/invariants.jsonl`. A `warn` rule reports; a `block` rule blocks. `lint` runs the same check over the governance files a session loads, Muse Code's `.agents/AGENTS.md` and `.agents/memory/` included. A line that reads like an instruction planted for the agent also blocks its file; lint names the line number and the pattern and never prints the line:
 
 ```sh run
 printf '%s\n' '{"id":"old-domain","statement":"the old domain was retired","patterns":["example-old.com"],"paths":["docs/"],"severity":"block","replacement":"example.com"}' > .memory-pulse/invariants.jsonl
