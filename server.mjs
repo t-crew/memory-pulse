@@ -1256,7 +1256,7 @@ export function handoffLine(events, { now = Date.now(), maxAgeMs = 7 * 86400e3 }
 // 0.7.0: the scaffolded prompt memory (lib/scaffold.mjs), with this file's ledger helpers injected.
 export { DEFAULT_BUDGETS };
 export function renderScaffold(allEvents, opts = {}) {
-  return renderScaffoldWith(allEvents, { ...opts, deps: { inForce, supersededSet, instructionLike, handoffLine, held: HELD } });
+  return renderScaffoldWith(allEvents, { ...opts, deps: { inForce, supersededSet, instructionLike, handoffLine, containsTerm, held: HELD } });
 }
 export function promptSlice(allEvents, prompt, opts = {}) {
   return promptSliceWith(allEvents, prompt, { ...opts, deps: { inForce, supersededSet, instructionLike, containsTerm, held: HELD } });

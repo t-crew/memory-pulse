@@ -157,3 +157,12 @@ test("promptSlice ignores slug words common across the ledger; a slug-only match
   assert.match(promptSlice(events, "why did ingest throughput drop?"), /"v1" was withdrawn; use v2 \(t401\)/, "two rare slug words are");
   assert.match(promptSlice(events, "is v1 still right?"), /\(t401\)/, "a term hit alone is enough");
 });
+
+// corrections-bench v3 prep (2026-10-22): a decision row that states a withdrawn value is marked beside it with the correction and
+// its replacement, the same way the scaffold marks it. Written red-first.
+test("promptSlice marks a decision row that states a withdrawn value", async () => {
+  const { promptSlice } = await load("stale");
+  const events = [corr(3, ["$49"], ["$29"]), { t: 4, cause: "deck-review", effect: "pricing-slide-decided", kind: "event", tags: ["decision"], note: "Pricing slide quotes Pro at $49" }];
+  const out = promptSlice(events, "update the pricing slide in the deck review");
+  assert.match(out, /Pricing slide quotes Pro at \$49 \(t4; withdrawn at t3: "\$49" → use \$29\)/, out);
+});

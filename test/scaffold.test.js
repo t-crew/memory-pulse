@@ -99,3 +99,20 @@ test("the header counts rows in the singular when there is one", async () => {
   assert.match(renderScaffold([corr(1, ["$49"], ["$29"])]).text, /^memory-pulse: memory from 1 ledger row; each line cites its row\./);
   assert.match(renderScaffold([corr(1, ["$49"], ["$29"]), corr(2, ["x1"], ["x2"])]).text, /from 2 ledger rows;/);
 });
+
+// corrections-bench v3 prep (2026-10-22): the free default brief listed "Enterprise SLA promised 99.9% monthly uptime. (t8)" under
+// RECENT FINDINGS with nothing saying t9 withdrew 99.9%, so the brief itself stated the withdrawn value as a finding. Written red-first.
+test("a finding that states a withdrawn value is marked with its correction and replacement", async () => {
+  const { renderScaffold } = await load("stale");
+  const events = [ev(8, { note: "Enterprise SLA promised 99.9% monthly uptime." }), corr(9, ["99.9%"], ["99.95%"]),
+    ev(10, { note: "Renewal signed at 99.95%; the old 99.9% is gone." }), ev(11, { tags: ["decision"], note: "Quote 99.9% in the deck" })];
+  const { text } = renderScaffold(events, { agentEvents: [corr(3, ["us-east-1"], ["eu-west-2"])], withIdentity: false });
+  assert.match(text, /Enterprise SLA promised 99\.9% monthly uptime\. \(t8; withdrawn at t9: "99\.9%" → use 99\.95%\)/, text);
+  assert.match(text, /Quote 99\.9% in the deck \(t11; withdrawn at t9: "99\.9%" → use 99\.95%\)/, "state rows too");
+  assert.match(text, /the old 99\.9% is gone\. \(t10\)$/m, "a row that already names the replacement is left as written");
+  const agentSide = renderScaffold([ev(1, { note: "Deploy to us-east-1 first" })], { agentEvents: [corr(3, ["us-east-1"], ["eu-west-2"])], withIdentity: false }).text;
+  assert.match(agentSide, /Deploy to us-east-1 first \(t1; withdrawn at agent t3: "us-east-1" → use eu-west-2\)/, agentSide);
+  const superseded = renderScaffold([ev(1, { note: "Pro is $49" }), corr(2, ["$49"], ["$39"]), corr(3, ["$49", "$39"], ["$29"], { supersedes: [2] })], { withIdentity: false }).text;
+  // edited after the first red run: `supersedes` is a list in the client (supersededSet); it was written as a number
+  assert.match(superseded, /Pro is \$49 \(t1; withdrawn at t3: "\$49" → use \$29\)/, superseded);
+});
