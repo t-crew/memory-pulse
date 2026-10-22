@@ -6,6 +6,7 @@
 #
 # Steps, each gated on the previous one:
 #   1. test gate  — the client suite must report `fail 0` (never gate on a filter pipeline)
+#   1b. IP gate   — ip-gate --publish over exactly the npm pack list; fails closed (added 2026-10-22)
 #   2. version    — package.json, server.json, .claude-plugin, .codex-plugin carry the same version
 #   3. tag + push — v<version>, `git push --follow-tags`; release.yml then publishes to npm AND the
 #                   MCP registry with no tokens (OIDC trusted publishing — needs the npm Trusted
@@ -37,6 +38,12 @@ LOG="${TMPDIR:-/tmp}/mp-release-test.log"
 node --test test/*.test.js > "$LOG" 2>&1 || true
 grep -E "^ℹ fail 0$" "$LOG" > /dev/null || { echo "tests not green — see $LOG"; exit 1; }
 grep -E "^ℹ (tests|pass|fail)" "$LOG" | tr '\n' ' '; echo
+
+echo "1b/4 IP gate over exactly the npm pack file list (fails closed; a missing gate is a failure)"
+IPGATE="$HOME/.config/opencode/tools/ip-gate.mjs"
+[ -f "$IPGATE" ] || { echo "ip-gate not found at $IPGATE"; exit 1; }
+noproxy node "$HOME/.config/opencode/tools/ip-gate.mjs" --publish >"${TMPDIR:-/tmp}/mp-release-ipgate.log" 2>&1 || { grep -E "Files scanned|GATE" "${TMPDIR:-/tmp}/mp-release-ipgate.log"; echo "IP gate failed: see the log; nothing was pushed"; exit 1; }
+grep -E "Files scanned|GATE" "${TMPDIR:-/tmp}/mp-release-ipgate.log"
 
 echo "2/4 version consistency"
 for f in server.json .claude-plugin/plugin.json .codex-plugin/plugin.json mcpb/manifest.json; do

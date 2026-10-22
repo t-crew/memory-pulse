@@ -16,7 +16,7 @@ const load = async (tag) => {
 
 test("agent ledger: scope='workspace' writes to the agent ledger with its own chain; the project ledger is untouched", async () => {
   const { appendEvent, readEvents, verifyChain, ws, ledger } = await load("ws");
-  const r = appendEvent({ cause: "identity-set", effect: "travis-crew-founder", note: "Travis Crew, founder; works on the post-Cartesian estate", tags: ["identity"], pinned: true, scope: "agent" });
+  const r = appendEvent({ cause: "identity-set", effect: "travis-crew-founder", note: "Travis Crew, founder; works on the research estate", tags: ["identity"], pinned: true, scope: "agent" });
   assert.equal(r.written, true); assert.equal(r.ledger, ws); assert.ok(existsSync(ws));
   assert.equal(readEvents().events.length, 0, "project ledger untouched"); assert.equal(readEvents({ scope: "agent" }).events.length, 1);
   assert.equal(verifyChain(ws).ok, true); assert.equal(verifyChain(ws).chained, 1);
@@ -25,7 +25,7 @@ test("agent ledger: scope='workspace' writes to the agent ledger with its own ch
 
 test("identity block: the agent's pinned self, standing rules and preferences print first, with the chain head as the memory's fingerprint", async () => {
   const { appendEvent, readEvents, identityBlock } = await load("id");
-  appendEvent({ cause: "identity-set", effect: "travis-crew-founder", note: "Travis Crew, founder; works on the post-Cartesian estate", tags: ["identity"], pinned: true, scope: "agent" });
+  appendEvent({ cause: "identity-set", effect: "travis-crew-founder", note: "Travis Crew, founder; works on the research estate", tags: ["identity"], pinned: true, scope: "agent" });
   appendEvent({ cause: "rule-set", effect: "commit-attribution-travis-only", note: "Commits are attributed to Travis only, never Co-Authored-By", tags: ["rule"], pinned: true, scope: "agent" });
   appendEvent({ cause: "preference", effect: "prefers-tdd", note: "prefers test-first builds", tags: ["preference"], scope: "agent" });
   appendEvent({ cause: "noise", effect: "not-identity", note: "some project-ish event that landed here", scope: "agent" });
@@ -158,7 +158,7 @@ test("ordinary speech and pasted documents are left alone", async () => {
     "we have no acquisition channel yet, that is the real problem",
     // The t918 shape: a design document read as a correction, after which the
     // guard enforced a field name until it was superseded.
-    ["# HMK design",
+    ["# Key service design",
      "The update_key call returns a NEW key. Never reuse a key across requests.",
      "No plaintext is stored. The server does not decrypt. Do not log the payload.",
      "Fields: memory_key, state_vector, integrity_value.",
