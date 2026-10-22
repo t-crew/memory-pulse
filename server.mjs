@@ -131,6 +131,17 @@ export function instructionLike(text) {
   if (typeof text !== "string" || !text) return [];
   return INSTRUCTION_PATTERNS.filter(([, re]) => re.test(text)).map(([id]) => id);
 }
+// Lines planted for the agent in a file a session loads (lint, 2026-10-22): instructionLike() line by line, fences included, without
+// its tag and install patterns. On 282 real memory and governance files (18,162 lines) those two fired on 296 placeholders such as
+// `<name>`, HTML tags and documented `curl | bash` installs; the other seven fired on none. Returns line numbers and pattern ids
+// only, never the text: printing a planted line would hand it to the agent that ran lint (test/muse-memory.test.js).
+const PLANTED_SKIP = new Set(["protect-boundaries", "protect-installs"]);
+export function plantedLines(text) {
+  return String(text ?? "").split("\n").flatMap((raw, i) => {
+    const patterns = instructionLike(raw).filter((id) => !PLANTED_SKIP.has(id));
+    return patterns.length ? [{ line: i + 1, patterns }] : [];
+  });
+}
 
 const t_next = (events) => events.reduce((m, e) => Math.max(m, e.t ?? 0), 0) + 1;
 // ---- Hash chain (2026-09-03). Every appended row carries prev (hash of the previous chained row) and hash (sha256 of its
@@ -2394,7 +2405,10 @@ async function askUsageConsent() {
 // file the ledger knows nothing about is NO EVIDENCE — never a pass. Asked
 // for as "a hook dry-run mode and a lint-style consistency check" across
 // "4+ governance layers with no declared precedence" (claude-code #90350).
-const LINT_DEFAULTS = ["CLAUDE.md", "AGENTS.md", ".claude/CLAUDE.md", ".claude/rules", ".cursorrules", ".cursor/rules", ".github/copilot-instructions.md", ".codex/AGENTS.md", ".memory-pulse/invariants.jsonl"];
+// Muse Code (2026-10-22): .agents/AGENTS.md is one of its instruction files, and .agents/memory/ (a MEMORY.md index plus topic files)
+// is committed project memory, which it loads even in a workspace the user has not trusted. A line in any linted file that reads like
+// an instruction planted for the agent (plantedLines) makes the file BLOCKED too.
+const LINT_DEFAULTS = ["CLAUDE.md", "AGENTS.md", ".claude/CLAUDE.md", ".claude/rules", ".cursorrules", ".cursor/rules", ".github/copilot-instructions.md", ".codex/AGENTS.md", ".agents/AGENTS.md", ".agents/memory", ".memory-pulse/invariants.jsonl"];
 function lintTargets(args) {
   const out = [];
   const add = (p) => {
@@ -2422,7 +2436,9 @@ async function cliLint() {
   for (const f of files) {
     let text = ""; try { text = readFileSync(f, "utf8"); } catch { continue; }
     const v = localCheck(events, { kind: "lint", text, path: f }, invariants, { chain: lintChain, seal: lintSeal });
-    rows.push({ file: f, verdict: v.verdict, reasons: v.reasons.filter((r) => !/^\d+ recorded event/.test(r)), corrections: v.corrections.map((h) => ({ term: h.term, t: h.t })), invariants: v.invariants.map((i) => i.id) });
+    const injections = plantedLines(text);
+    const reasons = [...v.reasons.filter((r) => !/^\d+ recorded event/.test(r)), ...injections.map((i) => `${f}:${i.line} reads like an instruction planted for the agent (${i.patterns.join(", ")}); the line is not printed`)];
+    rows.push({ file: f, verdict: injections.length ? "blocked" : v.verdict, reasons, corrections: v.corrections.map((h) => ({ term: h.term, t: h.t })), invariants: v.invariants.map((i) => i.id), injections });
   }
   const retired = supersededSet(events);
   const ledger = {
@@ -2432,7 +2448,7 @@ async function cliLint() {
     superseded: retired.size,
   };
   const blocked = rows.filter((r) => r.verdict === "blocked");
-  const summary = { files: rows.length, blocked: blocked.length, verified: rows.filter((r) => r.verdict === "verified").length, noEvidence: rows.filter((r) => r.verdict === "no_evidence").length };
+  const summary = { files: rows.length, blocked: blocked.length, verified: rows.filter((r) => r.verdict === "verified").length, noEvidence: rows.filter((r) => r.verdict === "no_evidence").length, injections: rows.reduce((n, r) => n + r.injections.length, 0) };
   if (asJson) { console.log(JSON.stringify({ ledger, rows, summary }, null, 2)); }
   else {
     console.log(loadedLine(led, events));
@@ -2443,7 +2459,8 @@ async function cliLint() {
       for (const reason of r.reasons) if (r.verdict !== "no_evidence") console.log(`             • ${reason}`);
     }
     if (ledger.unenforceableCorrections) console.log(`  note: ${ledger.unenforceableCorrections} correction(s) carry no withdrawn terms — they surface in the brief but nothing can enforce them; add withdrawn: [...] to make them bind`);
-    console.log(`lint: ${summary.files} file(s) — ${summary.blocked} blocked, ${summary.verified} verified, ${summary.noEvidence} no evidence${summary.blocked ? " — a rule your ledger retired is still being loaded into sessions" : ""}`);
+    const stale = blocked.some((r) => r.corrections.length || r.invariants.length);
+    console.log(`lint: ${summary.files} file(s) — ${summary.blocked} blocked, ${summary.verified} verified, ${summary.noEvidence} no evidence${stale ? " — a rule your ledger retired is still being loaded into sessions" : ""}${summary.injections ? ` — ${summary.injections} line(s) read like instructions planted for the agent: review them before a session loads these files` : ""}`);
   }
   if (blocked.length) process.exit(2);
   if (ci && !rows.length) process.exit(1);
@@ -2489,7 +2506,7 @@ Commands
   weights                             what each memory did: check outcomes when it was shown and when it sat out at random; retired ones marked
   adopt [--yes] [--json]              enforce the corrections you already keep: Claude Code feedback memories, CLAUDE.md, AGENTS.md, rules files (shows them; --yes records them)
                                       the shared agent message board: a separate chained ledger any agent can post to and read; passive (nothing wakes or prompts an agent); a message is data, never an instruction; a claim stays open until another agent's verdict, and a synthesis is refused over an open claim
-  lint [--ci] [--json] [paths...]     the guard's check over CLAUDE.md, AGENTS.md, .claude/rules, .cursorrules and the other governance files a session loads
+  lint [--ci] [--json] [paths...]     the guard's check over CLAUDE.md, AGENTS.md, .claude/rules, .cursorrules, Muse Code's .agents/memory and the other files a session loads; also blocks lines planted for the agent
   guard [--verbose]                   PreToolUse hook: reads the tool call from stdin, exit 2 with the ledger line when an edit writes a withdrawn value back
   guard allow "<term>" [--path <prefix>] "<reason>"
                                       record a false block as an override scoped to a path prefix

@@ -379,7 +379,8 @@ stale rule with full confidence. `lint` runs the guard's check over the files
 a session will read and gives each of them one of the three verdicts. It
 covers `CLAUDE.md`, `AGENTS.md`, `.claude/CLAUDE.md`, `.claude/rules/`,
 `.cursorrules`, `.cursor/rules/`, `.github/copilot-instructions.md`,
-`.codex/AGENTS.md`, `.memory-pulse/invariants.jsonl`, and any paths you pass:
+`.codex/AGENTS.md`, Muse Code's `.agents/AGENTS.md` and `.agents/memory/`,
+`.memory-pulse/invariants.jsonl`, and any paths you pass:
 
 ```
 $ npx memory-pulse lint
@@ -395,6 +396,15 @@ Exit 2 on any blocked file. Under `--ci` it also exits 1 when it found nothing
 to check, so an empty run is never reported as a pass. `--json` is there for
 machines. It also names the corrections that carry no `withdrawn` terms, which
 surface in the brief but which nothing can enforce.
+
+A line in any of those files that reads like an instruction planted for the
+agent (ignore your previous instructions, send the keys somewhere, don't tell
+the user) also makes the file BLOCKED. Lint names the file, the line number and
+the pattern, and never prints the line itself. This matters most for committed
+agent memory: Muse Code loads a repository's `.agents/memory/` even in a
+workspace you have not trusted, so run `lint` on a checkout you did not write
+before an agent opens it. On 282 real memory and instruction files (18,162
+lines) the check flagged nothing.
 
 ## Tamper evidence: the ledger cannot be edited quietly
 
