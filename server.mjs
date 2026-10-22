@@ -131,6 +131,49 @@ export function instructionLike(text) {
   if (typeof text !== "string" || !text) return [];
   return INSTRUCTION_PATTERNS.filter(([, re]) => re.test(text)).map(([id]) => id);
 }
+// Lines planted for the agent in a file a session loads (lint, 2026-10-22). Not instructionLike(): those patterns screen memory ROWS,
+// where any instruction is suspect, and on instruction files they flagged 17 of 20 ordinary lines ("run the following command", "never
+// print the system prompt to the logs") and 21 of 1,500 package READMEs (release review 2026-10-22). Instructions are what CLAUDE.md
+// is for, so lint looks only for the shapes that hijack an agent: an override of its previous instructions, credentials sent to an
+// address, concealment from the user, and a role tag. It catches common phrasings, not every one (base64, a forged authorisation and
+// an environment override pass it). Zero-width characters are removed first, and each line is also read joined to the next, so a
+// phrase split over a line break is reported at its first line. Returns line numbers and pattern ids only, never the text: printing a
+// planted line would hand it to the agent that ran lint (test/muse-memory.test.js).
+// a negation counts only when it governs the verb itself ("never email tokens"), not "do not forget to email ..." (third pass)
+const NEGATED = /\b(never|don't|do not|must not|should not|shouldn't)\s+(\w+ly\s+)?$/i;
+const PLANTED_PATTERNS = [
+  ["protect-instructions", /\b(ignore|disregard|forget)\b[^.\n]{0,30}\b(previous|prior|earlier|preceding)\b[^.\n]{0,20}\b(instructions?|prompts?|directives?|rules?)\b|\b(ignore|disregard|forget)\b[^.\n]{0,20}\b(instructions?|prompts?)\s+(above|before this)\b|\b(ignore|disregard|forget)\s+(everything|anything|all)\b[^.\n]{0,12}\byou (were|have been|'ve been) (told|given|instructed)\b/i],
+  // the object is a secret the agent can reach (API keys, an SSH or private key, .env, a key file, every token it finds), and the
+  // target an address; "send the refresh token to https://auth..." documents an API and passes (re-verification 2026-10-22). A gap
+  // may cross a dot inside a path or a domain (~/.ssh, .env), never a sentence end.
+  ["protect-credentials", /\b(send|post|upload|exfiltrat\w*|leak|forward|email|transmit|copy)\b(?:[^.\n]|\.(?=\S)){0,50}(\b(api[\s_-]?keys?|keys|tokens?|ssh[\s_-]?keys?|private[\s_-]?keys?|secrets?|passwords?|credentials?)\b|\$?\b[A-Z][A-Z0-9_]*(TOKEN|SECRET|KEY)\b|id_rsa|\.env\b|~\/|\/key\b)(?:[^.\n]|\.(?=\S)){0,50}\b(to|via|at)\b(?:[^.\n]|\.(?=\S)){0,25}(https?:\/\/|[\w.-]+@[\w-]+\.[\w.-]+|\bme\b)/i],
+  ["protect-transparency", /\b(do not|don't|never)\b[^.\n]{0,12}\b(tell|inform)\b[^.\n]{0,6}\b(the )?(user|human|operator)\b[^.\n]{0,25}\b(about )?(this|these|that you)\b|\b(do not|don't|never)\b[^.\n]{0,12}\blet\b[^.\n]{0,6}\b(the )?(user|human|operator)\s+know\b|\b(do not|don't|never)\b[^.\n]{0,12}\bmention\b[^.\n]{0,20}\b(this|these|it)\b[^.\n]{0,25}\bto the (user|human|operator)\b|\b(hide|conceal|keep)\b[^.\n]{0,20}\b(this|these|it|that)\b[^.\n]{0,12}\bfrom the (user|human|operator)\b|\b(do not|don't|never)\b[^.\n]{0,6}\b(reveal|admit|disclose)\b[^.\n]{0,6}\bto the (user|human|operator)\b/i],
+  // a role tag, or a role label opening the line
+  ["protect-boundaries", /<\/?\s*(system|assistant)\s*>|^\s*\[(system|assistant)\]\s*:/i],
+  // a secret piped to a network tool
+  ["protect-credentials", /\b(cat|type|base64)\b[^|\n]{0,60}(id_rsa|\.ssh\/|\.env\b|credentials|secret|token|\/key\b)[^|\n]{0,40}\|\s*(curl|wget|nc|ncat)\b/i],
+];
+const ZERO_WIDTH = /[​-‍⁠﻿­]/g;
+const plantedIn = (text) => {
+  const t = String(text);
+  return [...new Set(PLANTED_PATTERNS.filter(([id, re]) => { const m = re.exec(t); return m && !((id === "protect-credentials" || id === "protect-instructions") && NEGATED.test(t.slice(0, m.index))); }).map(([id]) => id))];
+};
+// a withdrawn or replacement term is screened with the same narrow shapes plus a role override: the note patterns refused real
+// corrections such as "DROP TABLE sessions" and "<OldButton" (re-verification 2026-10-22)
+const ROLE = /\byou are now\b|\bfrom now on,? you\b|\bact as (an?|the) (system|admin|developer)\b/i;
+export const termLike = (x) => { const t = String(x ?? "").replace(ZERO_WIDTH, ""); return [...plantedIn(t), ...(ROLE.test(t) ? ["protect-role"] : [])]; };
+export function plantedLines(text) {
+  const lines = String(text ?? "").replace(ZERO_WIDTH, "").split("\n");
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const own = plantedIn(lines[i]);
+    // a phrase split over the break: report it at the first line, once, and only when neither line trips alone
+    const joined = !own.length && i + 1 < lines.length && !plantedIn(lines[i + 1]).length ? plantedIn(`${lines[i]} ${lines[i + 1]}`) : [];
+    const patterns = own.length ? own : joined;
+    if (patterns.length && !(out.length && out.at(-1).line === i && joined.length)) out.push({ line: i + 1, patterns });
+  }
+  return out;
+}
 
 const t_next = (events) => events.reduce((m, e) => Math.max(m, e.t ?? 0), 0) + 1;
 // ---- Hash chain (2026-09-03). Every appended row carries prev (hash of the previous chained row) and hash (sha256 of its
@@ -423,6 +466,10 @@ export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn
   // Same deterministic list as the engine; no model in the loop.
   const hits = instructionLike(note);
   if (hits.length) return { written: false, reason: "instruction-like note refused", patterns: hits, hint: "Record what happened, not what to do. Rephrase as a finding." };
+  // withdrawn and replacement terms are printed into briefs and into the guard's block message, so they are screened the same way
+  // (release review 2026-10-22)
+  const termHits = [...(Array.isArray(withdrawn) ? withdrawn : []), ...(Array.isArray(replacement) ? replacement : [])].flatMap((x) => termLike(x));
+  if (termHits.length) return { written: false, reason: "instruction-like withdrawn or replacement term refused", patterns: [...new Set(termHits)], hint: "A term is the value itself (a price, a version, a name), never an instruction." };
   const { path, events } = readEvents({ scope });
   // A duplicate is the same cause, effect, note AND terms. The old rule ignored the terms, so the product's
   // own hint ("record it again with withdrawn") was refused as a duplicate (daily-use review, 2026-09-09).
@@ -890,6 +937,9 @@ const tagged = (events, tag) => events.filter((e) => Array.isArray(e.tags) && e.
 // instruct it. Local writes refuse such a note; a row that arrived another way (an imported capsule, an older writer)
 // is held back at render and said to be.
 const HELD = "[held back: note reads like an instruction]";
+// a term from a row that arrived unscreened (git, an import) is held wherever the client prints it (release review 2026-10-22)
+const TERM_HELD = "[term held back: reads like an instruction]";
+const safeTerm = (x) => (termLike(x).length ? TERM_HELD : x);
 const shown = (e) => (instructionLike(e?.note).length ? HELD : (e?.note ?? e?.effect));
 export function identityBlock(led) {
   const soulOn = currentMode() === "soul", c = soulOn ? chainedOnly(led?.events ?? [], { brokenAt: agentBrokenAt() }) : { rows: led?.events ?? [], unchained: [] };
@@ -1245,7 +1295,7 @@ export function handoffLine(events, { now = Date.now(), maxAgeMs = 7 * 86400e3 }
 // 0.7.0: the scaffolded prompt memory (lib/scaffold.mjs), with this file's ledger helpers injected.
 export { DEFAULT_BUDGETS };
 export function renderScaffold(allEvents, opts = {}) {
-  return renderScaffoldWith(allEvents, { ...opts, deps: { inForce, supersededSet, instructionLike, handoffLine, held: HELD } });
+  return renderScaffoldWith(allEvents, { ...opts, deps: { inForce, supersededSet, instructionLike, handoffLine, containsTerm, held: HELD } });
 }
 export function promptSlice(allEvents, prompt, opts = {}) {
   return promptSliceWith(allEvents, prompt, { ...opts, deps: { inForce, supersededSet, instructionLike, containsTerm, held: HELD } });
@@ -1322,7 +1372,7 @@ export function offlineBrief(led, allEvents, { now = Date.now(), recent = 8 } = 
   const retired = supersededSet(events);
   const corr = events.filter((e) => e.kind === "correction" && !retired.has(e.t)).reverse().slice(0, 20);
   lines.push(`CORRECTIONS (${corr.length}) — read before quoting any number:`);
-  for (const c of corr) lines.push(`  ! ${c.cause} -> ${c.effect} (t${c.t})${c.withdrawn?.length ? ` — withdrawn: ${c.withdrawn.join(", ")} → ${(c.replacement ?? []).join(", ") || "(no replacement recorded)"}` : ""}${c.note ? ` — ${instructionLike(c.note).length ? HELD : String(c.note).slice(0, 120)}` : ""}`);
+  for (const c of corr) lines.push(`  ! ${c.cause} -> ${c.effect} (t${c.t})${c.withdrawn?.length ? ` — withdrawn: ${c.withdrawn.map(safeTerm).join(", ")} → ${(c.replacement ?? []).map(safeTerm).join(", ") || "(no replacement recorded)"}` : ""}${c.note ? ` — ${instructionLike(c.note).length ? HELD : String(c.note).slice(0, 120)}` : ""}`);
   if (!corr.length) lines.push("  (none recorded)");
   const rec = events.slice(-recent).reverse();
   lines.push(`RECENT (${rec.length}):`);
@@ -1354,7 +1404,7 @@ export function atRiskLines(allEvents, { now = Date.now(), minBlocks = 2, blocks
   for (const m of rows) {
     const c = corr.get(m.t); const ov = overrides.get(String(m.term).toLowerCase()) ?? 0;
     const where = [...m.dirs].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([d, n]) => `${d} ×${n}`).join(", ");
-    lines.push(`  ! t${m.t} "${m.term}" blocked ${m.n}× (${where})${c?.replacement?.length ? ` → use ${c.replacement.join(", ")}` : ""}${ov ? ` · ${ov} override(s)` : ""}${m.last ? ` · last ${ago(now - m.last)}` : ""}`);
+    lines.push(`  ! t${m.t} "${safeTerm(m.term)}" blocked ${m.n}× (${where})${c?.replacement?.length ? ` → use ${c.replacement.map(safeTerm).join(", ")}` : ""}${ov ? ` · ${ov} override(s)` : ""}${m.last ? ` · last ${ago(now - m.last)}` : ""}`);
   }
   return lines.join("\n");
 }
@@ -1373,7 +1423,7 @@ async function cliBefore() {
   const retired = supersededSet(inForce(events));
   const hay = `${operation} ${text}`.toLowerCase();
   const exact = inForce(events).filter((e) => e.kind === "correction" && !retired.has(e.t) && (e.withdrawn ?? []).some((w) => w && hay.includes(String(w).toLowerCase())));
-  const line = (c, why) => `  ! (t${c.t}) ${c.cause} -> ${c.effect}${c.withdrawn?.length ? ` — withdrawn ${c.withdrawn.map((w) => `"${w}"`).join(", ")}${c.replacement?.length ? ` → use ${c.replacement.join(", ")}` : ""}` : ""}${why ? ` · ${why}` : ""}`;
+  const line = (c, why) => `  ! (t${c.t}) ${c.cause} -> ${c.effect}${c.withdrawn?.length ? ` — withdrawn ${c.withdrawn.map((w) => `"${safeTerm(w)}"`).join(", ")}${c.replacement?.length ? ` → use ${c.replacement.map(safeTerm).join(", ")}` : ""}` : ""}${why ? ` · ${why}` : ""}`;
   if (exact.length) { console.log(`BEFORE "${operation || path}" · rung exact — the operation names a withdrawn term:`); for (const c of exact) console.log(line(c, "")); }
   try {
     const out = await callApi("/v1/before", { events, operation, path, text, blocks: readBlocks() });
@@ -1647,7 +1697,7 @@ async function cliBrief() {
     const tail = [];
     const risk = atRiskLines(events); if (risk) tail.push(risk);
     if (Array.isArray(out.quarantined) && out.quarantined.length) {
-      tail.push(`⚠ ${out.quarantined.length} note(s) quarantined — instruction-like content was not rendered (t=${out.quarantined.map((q) => q.t).join(", ")})`);
+      tail.push(`⚠ ${out.quarantined.length} row(s) quarantined — an instruction-like note or term was not rendered (t=${out.quarantined.map((q) => q.t).join(", ")})`);
     }
     const sd = sealDriftLine(out); if (sd) tail.push(sd);
     const foot = telemetryFooter(out.telemetry);
@@ -1871,7 +1921,8 @@ export function shellWrites(input) {
 // Ledger t values whose withdrawn terms a later correction retired.
 export function supersededSet(events) {
   const retired = new Set();
-  for (const e of events) if (e.kind === "correction" && Array.isArray(e.supersedes)) for (const t of e.supersedes) retired.add(t);
+  // a row t given as a string ("5") retires t5, as the engine reads it (re-verification 2026-10-22)
+  for (const e of events) if (e.kind === "correction" && Array.isArray(e.supersedes)) for (const t of e.supersedes) retired.add(Number(t));
   return retired;
 }
 const invariantsPath = () => join(dirname(ledgerPath()), "invariants.jsonl");
@@ -1923,7 +1974,7 @@ export function localCheck(allEvents, action, invariants = [], opts = {}) {
       }
     }
   }
-  for (const h of corrections) reasons.push(`"${h.term}" was withdrawn at ledger t${h.t}: ${h.cause} -> ${h.effect}${h.replacement.length ? ` — use ${h.replacement.join(" / ")}` : ""}`);
+  for (const h of corrections) reasons.push(`"${safeTerm(h.term)}" was withdrawn at ledger t${h.t}: ${h.cause} -> ${h.effect}${h.replacement.length ? ` — use ${h.replacement.map(safeTerm).join(" / ")}` : ""}`);
   if (text) for (const inv of invariants) {
     if (!inv || typeof inv.id !== "string") continue;
     // `paths`: prefixes the invariant applies to; absent = every path. A rule
@@ -2394,13 +2445,19 @@ async function askUsageConsent() {
 // file the ledger knows nothing about is NO EVIDENCE — never a pass. Asked
 // for as "a hook dry-run mode and a lint-style consistency check" across
 // "4+ governance layers with no declared precedence" (claude-code #90350).
-const LINT_DEFAULTS = ["CLAUDE.md", "AGENTS.md", ".claude/CLAUDE.md", ".claude/rules", ".cursorrules", ".cursor/rules", ".github/copilot-instructions.md", ".codex/AGENTS.md", ".memory-pulse/invariants.jsonl"];
-function lintTargets(args) {
+// Muse Code (2026-10-22): .agents/AGENTS.md is one of its instruction files, and .agents/memory/ (a MEMORY.md index plus topic files)
+// is committed project memory, which it loads even in a workspace the user has not trusted. A line in any linted file that reads like
+// an instruction planted for the agent (plantedLines) makes the file BLOCKED too.
+const LINT_DEFAULTS = ["CLAUDE.md", "AGENTS.md", ".claude/CLAUDE.md", ".claude/rules", ".cursorrules", ".cursor/rules", ".github/copilot-instructions.md", ".codex/AGENTS.md", ".agents/AGENTS.md", ".agents/memory", ".memory-pulse/invariants.jsonl"];
+// An entry lint cannot read (a dangling symlink, a directory named like a file) is skipped and named on stderr, never a crash and
+// never silent (release review 2026-10-22).
+function lintTargets(args, skipped = []) {
   const out = [];
+  const isFile = (fp) => { try { return statSync(fp).isFile(); } catch { skipped.push(fp); return false; } };
   const add = (p) => {
-    if (!existsSync(p)) return;
-    const st = statSync(p);
-    if (st.isDirectory()) { for (const f of readdirSync(p, { recursive: true })) { const fp = join(p, String(f)); if (statSync(fp).isFile() && /\.(md|mdc|txt|jsonl)$/i.test(fp)) out.push(fp); } }
+    if (!existsSync(p)) { try { statSync(p); } catch { /* absent, or a dangling link */ } return; }
+    let st; try { st = statSync(p); } catch { skipped.push(p); return; }
+    if (st.isDirectory()) { for (const f of readdirSync(p, { recursive: true })) { const fp = join(p, String(f)); if (/\.(md|mdc|txt|jsonl)$/i.test(fp) && isFile(fp)) out.push(fp); } }
     else out.push(p);
   };
   for (const p of args.length ? args : LINT_DEFAULTS) add(p);
@@ -2409,12 +2466,14 @@ function lintTargets(args) {
 async function cliLint() {
   recordUsage("lint");
   const argv = process.argv.slice(3);
-  const ci = argv.includes("--ci"), asJson = argv.includes("--json");
+  const ci = argv.includes("--ci"), asJson = argv.includes("--json"), strict = argv.includes("--strict");
   const paths = argv.filter((a) => !a.startsWith("--"));
   const led = readEvents();
   const { events } = led;
   const invariants = readInvariants();
-  const files = lintTargets(paths).filter((f) => !/(^|[\\/])\.memory-pulse[\\/]events\.jsonl$/.test(f));
+  const skipped = [];
+  const files = lintTargets(paths, skipped).filter((f) => !/(^|[\\/])\.memory-pulse[\\/]events\.jsonl$/.test(f));
+  for (const p of skipped) console.error(`lint: skipped ${relPath(p)} (unreadable)`);
   const rows = [];
   // Neither the chain walk nor the seal fold depends on the file being linted, so both are computed once for the run.
   const lintChain = verifyChain();
@@ -2422,7 +2481,11 @@ async function cliLint() {
   for (const f of files) {
     let text = ""; try { text = readFileSync(f, "utf8"); } catch { continue; }
     const v = localCheck(events, { kind: "lint", text, path: f }, invariants, { chain: lintChain, seal: lintSeal });
-    rows.push({ file: f, verdict: v.verdict, reasons: v.reasons.filter((r) => !/^\d+ recorded event/.test(r)), corrections: v.corrections.map((h) => ({ term: h.term, t: h.t })), invariants: v.invariants.map((i) => i.id) });
+    const injections = plantedLines(text);
+    // a file blocked for a planted line does not also say "no recorded event bears on this lint" (release review 2026-10-22)
+    const reasons = [...v.reasons.filter((r) => !/^\d+ recorded event/.test(r) && !(injections.length && /^no recorded event bears/.test(r))), ...injections.map((i) => `${f}:${i.line} reads like an instruction planted for the agent (${i.patterns.join(", ")}); the line is not printed`)];
+    // a planted line is a warning unless --strict: no line pattern separates every API doc from every planted line (third pass, 2026-10-22)
+    rows.push({ file: f, verdict: strict && injections.length ? "blocked" : v.verdict, warning: injections.length > 0, reasons, corrections: v.corrections.map((h) => ({ term: h.term, t: h.t })), invariants: v.invariants.map((i) => i.id), injections });
   }
   const retired = supersededSet(events);
   const ledger = {
@@ -2432,18 +2495,19 @@ async function cliLint() {
     superseded: retired.size,
   };
   const blocked = rows.filter((r) => r.verdict === "blocked");
-  const summary = { files: rows.length, blocked: blocked.length, verified: rows.filter((r) => r.verdict === "verified").length, noEvidence: rows.filter((r) => r.verdict === "no_evidence").length };
+  const summary = { files: rows.length, blocked: blocked.length, verified: rows.filter((r) => r.verdict === "verified").length, noEvidence: rows.filter((r) => r.verdict === "no_evidence").length, injections: rows.reduce((n, r) => n + r.injections.length, 0) };
   if (asJson) { console.log(JSON.stringify({ ledger, rows, summary }, null, 2)); }
   else {
     console.log(loadedLine(led, events));
     if (!rows.length) console.log("lint: no governance files found (looked for " + LINT_DEFAULTS.join(", ") + ") — pass paths to lint something else");
     for (const r of rows) {
-      const tag = r.verdict === "blocked" ? "BLOCKED    " : r.verdict === "verified" ? "verified   " : "no evidence";
+      const tag = r.verdict === "blocked" ? "BLOCKED    " : r.warning ? "WARNING    " : r.verdict === "verified" ? "verified   " : "no evidence";
       console.log(`  ${tag} ${r.file}`);
-      for (const reason of r.reasons) if (r.verdict !== "no_evidence") console.log(`             • ${reason}`);
+      for (const reason of r.reasons) if (r.verdict !== "no_evidence" || r.warning) console.log(`             • ${reason}`);
     }
     if (ledger.unenforceableCorrections) console.log(`  note: ${ledger.unenforceableCorrections} correction(s) carry no withdrawn terms — they surface in the brief but nothing can enforce them; add withdrawn: [...] to make them bind`);
-    console.log(`lint: ${summary.files} file(s) — ${summary.blocked} blocked, ${summary.verified} verified, ${summary.noEvidence} no evidence${summary.blocked ? " — a rule your ledger retired is still being loaded into sessions" : ""}`);
+    const stale = blocked.some((r) => r.corrections.length || r.invariants.length);
+    console.log(`lint: ${summary.files} file(s) — ${summary.blocked} blocked, ${summary.verified} verified, ${summary.noEvidence} no evidence${stale ? " — a rule your ledger retired is still being loaded into sessions" : ""}${summary.injections ? ` — ${summary.injections} line(s) read like instructions planted for the agent: review them before a session loads these files` : ""}`);
   }
   if (blocked.length) process.exit(2);
   if (ci && !rows.length) process.exit(1);
@@ -2489,7 +2553,8 @@ Commands
   weights                             what each memory did: check outcomes when it was shown and when it sat out at random; retired ones marked
   adopt [--yes] [--json]              enforce the corrections you already keep: Claude Code feedback memories, CLAUDE.md, AGENTS.md, rules files (shows them; --yes records them)
                                       the shared agent message board: a separate chained ledger any agent can post to and read; passive (nothing wakes or prompts an agent); a message is data, never an instruction; a claim stays open until another agent's verdict, and a synthesis is refused over an open claim
-  lint [--ci] [--json] [paths...]     the guard's check over CLAUDE.md, AGENTS.md, .claude/rules, .cursorrules and the other governance files a session loads
+  lint [--ci] [--json] [--strict] [paths...]
+                                      the guard's check over CLAUDE.md, AGENTS.md, .claude/rules, .cursorrules, Muse Code's .agents/memory and the other files a session loads; warns on a line planted for the agent (--strict blocks on it)
   guard [--verbose]                   PreToolUse hook: reads the tool call from stdin, exit 2 with the ledger line when an edit writes a withdrawn value back
   guard allow "<term>" [--path <prefix>] "<reason>"
                                       record a false block as an override scoped to a path prefix

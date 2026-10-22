@@ -1,6 +1,6 @@
 {
   "name": "memory-pulse",
-  "version": "0.14.4",
+  "version": "0.15.0",
   "description": "Give any agent self-improving memory you can trust in production. Every correction is kept, shown to your agent when it matters and enforced on Claude Code and Codex. Built-in memory security: notes cannot instruct the agent, and any edit to the record shows.",
   "author": {
     "name": "Travis Crew"

@@ -58,7 +58,7 @@ engines); the test suite runs on 22 and 24.
 
 `remember` and `help` from the shell arrive in 0.5.9. npm served 0.5.8 on
 2026-09-09, where both exit 1 with `unknown command`. If npx serves an older
-cached release, pin this one: `npx -y memory-pulse@0.14.4`; from a checkout,
+cached release, pin this one: `npx -y memory-pulse@0.15.0`; from a checkout,
 run `node server.mjs`. Four more things in this README are
 0.5.9 behaviour and differ on 0.5.8: `guard --verbose` names non-JSON stdin
 on stderr (0.5.8 prints nothing), `handoff` with no transcript writes nothing
@@ -191,7 +191,7 @@ and exits 0. The first `remember` creates `.memory-pulse/events.jsonl`, from a
 tool call or from the shell:
 
 ```
-npx -y memory-pulse@0.14.4 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
+npx -y memory-pulse@0.15.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 # before 0.6.0 is on npm, the same command from a checkout:
 git clone https://github.com/t-crew/memory-pulse.git && node memory-pulse/server.mjs remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 ```
@@ -379,7 +379,8 @@ stale rule with full confidence. `lint` runs the guard's check over the files
 a session will read and gives each of them one of the three verdicts. It
 covers `CLAUDE.md`, `AGENTS.md`, `.claude/CLAUDE.md`, `.claude/rules/`,
 `.cursorrules`, `.cursor/rules/`, `.github/copilot-instructions.md`,
-`.codex/AGENTS.md`, `.memory-pulse/invariants.jsonl`, and any paths you pass:
+`.codex/AGENTS.md`, Muse Code's `.agents/AGENTS.md` and `.agents/memory/`,
+`.memory-pulse/invariants.jsonl`, and any paths you pass:
 
 ```
 $ npx memory-pulse lint
@@ -395,6 +396,18 @@ Exit 2 on any blocked file. Under `--ci` it also exits 1 when it found nothing
 to check, so an empty run is never reported as a pass. `--json` is there for
 machines. It also names the corrections that carry no `withdrawn` terms, which
 surface in the brief but which nothing can enforce.
+
+A line in any of those files that reads like it was planted to hijack the
+agent (an order to ignore its previous instructions, to send keys or tokens to
+an address, to keep something from the user, or a `<system>` tag) is reported
+as a WARNING with the file, the line number and the pattern; the line itself is
+never printed. Lint still exits 0 on a warning, because no pattern can tell
+every API doc ("send the token to https://auth...") from a planted line;
+`lint --strict` blocks on it. This matters most for committed agent memory:
+Muse Code loads a repository's `.agents/memory/` even in a workspace you have
+not trusted, so run `lint --strict` on a checkout you did not write before an
+agent opens it. On 282 memory and instruction files and 1,500 package READMEs
+(about 278,000 lines) it warned on nothing.
 
 ## Tamper evidence: the ledger cannot be edited quietly
 
