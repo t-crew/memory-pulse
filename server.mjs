@@ -139,21 +139,24 @@ export function instructionLike(text) {
 // an environment override pass it). Zero-width characters are removed first, and each line is also read joined to the next, so a
 // phrase split over a line break is reported at its first line. Returns line numbers and pattern ids only, never the text: printing a
 // planted line would hand it to the agent that ran lint (test/muse-memory.test.js).
-const NEGATED = /\b(never|don't|do not|must not|should not|shouldn't|no one should)\b[^.\n]{0,12}$/i;
+// a negation counts only when it governs the verb itself ("never email tokens"), not "do not forget to email ..." (third pass)
+const NEGATED = /\b(never|don't|do not|must not|should not|shouldn't)\s+(\w+ly\s+)?$/i;
 const PLANTED_PATTERNS = [
-  ["protect-instructions", /\b(ignore|disregard|forget)\b[^.\n]{0,30}\b(previous|prior|earlier|preceding)\b[^.\n]{0,20}\b(instructions?|prompts?|directives?|rules?)\b|\b(ignore|disregard|forget)\b[^.\n]{0,20}\b(instructions?|prompts?)\s+(above|before this)\b/i],
+  ["protect-instructions", /\b(ignore|disregard|forget)\b[^.\n]{0,30}\b(previous|prior|earlier|preceding)\b[^.\n]{0,20}\b(instructions?|prompts?|directives?|rules?)\b|\b(ignore|disregard|forget)\b[^.\n]{0,20}\b(instructions?|prompts?)\s+(above|before this)\b|\b(ignore|disregard|forget)\s+(everything|anything|all)\b[^.\n]{0,12}\byou (were|have been|'ve been) (told|given|instructed)\b/i],
   // the object is a secret the agent can reach (API keys, an SSH or private key, .env, a key file, every token it finds), and the
   // target an address; "send the refresh token to https://auth..." documents an API and passes (re-verification 2026-10-22). A gap
   // may cross a dot inside a path or a domain (~/.ssh, .env), never a sentence end.
-  ["protect-credentials", /\b(send|post|upload|exfiltrat\w*|leak|forward|email|transmit|copy)\b(?:[^.\n]|\.(?=\S)){0,50}(\b(api[\s_-]?keys?|keys|ssh[\s_-]?keys?|private[\s_-]?keys?|secrets|passwords|credentials)\b|\b(every|all|any)\b[^.\n]{0,20}\b(tokens?|secrets?|keys?|passwords?)\b|id_rsa|\.env\b|~\/|\/key\b)(?:[^.\n]|\.(?=\S)){0,50}\b(to|via|at)\b(?:[^.\n]|\.(?=\S)){0,25}(https?:\/\/|[\w.-]+@[\w-]+\.[\w.-]+|\bme\b)/i],
-  ["protect-transparency", /\b(do not|don't|never)\b[^.\n]{0,12}\b(tell|inform)\b[^.\n]{0,6}\b(the )?(user|human|operator)\b[^.\n]{0,25}\b(about )?(this|these|that you)\b|\b(do not|don't|never)\b[^.\n]{0,12}\blet\b[^.\n]{0,6}\b(the )?(user|human|operator)\s+know\b|\b(do not|don't|never)\b[^.\n]{0,12}\bmention\b[^.\n]{0,20}\b(this|these|it)\b[^.\n]{0,25}\bto the (user|human|operator)\b|\b(hide|conceal|keep)\b[^.\n]{0,20}\b(this|these|it|that)\b[^.\n]{0,12}\bfrom the (user|human|operator)\b/i],
-  // a role tag outside an inline code span, or a role label opening the line
+  ["protect-credentials", /\b(send|post|upload|exfiltrat\w*|leak|forward|email|transmit|copy)\b(?:[^.\n]|\.(?=\S)){0,50}(\b(api[\s_-]?keys?|keys|tokens?|ssh[\s_-]?keys?|private[\s_-]?keys?|secrets?|passwords?|credentials?)\b|\$?\b[A-Z][A-Z0-9_]*(TOKEN|SECRET|KEY)\b|id_rsa|\.env\b|~\/|\/key\b)(?:[^.\n]|\.(?=\S)){0,50}\b(to|via|at)\b(?:[^.\n]|\.(?=\S)){0,25}(https?:\/\/|[\w.-]+@[\w-]+\.[\w.-]+|\bme\b)/i],
+  ["protect-transparency", /\b(do not|don't|never)\b[^.\n]{0,12}\b(tell|inform)\b[^.\n]{0,6}\b(the )?(user|human|operator)\b[^.\n]{0,25}\b(about )?(this|these|that you)\b|\b(do not|don't|never)\b[^.\n]{0,12}\blet\b[^.\n]{0,6}\b(the )?(user|human|operator)\s+know\b|\b(do not|don't|never)\b[^.\n]{0,12}\bmention\b[^.\n]{0,20}\b(this|these|it)\b[^.\n]{0,25}\bto the (user|human|operator)\b|\b(hide|conceal|keep)\b[^.\n]{0,20}\b(this|these|it|that)\b[^.\n]{0,12}\bfrom the (user|human|operator)\b|\b(do not|don't|never)\b[^.\n]{0,6}\b(reveal|admit|disclose)\b[^.\n]{0,6}\bto the (user|human|operator)\b/i],
+  // a role tag, or a role label opening the line
   ["protect-boundaries", /<\/?\s*(system|assistant)\s*>|^\s*\[(system|assistant)\]\s*:/i],
+  // a secret piped to a network tool
+  ["protect-credentials", /\b(cat|type|base64)\b[^|\n]{0,60}(id_rsa|\.ssh\/|\.env\b|credentials|secret|token|\/key\b)[^|\n]{0,40}\|\s*(curl|wget|nc|ncat)\b/i],
 ];
 const ZERO_WIDTH = /[​-‍⁠﻿­]/g;
 const plantedIn = (text) => {
-  const t = String(text).replace(/`[^`\n]*`/g, " ");
-  return PLANTED_PATTERNS.filter(([id, re]) => { const m = re.exec(t); return m && !((id === "protect-credentials" || id === "protect-instructions") && NEGATED.test(t.slice(0, m.index))); }).map(([id]) => id);
+  const t = String(text);
+  return [...new Set(PLANTED_PATTERNS.filter(([id, re]) => { const m = re.exec(t); return m && !((id === "protect-credentials" || id === "protect-instructions") && NEGATED.test(t.slice(0, m.index))); }).map(([id]) => id))];
 };
 // a withdrawn or replacement term is screened with the same narrow shapes plus a role override: the note patterns refused real
 // corrections such as "DROP TABLE sessions" and "<OldButton" (re-verification 2026-10-22)
@@ -2463,7 +2466,7 @@ function lintTargets(args, skipped = []) {
 async function cliLint() {
   recordUsage("lint");
   const argv = process.argv.slice(3);
-  const ci = argv.includes("--ci"), asJson = argv.includes("--json");
+  const ci = argv.includes("--ci"), asJson = argv.includes("--json"), strict = argv.includes("--strict");
   const paths = argv.filter((a) => !a.startsWith("--"));
   const led = readEvents();
   const { events } = led;
@@ -2481,7 +2484,8 @@ async function cliLint() {
     const injections = plantedLines(text);
     // a file blocked for a planted line does not also say "no recorded event bears on this lint" (release review 2026-10-22)
     const reasons = [...v.reasons.filter((r) => !/^\d+ recorded event/.test(r) && !(injections.length && /^no recorded event bears/.test(r))), ...injections.map((i) => `${f}:${i.line} reads like an instruction planted for the agent (${i.patterns.join(", ")}); the line is not printed`)];
-    rows.push({ file: f, verdict: injections.length ? "blocked" : v.verdict, reasons, corrections: v.corrections.map((h) => ({ term: h.term, t: h.t })), invariants: v.invariants.map((i) => i.id), injections });
+    // a planted line is a warning unless --strict: no line pattern separates every API doc from every planted line (third pass, 2026-10-22)
+    rows.push({ file: f, verdict: strict && injections.length ? "blocked" : v.verdict, warning: injections.length > 0, reasons, corrections: v.corrections.map((h) => ({ term: h.term, t: h.t })), invariants: v.invariants.map((i) => i.id), injections });
   }
   const retired = supersededSet(events);
   const ledger = {
@@ -2497,9 +2501,9 @@ async function cliLint() {
     console.log(loadedLine(led, events));
     if (!rows.length) console.log("lint: no governance files found (looked for " + LINT_DEFAULTS.join(", ") + ") — pass paths to lint something else");
     for (const r of rows) {
-      const tag = r.verdict === "blocked" ? "BLOCKED    " : r.verdict === "verified" ? "verified   " : "no evidence";
+      const tag = r.verdict === "blocked" ? "BLOCKED    " : r.warning ? "WARNING    " : r.verdict === "verified" ? "verified   " : "no evidence";
       console.log(`  ${tag} ${r.file}`);
-      for (const reason of r.reasons) if (r.verdict !== "no_evidence") console.log(`             • ${reason}`);
+      for (const reason of r.reasons) if (r.verdict !== "no_evidence" || r.warning) console.log(`             • ${reason}`);
     }
     if (ledger.unenforceableCorrections) console.log(`  note: ${ledger.unenforceableCorrections} correction(s) carry no withdrawn terms — they surface in the brief but nothing can enforce them; add withdrawn: [...] to make them bind`);
     const stale = blocked.some((r) => r.corrections.length || r.invariants.length);
@@ -2549,7 +2553,8 @@ Commands
   weights                             what each memory did: check outcomes when it was shown and when it sat out at random; retired ones marked
   adopt [--yes] [--json]              enforce the corrections you already keep: Claude Code feedback memories, CLAUDE.md, AGENTS.md, rules files (shows them; --yes records them)
                                       the shared agent message board: a separate chained ledger any agent can post to and read; passive (nothing wakes or prompts an agent); a message is data, never an instruction; a claim stays open until another agent's verdict, and a synthesis is refused over an open claim
-  lint [--ci] [--json] [paths...]     the guard's check over CLAUDE.md, AGENTS.md, .claude/rules, .cursorrules, Muse Code's .agents/memory and the other files a session loads; also blocks lines planted for the agent
+  lint [--ci] [--json] [--strict] [paths...]
+                                      the guard's check over CLAUDE.md, AGENTS.md, .claude/rules, .cursorrules, Muse Code's .agents/memory and the other files a session loads; warns on a line planted for the agent (--strict blocks on it)
   guard [--verbose]                   PreToolUse hook: reads the tool call from stdin, exit 2 with the ledger line when an edit writes a withdrawn value back
   guard allow "<term>" [--path <prefix>] "<reason>"
                                       record a false block as an override scoped to a path prefix

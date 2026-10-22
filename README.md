@@ -397,18 +397,17 @@ to check, so an empty run is never reported as a pass. `--json` is there for
 machines. It also names the corrections that carry no `withdrawn` terms, which
 surface in the brief but which nothing can enforce.
 
-A line in any of those files that tries to hijack the agent also makes the
-file BLOCKED: an order to ignore its previous instructions, to send keys or
-credentials to an address, or to keep something from the user, and a
-`<system>` tag. Lint names the file, the line number and the pattern, and never
-prints the line itself. Ordinary instructions (run this command, never drop a
-table, don't show the user stack traces) pass. It catches the common
-phrasings, not every one: an encoded or reworded line can get through. This
-matters most for committed agent memory: Muse Code loads a repository's
-`.agents/memory/` even in a workspace you have not trusted, so run `lint` on a
-checkout you did not write before an agent opens it. On 282 memory and
-instruction files and 1,500 package READMEs (about 278,000 lines) the check flagged
-nothing.
+A line in any of those files that reads like it was planted to hijack the
+agent (an order to ignore its previous instructions, to send keys or tokens to
+an address, to keep something from the user, or a `<system>` tag) is reported
+as a WARNING with the file, the line number and the pattern; the line itself is
+never printed. Lint still exits 0 on a warning, because no pattern can tell
+every API doc ("send the token to https://auth...") from a planted line;
+`lint --strict` blocks on it. This matters most for committed agent memory:
+Muse Code loads a repository's `.agents/memory/` even in a workspace you have
+not trusted, so run `lint --strict` on a checkout you did not write before an
+agent opens it. On 282 memory and instruction files and 1,500 package READMEs
+(about 278,000 lines) it warned on nothing.
 
 ## Tamper evidence: the ledger cannot be edited quietly
 

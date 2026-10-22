@@ -405,7 +405,7 @@ The ledger is read from the directory the agent started in. Start the agent at t
 
 Two branches that both append conflict on merge, because rows chain on `t` and `prev`. Never keep both sides: take one, re-record the losing rows with `remember`, and run `verify`.
 
-Invariants are declared, never inferred: one JSON object per line in `.memory-pulse/invariants.jsonl`. A `warn` rule reports; a `block` rule blocks. `lint` runs the same check over the governance files a session loads, Muse Code's `.agents/AGENTS.md` and `.agents/memory/` included. A line that reads like an instruction planted for the agent also blocks its file; lint names the line number and the pattern and never prints the line:
+Invariants are declared, never inferred: one JSON object per line in `.memory-pulse/invariants.jsonl`. A `warn` rule reports; a `block` rule blocks. `lint` runs the same check over the governance files a session loads, Muse Code's `.agents/AGENTS.md` and `.agents/memory/` included. A line that reads like an instruction planted for the agent (an order to ignore previous instructions, to send keys or tokens to an address, to keep something from the user, or a `<system>` tag) is reported as a warning with its line number and pattern, never printed, and exit stays 0; `lint --strict` blocks on it. The warning cannot tell every API doc from a planted line, so it informs rather than fails a pull request:
 
 ```sh run
 printf '%s\n' '{"id":"old-domain","statement":"the old domain was retired","patterns":["example-old.com"],"paths":["docs/"],"severity":"block","replacement":"example.com"}' > .memory-pulse/invariants.jsonl
