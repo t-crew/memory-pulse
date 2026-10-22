@@ -452,6 +452,10 @@ export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn
   // Same deterministic list as the engine; no model in the loop.
   const hits = instructionLike(note);
   if (hits.length) return { written: false, reason: "instruction-like note refused", patterns: hits, hint: "Record what happened, not what to do. Rephrase as a finding." };
+  // withdrawn and replacement terms are printed into briefs and into the guard's block message, so they are screened the same way
+  // (release review 2026-10-22)
+  const termHits = [...(Array.isArray(withdrawn) ? withdrawn : []), ...(Array.isArray(replacement) ? replacement : [])].flatMap((x) => instructionLike(String(x)));
+  if (termHits.length) return { written: false, reason: "instruction-like withdrawn or replacement term refused", patterns: [...new Set(termHits)], hint: "A term is the value itself (a price, a version, a name), never an instruction." };
   const { path, events } = readEvents({ scope });
   // A duplicate is the same cause, effect, note AND terms. The old rule ignored the terms, so the product's
   // own hint ("record it again with withdrawn") was refused as a duplicate (daily-use review, 2026-09-09).
@@ -919,6 +923,9 @@ const tagged = (events, tag) => events.filter((e) => Array.isArray(e.tags) && e.
 // instruct it. Local writes refuse such a note; a row that arrived another way (an imported capsule, an older writer)
 // is held back at render and said to be.
 const HELD = "[held back: note reads like an instruction]";
+// a term from a row that arrived unscreened (git, an import) is held wherever the client prints it (release review 2026-10-22)
+const TERM_HELD = "[term held back: reads like an instruction]";
+const safeTerm = (x) => (instructionLike(String(x ?? "")).length ? TERM_HELD : x);
 const shown = (e) => (instructionLike(e?.note).length ? HELD : (e?.note ?? e?.effect));
 export function identityBlock(led) {
   const soulOn = currentMode() === "soul", c = soulOn ? chainedOnly(led?.events ?? [], { brokenAt: agentBrokenAt() }) : { rows: led?.events ?? [], unchained: [] };
@@ -1351,7 +1358,7 @@ export function offlineBrief(led, allEvents, { now = Date.now(), recent = 8 } = 
   const retired = supersededSet(events);
   const corr = events.filter((e) => e.kind === "correction" && !retired.has(e.t)).reverse().slice(0, 20);
   lines.push(`CORRECTIONS (${corr.length}) — read before quoting any number:`);
-  for (const c of corr) lines.push(`  ! ${c.cause} -> ${c.effect} (t${c.t})${c.withdrawn?.length ? ` — withdrawn: ${c.withdrawn.join(", ")} → ${(c.replacement ?? []).join(", ") || "(no replacement recorded)"}` : ""}${c.note ? ` — ${instructionLike(c.note).length ? HELD : String(c.note).slice(0, 120)}` : ""}`);
+  for (const c of corr) lines.push(`  ! ${c.cause} -> ${c.effect} (t${c.t})${c.withdrawn?.length ? ` — withdrawn: ${c.withdrawn.map(safeTerm).join(", ")} → ${(c.replacement ?? []).map(safeTerm).join(", ") || "(no replacement recorded)"}` : ""}${c.note ? ` — ${instructionLike(c.note).length ? HELD : String(c.note).slice(0, 120)}` : ""}`);
   if (!corr.length) lines.push("  (none recorded)");
   const rec = events.slice(-recent).reverse();
   lines.push(`RECENT (${rec.length}):`);
@@ -1383,7 +1390,7 @@ export function atRiskLines(allEvents, { now = Date.now(), minBlocks = 2, blocks
   for (const m of rows) {
     const c = corr.get(m.t); const ov = overrides.get(String(m.term).toLowerCase()) ?? 0;
     const where = [...m.dirs].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([d, n]) => `${d} ×${n}`).join(", ");
-    lines.push(`  ! t${m.t} "${m.term}" blocked ${m.n}× (${where})${c?.replacement?.length ? ` → use ${c.replacement.join(", ")}` : ""}${ov ? ` · ${ov} override(s)` : ""}${m.last ? ` · last ${ago(now - m.last)}` : ""}`);
+    lines.push(`  ! t${m.t} "${safeTerm(m.term)}" blocked ${m.n}× (${where})${c?.replacement?.length ? ` → use ${c.replacement.map(safeTerm).join(", ")}` : ""}${ov ? ` · ${ov} override(s)` : ""}${m.last ? ` · last ${ago(now - m.last)}` : ""}`);
   }
   return lines.join("\n");
 }
@@ -1402,7 +1409,7 @@ async function cliBefore() {
   const retired = supersededSet(inForce(events));
   const hay = `${operation} ${text}`.toLowerCase();
   const exact = inForce(events).filter((e) => e.kind === "correction" && !retired.has(e.t) && (e.withdrawn ?? []).some((w) => w && hay.includes(String(w).toLowerCase())));
-  const line = (c, why) => `  ! (t${c.t}) ${c.cause} -> ${c.effect}${c.withdrawn?.length ? ` — withdrawn ${c.withdrawn.map((w) => `"${w}"`).join(", ")}${c.replacement?.length ? ` → use ${c.replacement.join(", ")}` : ""}` : ""}${why ? ` · ${why}` : ""}`;
+  const line = (c, why) => `  ! (t${c.t}) ${c.cause} -> ${c.effect}${c.withdrawn?.length ? ` — withdrawn ${c.withdrawn.map((w) => `"${safeTerm(w)}"`).join(", ")}${c.replacement?.length ? ` → use ${c.replacement.map(safeTerm).join(", ")}` : ""}` : ""}${why ? ` · ${why}` : ""}`;
   if (exact.length) { console.log(`BEFORE "${operation || path}" · rung exact — the operation names a withdrawn term:`); for (const c of exact) console.log(line(c, "")); }
   try {
     const out = await callApi("/v1/before", { events, operation, path, text, blocks: readBlocks() });
@@ -1952,7 +1959,7 @@ export function localCheck(allEvents, action, invariants = [], opts = {}) {
       }
     }
   }
-  for (const h of corrections) reasons.push(`"${h.term}" was withdrawn at ledger t${h.t}: ${h.cause} -> ${h.effect}${h.replacement.length ? ` — use ${h.replacement.join(" / ")}` : ""}`);
+  for (const h of corrections) reasons.push(`"${safeTerm(h.term)}" was withdrawn at ledger t${h.t}: ${h.cause} -> ${h.effect}${h.replacement.length ? ` — use ${h.replacement.map(safeTerm).join(" / ")}` : ""}`);
   if (text) for (const inv of invariants) {
     if (!inv || typeof inv.id !== "string") continue;
     // `paths`: prefixes the invariant applies to; absent = every path. A rule
