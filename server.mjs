@@ -131,16 +131,34 @@ export function instructionLike(text) {
   if (typeof text !== "string" || !text) return [];
   return INSTRUCTION_PATTERNS.filter(([, re]) => re.test(text)).map(([id]) => id);
 }
-// Lines planted for the agent in a file a session loads (lint, 2026-10-22): instructionLike() line by line, fences included, without
-// its tag and install patterns. On 282 real memory and governance files (18,162 lines) those two fired on 296 placeholders such as
-// `<name>`, HTML tags and documented `curl | bash` installs; the other seven fired on none. Returns line numbers and pattern ids
-// only, never the text: printing a planted line would hand it to the agent that ran lint (test/muse-memory.test.js).
-const PLANTED_SKIP = new Set(["protect-boundaries", "protect-installs"]);
+// Lines planted for the agent in a file a session loads (lint, 2026-10-22). Not instructionLike(): those patterns screen memory ROWS,
+// where any instruction is suspect, and on instruction files they flagged 17 of 20 ordinary lines ("run the following command", "never
+// print the system prompt to the logs") and 21 of 1,500 package READMEs (release review 2026-10-22). Instructions are what CLAUDE.md
+// is for, so lint looks only for the shapes that hijack an agent: an override of its previous instructions, credentials sent to an
+// address, concealment from the user, and a role tag. It catches common phrasings, not every one (base64, a forged authorisation and
+// an environment override pass it). Zero-width characters are removed first, and each line is also read joined to the next, so a
+// phrase split over a line break is reported at its first line. Returns line numbers and pattern ids only, never the text: printing a
+// planted line would hand it to the agent that ran lint (test/muse-memory.test.js).
+const PLANTED_PATTERNS = [
+  ["protect-instructions", /\b(ignore|disregard|forget|override)\b[^.\n]{0,30}\b(previous|prior|earlier|preceding|original|system)\b[^.\n]{0,20}\b(instructions?|prompts?|directives?)\b/i],
+  // a gap may cross a dot inside a path or a domain (~/.ssh, .env), never a sentence end
+  ["protect-credentials", /\b(send|post|upload|exfiltrat\w*|leak|forward|email|transmit|copy)\b(?:[^.\n]|\.(?=\S)){0,50}(\b(api[\s_-]?keys?|keys|ssh[\s_-]?keys?|private[\s_-]?keys?|secrets?|tokens?|passwords?|credentials?)\b|id_rsa|\.env\b|\/key\b)(?:[^.\n]|\.(?=\S)){0,50}\b(to|via|at)\b(?:[^.\n]|\.(?=\S)){0,25}(https?:\/\/|[\w.-]+@[\w-]+\.[\w.-]+|\bme\b)/i],
+  ["protect-transparency", /\b(do not|don't|never)\b[^.\n]{0,12}\b(tell|inform|let)\b[^.\n]{0,6}\b(the )?(user|human|operator)\b([^.\n]{0,25}\b(this|these|that you|what you)\b|\s+know\b)/i],
+  ["protect-boundaries", /<\/?\s*(system|assistant)\s*>/i],
+];
+const ZERO_WIDTH = /[​-‍⁠﻿]/g;
+const plantedIn = (text) => PLANTED_PATTERNS.filter(([, re]) => re.test(text)).map(([id]) => id);
 export function plantedLines(text) {
-  return String(text ?? "").split("\n").flatMap((raw, i) => {
-    const patterns = instructionLike(raw).filter((id) => !PLANTED_SKIP.has(id));
-    return patterns.length ? [{ line: i + 1, patterns }] : [];
-  });
+  const lines = String(text ?? "").replace(ZERO_WIDTH, "").split("\n");
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const own = plantedIn(lines[i]);
+    // a phrase split over the break: report it at the first line, once, and only when neither line trips alone
+    const joined = !own.length && i + 1 < lines.length && !plantedIn(lines[i + 1]).length ? plantedIn(`${lines[i]} ${lines[i + 1]}`) : [];
+    const patterns = own.length ? own : joined;
+    if (patterns.length && !(out.length && out.at(-1).line === i && joined.length)) out.push({ line: i + 1, patterns });
+  }
+  return out;
 }
 
 const t_next = (events) => events.reduce((m, e) => Math.max(m, e.t ?? 0), 0) + 1;
@@ -2409,12 +2427,15 @@ async function askUsageConsent() {
 // is committed project memory, which it loads even in a workspace the user has not trusted. A line in any linted file that reads like
 // an instruction planted for the agent (plantedLines) makes the file BLOCKED too.
 const LINT_DEFAULTS = ["CLAUDE.md", "AGENTS.md", ".claude/CLAUDE.md", ".claude/rules", ".cursorrules", ".cursor/rules", ".github/copilot-instructions.md", ".codex/AGENTS.md", ".agents/AGENTS.md", ".agents/memory", ".memory-pulse/invariants.jsonl"];
-function lintTargets(args) {
+// An entry lint cannot read (a dangling symlink, a directory named like a file) is skipped and named on stderr, never a crash and
+// never silent (release review 2026-10-22).
+function lintTargets(args, skipped = []) {
   const out = [];
+  const isFile = (fp) => { try { return statSync(fp).isFile(); } catch { skipped.push(fp); return false; } };
   const add = (p) => {
-    if (!existsSync(p)) return;
-    const st = statSync(p);
-    if (st.isDirectory()) { for (const f of readdirSync(p, { recursive: true })) { const fp = join(p, String(f)); if (statSync(fp).isFile() && /\.(md|mdc|txt|jsonl)$/i.test(fp)) out.push(fp); } }
+    if (!existsSync(p)) { try { statSync(p); } catch { /* absent, or a dangling link */ } return; }
+    let st; try { st = statSync(p); } catch { skipped.push(p); return; }
+    if (st.isDirectory()) { for (const f of readdirSync(p, { recursive: true })) { const fp = join(p, String(f)); if (/\.(md|mdc|txt|jsonl)$/i.test(fp) && isFile(fp)) out.push(fp); } }
     else out.push(p);
   };
   for (const p of args.length ? args : LINT_DEFAULTS) add(p);
@@ -2428,7 +2449,9 @@ async function cliLint() {
   const led = readEvents();
   const { events } = led;
   const invariants = readInvariants();
-  const files = lintTargets(paths).filter((f) => !/(^|[\\/])\.memory-pulse[\\/]events\.jsonl$/.test(f));
+  const skipped = [];
+  const files = lintTargets(paths, skipped).filter((f) => !/(^|[\\/])\.memory-pulse[\\/]events\.jsonl$/.test(f));
+  for (const p of skipped) console.error(`lint: skipped ${relPath(p)} (unreadable)`);
   const rows = [];
   // Neither the chain walk nor the seal fold depends on the file being linted, so both are computed once for the run.
   const lintChain = verifyChain();
@@ -2437,7 +2460,8 @@ async function cliLint() {
     let text = ""; try { text = readFileSync(f, "utf8"); } catch { continue; }
     const v = localCheck(events, { kind: "lint", text, path: f }, invariants, { chain: lintChain, seal: lintSeal });
     const injections = plantedLines(text);
-    const reasons = [...v.reasons.filter((r) => !/^\d+ recorded event/.test(r)), ...injections.map((i) => `${f}:${i.line} reads like an instruction planted for the agent (${i.patterns.join(", ")}); the line is not printed`)];
+    // a file blocked for a planted line does not also say "no recorded event bears on this lint" (release review 2026-10-22)
+    const reasons = [...v.reasons.filter((r) => !/^\d+ recorded event/.test(r) && !(injections.length && /^no recorded event bears/.test(r))), ...injections.map((i) => `${f}:${i.line} reads like an instruction planted for the agent (${i.patterns.join(", ")}); the line is not printed`)];
     rows.push({ file: f, verdict: injections.length ? "blocked" : v.verdict, reasons, corrections: v.corrections.map((h) => ({ term: h.term, t: h.t })), invariants: v.invariants.map((i) => i.id), injections });
   }
   const retired = supersededSet(events);

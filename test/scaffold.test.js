@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 
 const load = async (tag) => {
   const dir = mkdtempSync(join(tmpdir(), "mps-")); const ledger = join(dir, "events.jsonl"); writeFileSync(ledger, "");
@@ -115,4 +116,41 @@ test("a finding that states a withdrawn value is marked with its correction and 
   const superseded = renderScaffold([ev(1, { note: "Pro is $49" }), corr(2, ["$49"], ["$39"]), corr(3, ["$49", "$39"], ["$29"], { supersedes: [2] })], { withIdentity: false }).text;
   // edited after the first red run: `supersedes` is a list in the client (supersededSet); it was written as a number
   assert.match(superseded, /Pro is \$49 \(t1; withdrawn at t3: "\$49" → use \$29\)/, superseded);
+});
+
+// Release review 2026-10-22, findings 6-8 and one minor: the marker must agree with the guard (findViolations: the replacement as a
+// substring, the withdrawn term as a token, array withdrawn only) over the row's whole note, clip its own terms, and cost nothing for
+// rows the budget cuts. Written red-first.
+test("the stale marker agrees with the guard: a row the guard would pass is never marked", async () => {
+  const { renderScaffold, findViolations } = await load("staleguard");
+  const c = corr(2, ["Postgres 14"], ["Postgres 16"]);
+  const sub = ev(3, { note: "Upgraded the primary from Postgres 14 to Postgres 16.4 in October." });
+  const long = ev(4, { note: `${"Background on the database migration and its rollout plan. ".repeat(3)}Postgres 14 was replaced by Postgres 16.` });
+  const str = ev(5, { note: "Pricing page says $49" });
+  const events = [c, sub, long, corr(6, "$49", ["$29"]), str];
+  const { text } = renderScaffold(events, { withIdentity: false });
+  for (const row of [sub, long, str]) {
+    assert.equal(findViolations(events, row.note).length, 0, `the guard passes t${row.t}`);
+    const line = text.split("\n").find((l) => l.includes(`(t${row.t}`));
+    assert.ok(line && !/withdrawn at/.test(line), `t${row.t} marked: ${line}`);
+  }
+});
+
+test("one long replacement does not empty a section; the marker's terms are clipped", async () => {
+  const { renderScaffold } = await load("stalelong");
+  const events = [corr(1, ["us-east-1"], ["eu-west-2 " + "x".repeat(1300)]), ...Array.from({ length: 8 }, (_, i) => ev(i + 2, { note: `Deploy ${i} goes to us-east-1 first.` }))];
+  const { text, sections } = renderScaffold(events, { withIdentity: false });
+  assert.ok(sections.find((s) => s.name === "findings").shown >= 3, text);
+  // edited after the first red run: the assertion covered every line, including the correction line itself, which prints the full
+  // replacement by design (unchanged in this release); the finding was about the marker on finding rows
+  assert.ok(text.split("\n").filter((l) => /withdrawn at t\d/.test(l)).every((l) => l.length <= 400), "no marked row carries the whole replacement");
+});
+
+test("the stale marker costs only the rows that are shown", async () => {
+  const { renderScaffold } = await load("staleperf");
+  const events = []; let t = 0;
+  for (let i = 0; i < 2000; i++) events.push(corr(++t, [`old-term-${i}`], [`new-term-${i}`]));
+  for (let i = 0; i < 18000; i++) events.push(ev(++t, { note: `finding ${i} about old-term-${i % 2000} and some context` }));
+  const t0 = performance.now(); renderScaffold(events, { withIdentity: false }); const ms = performance.now() - t0;
+  assert.ok(ms < 1500 * (process.env.CI ? 4 : 1), `20,000 rows x 2,000 corrections rendered in ${ms.toFixed(0)} ms`);
 });
