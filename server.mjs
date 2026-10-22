@@ -139,15 +139,26 @@ export function instructionLike(text) {
 // an environment override pass it). Zero-width characters are removed first, and each line is also read joined to the next, so a
 // phrase split over a line break is reported at its first line. Returns line numbers and pattern ids only, never the text: printing a
 // planted line would hand it to the agent that ran lint (test/muse-memory.test.js).
+const NEGATED = /\b(never|don't|do not|must not|should not|shouldn't|no one should)\b[^.\n]{0,12}$/i;
 const PLANTED_PATTERNS = [
-  ["protect-instructions", /\b(ignore|disregard|forget|override)\b[^.\n]{0,30}\b(previous|prior|earlier|preceding|original|system)\b[^.\n]{0,20}\b(instructions?|prompts?|directives?)\b/i],
-  // a gap may cross a dot inside a path or a domain (~/.ssh, .env), never a sentence end
-  ["protect-credentials", /\b(send|post|upload|exfiltrat\w*|leak|forward|email|transmit|copy)\b(?:[^.\n]|\.(?=\S)){0,50}(\b(api[\s_-]?keys?|keys|ssh[\s_-]?keys?|private[\s_-]?keys?|secrets?|tokens?|passwords?|credentials?)\b|id_rsa|\.env\b|\/key\b)(?:[^.\n]|\.(?=\S)){0,50}\b(to|via|at)\b(?:[^.\n]|\.(?=\S)){0,25}(https?:\/\/|[\w.-]+@[\w-]+\.[\w.-]+|\bme\b)/i],
-  ["protect-transparency", /\b(do not|don't|never)\b[^.\n]{0,12}\b(tell|inform|let)\b[^.\n]{0,6}\b(the )?(user|human|operator)\b([^.\n]{0,25}\b(this|these|that you|what you)\b|\s+know\b)/i],
-  ["protect-boundaries", /<\/?\s*(system|assistant)\s*>/i],
+  ["protect-instructions", /\b(ignore|disregard|forget)\b[^.\n]{0,30}\b(previous|prior|earlier|preceding)\b[^.\n]{0,20}\b(instructions?|prompts?|directives?|rules?)\b|\b(ignore|disregard|forget)\b[^.\n]{0,20}\b(instructions?|prompts?)\s+(above|before this)\b/i],
+  // the object is a secret the agent can reach (API keys, an SSH or private key, .env, a key file, every token it finds), and the
+  // target an address; "send the refresh token to https://auth..." documents an API and passes (re-verification 2026-10-22). A gap
+  // may cross a dot inside a path or a domain (~/.ssh, .env), never a sentence end.
+  ["protect-credentials", /\b(send|post|upload|exfiltrat\w*|leak|forward|email|transmit|copy)\b(?:[^.\n]|\.(?=\S)){0,50}(\b(api[\s_-]?keys?|keys|ssh[\s_-]?keys?|private[\s_-]?keys?|secrets|passwords|credentials)\b|\b(every|all|any)\b[^.\n]{0,20}\b(tokens?|secrets?|keys?|passwords?)\b|id_rsa|\.env\b|~\/|\/key\b)(?:[^.\n]|\.(?=\S)){0,50}\b(to|via|at)\b(?:[^.\n]|\.(?=\S)){0,25}(https?:\/\/|[\w.-]+@[\w-]+\.[\w.-]+|\bme\b)/i],
+  ["protect-transparency", /\b(do not|don't|never)\b[^.\n]{0,12}\b(tell|inform)\b[^.\n]{0,6}\b(the )?(user|human|operator)\b[^.\n]{0,25}\b(about )?(this|these|that you)\b|\b(do not|don't|never)\b[^.\n]{0,12}\blet\b[^.\n]{0,6}\b(the )?(user|human|operator)\s+know\b|\b(do not|don't|never)\b[^.\n]{0,12}\bmention\b[^.\n]{0,20}\b(this|these|it)\b[^.\n]{0,25}\bto the (user|human|operator)\b|\b(hide|conceal|keep)\b[^.\n]{0,20}\b(this|these|it|that)\b[^.\n]{0,12}\bfrom the (user|human|operator)\b/i],
+  // a role tag outside an inline code span, or a role label opening the line
+  ["protect-boundaries", /<\/?\s*(system|assistant)\s*>|^\s*\[(system|assistant)\]\s*:/i],
 ];
-const ZERO_WIDTH = /[​-‍⁠﻿]/g;
-const plantedIn = (text) => PLANTED_PATTERNS.filter(([, re]) => re.test(text)).map(([id]) => id);
+const ZERO_WIDTH = /[​-‍⁠﻿­]/g;
+const plantedIn = (text) => {
+  const t = String(text).replace(/`[^`\n]*`/g, " ");
+  return PLANTED_PATTERNS.filter(([id, re]) => { const m = re.exec(t); return m && !((id === "protect-credentials" || id === "protect-instructions") && NEGATED.test(t.slice(0, m.index))); }).map(([id]) => id);
+};
+// a withdrawn or replacement term is screened with the same narrow shapes plus a role override: the note patterns refused real
+// corrections such as "DROP TABLE sessions" and "<OldButton" (re-verification 2026-10-22)
+const ROLE = /\byou are now\b|\bfrom now on,? you\b|\bact as (an?|the) (system|admin|developer)\b/i;
+export const termLike = (x) => { const t = String(x ?? "").replace(ZERO_WIDTH, ""); return [...plantedIn(t), ...(ROLE.test(t) ? ["protect-role"] : [])]; };
 export function plantedLines(text) {
   const lines = String(text ?? "").replace(ZERO_WIDTH, "").split("\n");
   const out = [];
@@ -454,7 +465,7 @@ export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn
   if (hits.length) return { written: false, reason: "instruction-like note refused", patterns: hits, hint: "Record what happened, not what to do. Rephrase as a finding." };
   // withdrawn and replacement terms are printed into briefs and into the guard's block message, so they are screened the same way
   // (release review 2026-10-22)
-  const termHits = [...(Array.isArray(withdrawn) ? withdrawn : []), ...(Array.isArray(replacement) ? replacement : [])].flatMap((x) => instructionLike(String(x)));
+  const termHits = [...(Array.isArray(withdrawn) ? withdrawn : []), ...(Array.isArray(replacement) ? replacement : [])].flatMap((x) => termLike(x));
   if (termHits.length) return { written: false, reason: "instruction-like withdrawn or replacement term refused", patterns: [...new Set(termHits)], hint: "A term is the value itself (a price, a version, a name), never an instruction." };
   const { path, events } = readEvents({ scope });
   // A duplicate is the same cause, effect, note AND terms. The old rule ignored the terms, so the product's
@@ -925,7 +936,7 @@ const tagged = (events, tag) => events.filter((e) => Array.isArray(e.tags) && e.
 const HELD = "[held back: note reads like an instruction]";
 // a term from a row that arrived unscreened (git, an import) is held wherever the client prints it (release review 2026-10-22)
 const TERM_HELD = "[term held back: reads like an instruction]";
-const safeTerm = (x) => (instructionLike(String(x ?? "")).length ? TERM_HELD : x);
+const safeTerm = (x) => (termLike(x).length ? TERM_HELD : x);
 const shown = (e) => (instructionLike(e?.note).length ? HELD : (e?.note ?? e?.effect));
 export function identityBlock(led) {
   const soulOn = currentMode() === "soul", c = soulOn ? chainedOnly(led?.events ?? [], { brokenAt: agentBrokenAt() }) : { rows: led?.events ?? [], unchained: [] };
@@ -1683,7 +1694,7 @@ async function cliBrief() {
     const tail = [];
     const risk = atRiskLines(events); if (risk) tail.push(risk);
     if (Array.isArray(out.quarantined) && out.quarantined.length) {
-      tail.push(`⚠ ${out.quarantined.length} note(s) quarantined — instruction-like content was not rendered (t=${out.quarantined.map((q) => q.t).join(", ")})`);
+      tail.push(`⚠ ${out.quarantined.length} row(s) quarantined — an instruction-like note or term was not rendered (t=${out.quarantined.map((q) => q.t).join(", ")})`);
     }
     const sd = sealDriftLine(out); if (sd) tail.push(sd);
     const foot = telemetryFooter(out.telemetry);
@@ -1907,7 +1918,8 @@ export function shellWrites(input) {
 // Ledger t values whose withdrawn terms a later correction retired.
 export function supersededSet(events) {
   const retired = new Set();
-  for (const e of events) if (e.kind === "correction" && Array.isArray(e.supersedes)) for (const t of e.supersedes) retired.add(t);
+  // a row t given as a string ("5") retires t5, as the engine reads it (re-verification 2026-10-22)
+  for (const e of events) if (e.kind === "correction" && Array.isArray(e.supersedes)) for (const t of e.supersedes) retired.add(Number(t));
   return retired;
 }
 const invariantsPath = () => join(dirname(ledgerPath()), "invariants.jsonl");
