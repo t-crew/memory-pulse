@@ -38,7 +38,8 @@ test("review 2: an over-cap engine brief keeps provenance, identity and integrit
   const out = composeBrief({ head: ["memory-pulse: loaded 1733 events · sha256 828721a1a4ff", identity, "↩ last handoff (t=1496): asked about the cap"], text: "z".repeat(12000), tail: ["⚠ 3 note(s) quarantined — instruction-like content was not rendered (t=1, 2, 3)", "⚠ drift: seal moved", "— memory-pulse · footer"] },
     (room) => `CORRECTIONS IN FORCE\n  "$49" was withdrawn; use $29 (t1)`.slice(0, room));
   assert.ok(out.length <= 9500, `${out.length}`);
-  for (const must of [/^memory-pulse: loaded 1733 events/, /AGENT IDENTITY — Blue/, /fingerprint: chain head abc/, /last handoff/, /quarantined/, /drift: seal moved/, /CORRECTIONS IN FORCE/, /engine brief was 12,000 chars/]) assert.match(out, must);
+  for (const must of [/^memory-pulse: loaded 1733 events/, /AGENT IDENTITY — Blue/, /fingerprint: chain head abc/, /last handoff/, /quarantined/, /drift: seal moved/, /CORRECTIONS IN FORCE/, /engine text 12,000\)/]) assert.match(out, must);
+  // EDITED 2026-10-22 (spec change, test/helpfulness.test.js): the note now reports the composed size and names the engine text's share
   assert.doesNotMatch(out, /zzzz/);
   assert.equal(composeBrief({ head: ["a"], text: "b", tail: ["c"] }, () => "s"), "a\nb\nc", "under the cap nothing changes");
 });

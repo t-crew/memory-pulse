@@ -119,3 +119,16 @@ test("live false positive (2026-10-21): an unrelated unset in a tainted session 
   const v = ["CLAUDE", "CODE", "SESSION", "ID"].join("_");                      // spelled out at run time: this repo's own guard reads commands
   for (const command of [`unset ${v}; memory-pulse soul "x"`, 'env -i memory-pulse soul "x"']) assert.equal(guard(f, "dirty", command).code, 2, command);
 });
+
+test("mode soul finds capture installed by the plugin (a directory or cached marketplace), and warns when that plugin is disabled", () => {
+  for (const enabled of [true, false]) {
+    const f = fixture(), src = join(f.home, "mp-src"); mkdirSync(join(src, "hooks"), { recursive: true });
+    writeFileSync(join(src, "hooks", "hooks.json"), JSON.stringify({ hooks: { PostToolUse: [{ hooks: [{ type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/server.mjs" capture', async: true }] }] } }));
+    mkdirSync(join(f.home, ".claude", "plugins"), { recursive: true });
+    writeFileSync(join(f.home, ".claude", "plugins", "installed_plugins.json"), JSON.stringify({ version: 2, plugins: { "memory-pulse@memory-pulse": [{ scope: "user", installPath: join(f.home, "stale-cache"), version: "0.6.0" }] } }));
+    writeFileSync(join(f.home, ".claude", "plugins", "known_marketplaces.json"), JSON.stringify({ "memory-pulse": { source: { source: "directory", path: src } } }));
+    writeFileSync(join(f.home, ".claude", "settings.json"), JSON.stringify({ enabledPlugins: { "memory-pulse@memory-pulse": enabled } }));
+    const out = run(f, ["mode", "soul"]).out;
+    if (enabled) assert.doesNotMatch(out, /no capture hook found/); else assert.match(out, /no capture hook found/);
+  }
+});
