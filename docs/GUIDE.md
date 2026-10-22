@@ -351,7 +351,7 @@ The next brief prints the handoff line first, for seven days, online or offline.
 
 ## 9. Agent mode
 
-Deliberate mode keeps memory in the repository. Agent mode adds an agent ledger at `~/.memory-pulse/agent/events.jsonl`, an identity block printed first in every brief with a fingerprint (chain head plus the engine's seal), and two user-scope hooks in `~/.claude/settings.json`: a Stop hook that records up to four ambient rows a turn and a UserPromptSubmit hook that records correction-shaped prompts. Claude Code only, today. The rule of thumb: off for one repository; on when one agent spans repositories and tools and you accept up to four rows per turn.
+Deliberate mode keeps memory in the repository. Agent mode adds an agent ledger at `~/.memory-pulse/agent/events.jsonl`, an identity block printed first in every brief with a fingerprint (chain head plus the engine's seal), and two user-scope hooks in `~/.claude/settings.json`: a Stop hook that records up to four ambient rows a turn and a UserPromptSubmit hook that records correction-shaped prompts. Claude Code only, today. When two memory-pulse briefs run in one session (the plugin's and one in your settings), the first prints the identity block and the second prints one line pointing at it; a compaction prints it again once. The rule of thumb: off for one repository; on when one agent spans repositories and tools and you accept up to four rows per turn.
 
 Turning it on changes your real configuration, so this block is not run by the guide's test:
 
