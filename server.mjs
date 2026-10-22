@@ -38,6 +38,7 @@ const PKG_VERSION = (() => {
 })();
 import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync, realpathSync, readdirSync, statSync, renameSync, unlinkSync, openSync, closeSync, writeSync, truncateSync} from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { renderScaffold as renderScaffoldWith, DEFAULT_BUDGETS, SECTIONS } from "./lib/scaffold.mjs";
 import { promptSlice as promptSliceWith, editSlice as editSliceWith } from "./lib/slices.mjs";
@@ -1223,10 +1224,21 @@ async function cliLesson() {
 // ---- Core 1: offline brief (2026-09-03). A dead network must not hand the session nothing. This is a
 // deterministic local render — corrections with their terms, the last handoff, recent rows — and it says so.
 const ago = (ms) => (ms < 90e3 ? `${Math.max(1, Math.round(ms / 1e3))} s ago` : ms < 90 * 60e3 ? `${Math.round(ms / 60e3)} min ago` : ms < 36 * 3600e3 ? `${Math.round(ms / 3600e3)} h ago` : `${Math.round(ms / 86400e3)} d ago`);
-const handoffTime = (e) => { const m = /(\d{4}-\d{2}-\d{2}T[\d:.]+Z)/.exec(`${e.effect} ${e.note ?? ""}`); return m ? Date.parse(m[1]) : NaN; };
+// A handoff's time is the latest date written in it: ISO ("2026-10-21T23:50:00Z") or plain UTC text ("2026-10-21 23:50 UTC",
+// "2026-10-21"), which is how sessions write them; a handoff from 2026-10-04 rode in every brief for 18 days because only ISO was read.
+const handoffTime = (e) => {
+  const text = `${e.cause ?? ""} ${e.effect ?? ""} ${e.note ?? ""}`; let best = NaN;
+  for (const m of text.matchAll(/(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)\s*(?:Z|UTC)?)?/g)) {
+    const t = Date.parse(`${m[1]}T${m[2] ?? "00:00"}${m[2] && m[2].length === 5 ? ":00" : ""}Z`); if (Number.isFinite(t) && !(t <= best)) best = t;
+  }
+  return best;
+};
+// and a handoff with this many rows written after it is stale whatever its date says (the work moved on)
+const HANDOFF_MAX_ROWS_AFTER = 200;
 export function handoffLine(events, { now = Date.now(), maxAgeMs = 7 * 86400e3 } = {}) {
-  const h = [...events].reverse().find((e) => Array.isArray(e.tags) && e.tags.includes("handoff"));
-  if (!h) return "";
+  const i = events.findLastIndex((e) => Array.isArray(e.tags) && e.tags.includes("handoff"));
+  if (i < 0) return ""; const h = events[i];
+  if (events.length - 1 - i > HANDOFF_MAX_ROWS_AFTER) return "";
   const t = handoffTime(h); if (Number.isFinite(t) && now - t > maxAgeMs) return "";
   return `↩ last handoff (t=${h.t}${Number.isFinite(t) ? `, ${ago(now - t)}` : ""}): ${String(h.note ?? h.effect ?? "").replace(/^handoff \S+: ?/, "")}`;
 }
@@ -1253,12 +1265,21 @@ const trimIdentity = (block) => {
   const dropped = lines.length - kept.length;
   return dropped ? [...kept, `  (${dropped} preference and lesson lines left out to fit the host's cap; they stay on the agent ledger)`].join("\n") : block;
 };
+// Over the cap, a rule line longer than this is clipped to its first 200 characters and its citation: four full-length rules (600-1,200
+// chars each) left a real brief's project sections a few lines (2026-10-22). The whole rule is one `memory-pulse scaffold` away.
+const RULE_LINE_MAX = 260;
+const clipRules = (block) => String(block).split("\n").map((l) => {
+  if (l.length <= RULE_LINE_MAX || !/^\s+rule: /.test(l)) return l;
+  const cite = /\s*(\((?:agent )?t\d+[^)]*\))\s*$/.exec(l); const body = cite ? l.slice(0, cite.index) : l;
+  return `${body.slice(0, 200).trimEnd()}…${cite ? ` ${cite[1]}` : ""}`;
+}).join("\n");
 export function composeBrief({ head = [], text = "", tail = [] }, scaffoldForRoom, cap = BRIEF_CAP) {
   const join = (a) => a.filter(Boolean).join("\n");
   const whole = join([...head, text, ...tail]);
   if (whole.length <= cap) return whole;
-  const note = `memory-pulse: the engine brief was ${text.length.toLocaleString("en-US")} chars, over the ${cap.toLocaleString("en-US")} the hosts take whole; the organized corrections stand in for it.`;
-  let h = [...head], room = cap - join([...h, note, ...tail]).length - 1;
+  // the note names what went over: the whole brief (identity, handoff and integrity lines included), not the engine text alone
+  const note = `memory-pulse: this brief came to ${whole.length.toLocaleString("en-US")} chars (engine text ${text.length.toLocaleString("en-US")}), over the ${cap.toLocaleString("en-US")} the hosts take whole; the organized corrections stand in for the engine text.`;
+  let h = head.map(clipRules), room = cap - join([...h, note, ...tail]).length - 1;
   if (room < 1500) { h = h.map(trimIdentity); room = cap - join([...h, note, ...tail]).length - 1; }
   let sub = room > 0 ? String(scaffoldForRoom(room) ?? "") : "";
   if (sub.length > room) sub = sub.slice(0, Math.max(0, sub.lastIndexOf("\n", room)));
@@ -1282,8 +1303,10 @@ function scaffoldFor(led, opts = {}) {
     let agentRows = agentEvents, soul = [];
     if (currentMode() === "soul" && agentEvents.length) {
       const c = chainedOnly(agentEvents, { brokenAt: agentBrokenAt() }); agentRows = c.rows;
+      if (opts.noSoul) { soul = []; } else {
       let digest = null; try { digest = createHash("sha256").update(readFileSync(agentPath())).digest("hex"); } catch { digest = null; }
       soul = soulLines(soulState(inForce(agentRows)), { instructionLike, held: HELD, digest, unchained: c.unchained, continuity: BRIEF_CONTINUITY });
+      }
     }
     const budgets = soul.length && !opts.budgets ? { ...DEFAULT_BUDGETS, identity: 3200 } : undefined;
     return renderScaffold(led.events, { agentEvents: agentRows, withIdentity: agentLike(), soulLines: soul, blocks: readBlocks(), chain: chain.ok ? null : chain, ...(budgets ? { budgets } : {}), ...opts });
@@ -1567,6 +1590,20 @@ function stdinCapped(timeoutMs = 1500) {
   });
 }
 
+// One identity block per session (2026-10-22): the plugin's brief and a settings brief both ran in one real session and each printed the
+// identity and rules. The first brief of a session (and of each compaction: the hook's source) claims a marker with an exclusive create;
+// a later brief in the same minute prints one pointer line instead. No session (a CLI call) or no marker directory: always printed.
+export const IDENTITY_POINTER = "identity and rules: printed by the other memory-pulse brief this session";
+export function claimIdentity(hookIn, { now = Date.now(), dir = join(homedir(), ".memory-pulse", "briefs") } = {}) {
+  const session = typeof hookIn?.session_id === "string" && hookIn.session_id ? hookIn.session_id : null;
+  if (!session) return true;
+  const key = createHash("sha256").update(`${session}|${typeof hookIn?.source === "string" ? hookIn.source : ""}|${Math.floor(now / 60e3)}`).digest("hex").slice(0, 24);
+  try { mkdirSync(dir, { recursive: true }); } catch { return true; }
+  try { for (const f of readdirSync(dir)) { const p = join(dir, f); try { if (now - statSync(p).mtimeMs > 2 * 86400e3) unlinkSync(p); } catch { /* raced */ } } } catch { /* unreadable: skip pruning */ }
+  try { closeSync(openSync(join(dir, key), "wx")); return true; } catch (e) { return e?.code !== "EEXIST"; }
+}
+const withPointer = (text) => { const i = String(text).indexOf("\n"); return i < 0 ? `${text}\n${IDENTITY_POINTER}` : `${text.slice(0, i)}\n${IDENTITY_POINTER}${text.slice(i)}`; };
+
 async function cliBrief() {
   const led0 = readEvents();
   // silent in a project with no ledger, unless soul mode carries the agent's soul there (agent mode stays silent, as before)
@@ -1583,6 +1620,7 @@ async function cliBrief() {
     if (rate > 0) hide = new Set(led0.events.filter((e) => eligible(e) && !decided(w.get(e.t)) && withhold(`${session}|${e.t}`, rate)).map((e) => e.t));
   }
   const led = led0, events = hide.size ? led0.events.filter((e) => !hide.has(e.t)) : led0.events;
+  const showIdentity = claimIdentity(hookIn), noId = showIdentity ? {} : { withIdentity: false, noSoul: true };
   // soul as state: what changed since the capsule the last brief wrote; then this brief's capsule replaces it
   if (currentMode() === "soul" && existsSync(agentPath())) {
     try {
@@ -1600,11 +1638,11 @@ async function cliBrief() {
   const mode = process.env.MEMORY_PULSE_BRIEF;
   const engine = mode !== "scaffold" && !process.argv.includes("--scaffold") &&
     (mode === "engine" || process.argv.includes("--engine") || bi >= 0 || process.env.MEMORY_PULSE_BRIEF_BUDGET || process.env.MEMORY_PULSE_BRIEF_TIER || process.env.MEMORY_PULSE_KEY);
-  if (!engine) { const { text } = scaffoldFor(led, { hide }); if (text) { process.stdout.write(text + "\n"); recordUsage("scaffold"); } return; }
+  if (!engine) { const { text } = scaffoldFor(led, { hide, ...noId }); if (text) { process.stdout.write((showIdentity || !agentLike() ? text : withPointer(text)) + "\n"); recordUsage("scaffold"); } return; }
   try {
     const out = await callApi("/v1/pulse", { events, ...(tier ? { tier } : {}), ...(budget ? { budget } : {}) });
     const head = [loadedLine(led, events, { keyStatus: out.keyStatus, tier: out.tier ?? tier, chars: out.text?.length, budget })];
-    if (agentLike() && existsSync(agentPath())) { const ib = identityBlock(readEvents({ scope: "agent" })); if (ib) head.push(ib); }
+    if (agentLike() && existsSync(agentPath())) { if (!showIdentity) head.push(IDENTITY_POINTER); else { const ib = identityBlock(readEvents({ scope: "agent" })); if (ib) head.push(ib); } }
     const hl = handoffLine(events); if (hl) head.push(hl);
     const tail = [];
     const risk = atRiskLines(events); if (risk) tail.push(risk);
@@ -1619,7 +1657,7 @@ async function cliBrief() {
   } catch (e) {
     // A dead network must not break session start — and must not hand it nothing: the local scaffold, labelled as such.
     process.stdout.write(`memory-pulse: brief unavailable (${String(e?.message ?? e).split(".")[0]})\n`);
-    const { text } = scaffoldFor(led, { hide }); if (text) process.stdout.write(text + "\n");
+    const { text } = scaffoldFor(led, { hide, ...noId }); if (text) process.stdout.write((showIdentity || !agentLike() ? text : withPointer(text)) + "\n");
   }
 }
 
@@ -1710,10 +1748,10 @@ async function cliPrompt() {
     let context = slice;
     if (currentMode() === "soul" && existsSync(agentPath())) {
       try {
-        const { recall } = await import("./lib/recall.mjs");
+        const { recall, standingPreference } = await import("./lib/recall.mjs");
         const own = inForce(chainedOnly(readEvents({ scope: "agent" }).events).rows).filter((e) => Array.isArray(e.tags) && e.tags.some((x) => x === "lesson" || x === "memory" || x === "preference"));
         // lessons pass the lesson screen as well (lib/lessons.mjs): the fragments ambient capture once recorded are not lessons
-        const whole = own.filter((e) => !e.tags.includes("lesson") || screenLesson(String(e.note ?? "").replace(/^Lesson:\s*/i, "")).ok);
+        const whole = own.filter((e) => (!e.tags.includes("lesson") || screenLesson(String(e.note ?? "").replace(/^Lesson:\s*/i, "")).ok) && standingPreference(e));
         const hits = recall(whole, hook.prompt, { k: 2 }).filter((e) => !soulScreen(e.note ?? e.effect ?? "", instructionLike).length);
         if (hits.length) {
           const kind = (e) => (e.tags.includes("lesson") ? "lesson" : e.tags.includes("memory") ? "memory" : "preference");
