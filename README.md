@@ -748,6 +748,7 @@ No ledger text, path, term or prompt is in it, and none can be: the client accep
 | `MEMORY_PULSE_BOARD` | `./.memory-pulse/board.jsonl` | the shared agent message board; set, the MCP server also lists `board_post` and `board_read` |
 | `MEMORY_PULSE_STRICT_WRITER` | unset | `1`: a row without this machine's mark fails `verify` and gets a guard warning, as `verify --strict` does; for a ledger with one writer |
 | `MEMORY_PULSE_TRUST_DIR` | `$XDG_STATE_HOME/memory-pulse`, else `~/.local/state/memory-pulse` | where this machine's anchors and writer key live; keep it outside every ledger folder |
+| `MEMORY_PULSE_DATA_DIR` | `$XDG_DATA_HOME/memory-pulse`, else `~/.local/share/memory-pulse` | where `install-hook` and `mode` keep the pinned copy their hooks run with `node` (one folder per version); a hook through `npx` took about a second per call |
 | `MEMORY_PULSE_LOCK_TIMEOUT_MS` | `5000` | how long a writer waits for the ledger lock before refusing; a lock whose holder has exited is broken at once |
 | `NO_COLOR`, `TERM` | unset | colour in the guard's block message only on a TTY with `NO_COLOR` unset and `TERM` not `dumb` |
 | `HOME` | the shell's | root for the agent ledger, `~/.claude/settings.json` and `~/.codex/hooks.json` |

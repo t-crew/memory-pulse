@@ -28,7 +28,7 @@ Then run `/hooks` inside Codex and trust the three `memory-pulse` entries (sessi
 
 ## Claude Desktop
 
-Download `memory-pulse-0.8.0.mcpb` from the [latest release](https://github.com/t-crew/memory-pulse/releases/latest) and open it. Claude Desktop asks for three settings:
+Download `memory-pulse-0.16.0.mcpb` from the [latest release](https://github.com/t-crew/memory-pulse/releases/latest) and open it. Claude Desktop asks for three settings:
 
 | Setting | What to put |
 |---|---|

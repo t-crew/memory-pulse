@@ -3,6 +3,7 @@
 // Claude Code 2.1.296; PreToolUse additionalContext did not on Codex 0.160.0).
 // tests never write this machine's trust store (0.16.0): a temp one unless the run names one
 process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
+process.env.MEMORY_PULSE_DATA_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-data-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";
@@ -140,7 +141,7 @@ test("install-hook writes the UserPromptSubmit prompt hook once; the plugin hook
   execFileSync(process.execPath, [SERVER, "install-hook"], { env, encoding: "utf8" });
   execFileSync(process.execPath, [SERVER, "install-hook"], { env, encoding: "utf8" });
   const s = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8"));
-  assert.equal(JSON.stringify(s.hooks.UserPromptSubmit).split("npx -y memory-pulse prompt").length - 1, 1);
+  assert.equal((JSON.stringify(s.hooks.UserPromptSubmit).match(/(?:memory-pulse|server\.mjs\\") prompt/g) ?? []).length, 1); // 0.16.1 (2026-10-23): hooks run node on a pinned copy, not npx (test/fast-hooks.test.js); either form passes
   const hooks = JSON.parse(readFileSync(new URL("../hooks/hooks.json", import.meta.url), "utf8"));
   assert.match(JSON.stringify(hooks.hooks.UserPromptSubmit), /server\.mjs\\" prompt/);
 });

@@ -1,5 +1,6 @@
 // tests never write this machine's trust store (0.16.0): a temp one unless the run names one
 process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
+process.env.MEMORY_PULSE_DATA_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-data-"));
 // Every test file names a temp trust store (2026-10-22). Before release, the 0.16.0 code ran from a live checkout and the guard started
 // anchors and a writer key in the machine's real store; a test that falls back to the default store would do the same on every
 // `npm test`. This keeps a new test file from forgetting the line. An isolation run with HOME set to a sentinel and no
@@ -12,6 +13,6 @@ import { join } from "node:path";
 
 const DIR = fileURLToPath(new URL(".", import.meta.url));
 test("every test file sets a temp MEMORY_PULSE_TRUST_DIR before anything runs", () => {
-  const missing = readdirSync(DIR).filter((f) => f.endsWith(".test.js")).filter((f) => !/process\.env\.MEMORY_PULSE_TRUST_DIR \?\?= .*mkdtempSync/.test(readFileSync(join(DIR, f), "utf8")));
+  const missing = readdirSync(DIR).filter((f) => f.endsWith(".test.js")).filter((f) => { const src = readFileSync(join(DIR, f), "utf8"); return !/process\.env\.MEMORY_PULSE_TRUST_DIR \?\?= .*mkdtempSync/.test(src) || !/process\.env\.MEMORY_PULSE_DATA_DIR \?\?= .*mkdtempSync/.test(src); }); // 0.16.1: and the pinned hook copy (MEMORY_PULSE_DATA_DIR)
   assert.deepEqual(missing, []);
 });

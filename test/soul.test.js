@@ -20,6 +20,7 @@
 // every entry stays chained. Tests changed by the revision, stated: the guard test and the self-review test below.
 // tests never write this machine's trust store (0.16.0): a temp one unless the run names one
 process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
+process.env.MEMORY_PULSE_DATA_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-data-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -49,7 +50,7 @@ test("mode soul turns on the agent ledger and the agent hooks, and says how to s
   assert.match(r.out, /mode: soul/); assert.match(r.out, /memory-pulse soul "/);
   assert.ok(existsSync(f.agent));
   const settings = JSON.parse(readFileSync(join(f.home, ".claude", "settings.json"), "utf8"));
-  assert.match(JSON.stringify(settings.hooks.Stop), /memory-pulse ambient/); assert.match(JSON.stringify(settings.hooks.UserPromptSubmit), /memory-pulse observe/);
+  assert.match(JSON.stringify(settings.hooks.Stop), /(?:memory-pulse|server\.mjs\\?") ambient/); assert.match(JSON.stringify(settings.hooks.UserPromptSubmit), /(?:memory-pulse|server\.mjs\\?") observe/); // 0.16.1 (2026-10-23): hooks run node on a pinned copy, not npx (test/fast-hooks.test.js); either form passes
   assert.match(run(f, ["mode"]).out, /mode: soul/);
 });
 

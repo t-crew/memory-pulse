@@ -1,5 +1,6 @@
 // tests never write this machine's trust store (0.16.0): a temp one unless the run names one
 process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
+process.env.MEMORY_PULSE_DATA_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-data-"));
 // Pre-release review of 0.16.0 (2026-10-23), two defects worth fixing before the tag:
 //   1. a rollback by swapping the ledger folder for a symlink to an older copy passed verify (the anchor was keyed by the
 //      folder's realpath, so the swap started a fresh anchor);

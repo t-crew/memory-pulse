@@ -3,6 +3,7 @@
 // and guard rules that apply across every chat. Written red-first; everything deterministic.
 // tests never write this machine's trust store (0.16.0): a temp one unless the run names one
 process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
+process.env.MEMORY_PULSE_DATA_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-data-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs";
@@ -104,7 +105,7 @@ test("mode: default is deliberate; `mode agent` installs the Stop + UserPromptSu
   assert.equal(currentMode(), "deliberate");
   const r = setMode("agent"); assert.equal(currentMode(), "agent");
   const settings = JSON.parse(readFileSync(join(dir, "settings", "settings.json"), "utf8"));
-  assert.match(JSON.stringify(settings.hooks.Stop), /memory-pulse ambient/); assert.match(JSON.stringify(settings.hooks.UserPromptSubmit), /memory-pulse observe/);
+  assert.match(JSON.stringify(settings.hooks.Stop), /(?:memory-pulse|server\.mjs\\?") ambient/); assert.match(JSON.stringify(settings.hooks.UserPromptSubmit), /(?:memory-pulse|server\.mjs\\?") observe/); // 0.16.1 (2026-10-23): hooks run node on a pinned copy, not npx (test/fast-hooks.test.js); either form passes
   assert.ok(r.installed >= 2);
   appendEvent({ cause: "identity-set", effect: "who", note: "Travis Crew, founder", tags: ["identity"], pinned: true, scope: "agent" });
   const led = readEvents(); const text = offlineBrief(led, led.events);
@@ -112,7 +113,7 @@ test("mode: default is deliberate; `mode agent` installs the Stop + UserPromptSu
   assert.match(text.split("\n")[1], /^AGENT IDENTITY/, "the agent's self comes right after it in agent mode");
   setMode("deliberate"); assert.equal(currentMode(), "deliberate");
   const s2 = JSON.parse(readFileSync(join(dir, "settings", "settings.json"), "utf8"));
-  assert.doesNotMatch(JSON.stringify(s2.hooks.Stop ?? []), /memory-pulse ambient/);
+  assert.doesNotMatch(JSON.stringify(s2.hooks.Stop ?? []), /(?:memory-pulse|server\.mjs\\?") ambient/); // 0.16.1 (2026-10-23): hooks run node on a pinned copy, not npx (test/fast-hooks.test.js); either form passes
   assert.doesNotMatch(offlineBrief(led, led.events), /AGENT IDENTITY/, "deliberate mode: no identity block");
 });
 

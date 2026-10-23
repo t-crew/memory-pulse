@@ -6,6 +6,7 @@
  */
 // tests never write this machine's trust store (0.16.0): a temp one unless the run names one
 process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
+process.env.MEMORY_PULSE_DATA_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-data-"));
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 // tests never inherit the machine's agent mode or agent ledger
@@ -460,9 +461,9 @@ test("install-hook --codex writes Codex's hooks.json (user or --project), same e
   assert.match(first, /run \/hooks, and trust/, "Codex will not run an untrusted hook; the user has to be told");
   assert.match(run(), /already installed/);
   const h = JSON.parse(readFileSync(join(dir, "hooks.json"), "utf8")).hooks;
-  assert.equal(h.SessionStart[0].hooks[0].command, "npx -y memory-pulse brief");
+  assert.match(h.SessionStart[0].hooks[0].command, /^(?:npx -y memory-pulse|node "[^"]+[\\/]server\.mjs") brief$/); // 0.16.1 (2026-10-23): hooks run node on a pinned copy, not npx (test/fast-hooks.test.js); either form passes
   assert.equal(h.PreToolUse[0].matcher, "Edit|Write|apply_patch");
-  assert.equal(h.PreToolUse[0].hooks[0].command, "npx -y memory-pulse guard");
+  assert.match(h.PreToolUse[0].hooks[0].command, /^(?:npx -y memory-pulse|node "[^"]+[\\/]server\.mjs") guard$/); // 0.16.1 (2026-10-23): hooks run node on a pinned copy, not npx (test/fast-hooks.test.js); either form passes
   // --project lands in <repo>/.codex/hooks.json so a clone inherits it.
   const repo = mkdtempSync(join(tmpdir(), "mp-codex-proj-"));
   const out = execFileSync(process.execPath, [SERVER, "install-hook", "--codex", "--project"], { cwd: repo, env: { ...process.env, MEMORY_PULSE_SETTINGS_DIR: "" }, encoding: "utf8" });

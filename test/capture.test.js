@@ -9,6 +9,7 @@
 // Written before the code.
 // tests never write this machine's trust store (0.16.0): a temp one unless the run names one
 process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
+process.env.MEMORY_PULSE_DATA_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-data-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -101,10 +102,10 @@ test("install-hook adds the capture and consolidate hooks once; --no-capture lea
   await run(f, ["install-hook"]); await run(f, ["install-hook"]);
   const s = JSON.parse(readFileSync(join(f.home, ".claude", "settings.json"), "utf8"));
   const cmds = (ev) => (s.hooks[ev] ?? []).flatMap((h) => h.hooks.map((x) => x.command));
-  assert.equal(cmds("PostToolUse").filter((c) => /memory-pulse capture/.test(c)).length, 1);
-  assert.equal(cmds("PostToolUseFailure").filter((c) => /memory-pulse capture/.test(c)).length, 1);
-  assert.equal(cmds("SessionEnd").filter((c) => /memory-pulse consolidate --final/.test(c)).length, 1);
-  assert.equal(cmds("Stop").filter((c) => /memory-pulse consolidate/.test(c)).length, 1);
+  assert.equal(cmds("PostToolUse").filter((c) => /(?:memory-pulse|server\.mjs\\?") capture/.test(c)).length, 1); // 0.16.1 (2026-10-23): hooks run node on a pinned copy, not npx (test/fast-hooks.test.js); either form passes
+  assert.equal(cmds("PostToolUseFailure").filter((c) => /(?:memory-pulse|server\.mjs\\?") capture/.test(c)).length, 1); // 0.16.1 (2026-10-23): hooks run node on a pinned copy, not npx (test/fast-hooks.test.js); either form passes
+  assert.equal(cmds("SessionEnd").filter((c) => /(?:memory-pulse|server\.mjs\\?") consolidate --final/.test(c)).length, 1); // 0.16.1 (2026-10-23): hooks run node on a pinned copy, not npx (test/fast-hooks.test.js); either form passes
+  assert.equal(cmds("Stop").filter((c) => /(?:memory-pulse|server\.mjs\\?") consolidate/.test(c)).length, 1); // 0.16.1 (2026-10-23): hooks run node on a pinned copy, not npx (test/fast-hooks.test.js); either form passes
   const g = fixture(); await run(g, ["install-hook", "--no-capture"]);
   const t = JSON.parse(readFileSync(join(g.home, ".claude", "settings.json"), "utf8"));
   assert.equal((t.hooks.PostToolUse ?? []).length, 0);
