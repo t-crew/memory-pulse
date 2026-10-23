@@ -9,6 +9,16 @@ own code on test ledgers, and found four ways past its checks. We ran the same
 test against this release. The counts below are attacks caught out of attacks
 tried, on a 1,024-row ledger.
 
+**A folder swapped for a link to an older copy is refused too.** A pre-release
+review found that replacing the ledger's folder with a link to an older copy
+started a fresh check instead of failing it. The check now follows the path
+you use, so the swap reads as the rollback it is.
+
+**The way out is never blocked.** When a ledger is in question, the warning
+tells you to run `memory-pulse anchor accept "<why>"`. The guard used to
+refuse that command if your reason contained words like `cp` or `->`. It now
+lets the command through as long as nothing is chained to it.
+
 **An earlier copy of the ledger put back is refused.** Put back an older copy,
 seal included, and 0.15.1 accepted it every time (0 of 2). Each machine now
 keeps an anchor for each ledger: how many rows it last saw and a digest of

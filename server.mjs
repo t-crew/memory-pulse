@@ -576,7 +576,9 @@ export function macVerdict(row, w) {
   return typeof row.hash === "string" && rowHash(row) === row.hash ? "ok" : "forged";
 }
 const ANCHOR_SCHEMA = "memory-pulse.anchor.v1";
-const ledgerId = (ledger) => { const abs = resolvePath(ledger); let dir = dirname(abs); try { dir = realpathSync(dir); } catch { /* not created yet */ } return join(dir, basename(abs)); };
+// keyed by the path as given, not its realpath: swapping a folder on the path for a symlink to an older copy must meet the same anchor
+// (review of 0.16.0: the realpath key started a fresh anchor and the rollback passed). Two spellings of one ledger get two anchors.
+const ledgerId = (ledger) => resolvePath(ledger);
 export const anchorPathFor = (ledger) => join(trustDir(), "anchors", `${createHash("sha256").update(ledgerId(ledger)).digest("hex").slice(0, 32)}.json`);
 export function readAnchor(ledger) {
   try {
@@ -1362,10 +1364,14 @@ export function ledgerHealth(path) {
 }
 const SIDECAR_RE = /(^|[\\/])\.memory-pulse([\\/]|$)/;
 const SIDECAR_NAMES = /^(seal\.rain|memory\.rain|telemetry\.rain|seal\.resume\.json|verify\.cache\.json|invariants\.jsonl)$/;
+// The way out the guard prints, `[VAR=value ...] memory-pulse anchor accept [--scope agent] "<why>"`, as one command whose reason
+// cannot run anything (single quotes, or double quotes without $ ` \). Anything chained to it is judged as a write as usual.
+const ANCHOR_ACCEPT_RE = new RegExp(String.raw`^\s*(?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[^"$` + "`" + String.raw`\\]*"|[^\s'"$` + "`" + String.raw`;&|<>()]+)\s+)*(?:npx\s+(?:-y\s+)?)?memory-pulse(?:@[\w.-]+)?\s+anchor\s+accept(?:\s+--scope\s+agent)?\s+(?:'[^']*'|"[^"$` + "`" + String.raw`\\]*"|[^\s'"$` + "`" + String.raw`;&|<>()]+)(?:\s+--scope\s+agent)?\s*$`);
 /** Does this action write to a ledger or one of its sidecars? Reading never counts. */
 export function ledgerTargeted(action, ledgers) {
   const cmd = typeof action?.command === "string" ? action.command : "";
   const td = trustDir(); // 0.16.0: the anchor and the writer key count as the ledger's own files
+  if (cmd && ANCHOR_ACCEPT_RE.test(cmd)) return false;
   if (cmd) {
     const mentions = ledgers.some((l) => cmd.includes(l)) || cmd.includes(td) || /\.memory-pulse\b|events\.jsonl|seal\.rain|memory\.rain|telemetry\.rain|memory-pulse[\\/](anchors|cache)\b|writer\.key/.test(cmd);
     if (!mentions) return false;
