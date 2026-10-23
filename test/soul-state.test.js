@@ -6,6 +6,8 @@
 //   soul resume <f>          the soul from the capsule alone, on a machine with no agent ledger; a tampered capsule is refused
 //   continuity               in soul mode each brief opens with what changed since the capsule the last brief wrote, then writes a new one
 // A digest, not a signature: it shows a change, it does not say who made it. Written before the code.
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";

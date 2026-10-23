@@ -291,7 +291,7 @@ npx memory-pulse before "<what you are about to do>"   # which corrections bear 
 npx memory-pulse guard          # PreToolUse hook: blocks edits that reintroduce withdrawn terms (exit 2); --verbose names a non-JSON stdin
 npx memory-pulse guard allow "<term>" --path <prefix> "<reason>"   # record a false block as an override
 npx memory-pulse check --ci     # Memory CI: one of three verdicts for a change, from files you own
-npx memory-pulse verify         # row chain, last engine seal, this machine's anchor and writer marks; on a break: the first bad row and the command that fixes it; exit 2 if any fails; --json for machines
+npx memory-pulse verify         # row chain, last engine seal, this machine's anchor and writer marks; on a break: the first bad row and the command that fixes it; exit 2 if any fails; --strict also fails on unmarked rows; --json for machines
 npx memory-pulse append --json '{"cause":"...","effect":"..."}'   # the one way for another tool to write a row: lock, t, prev and hash done here; also `-` for stdin, --scope agent
 npx memory-pulse repair --quarantine-tail   # move a tail of rows that fail on their own aside, byte-for-byte, recorded; nothing deleted (also unchained rows this machine did not write)
 npx memory-pulse repair --adopt-quarantine <file> --yes   # re-append quarantined rows through the writer after a person has reviewed them
@@ -447,10 +447,14 @@ memory-pulse still verify the chain. From the moment the anchor starts:
 - an unchained row at the end of the file is moved aside by the next write or
   guard run, recorded like a bad tail, instead of being sealed into the chain.
   No memory-pulse since 0.3.1 writes an unchained row;
-- any other row this machine did not write is named by `verify` and in one
-  warning line, and stays where it is: a row from another machine, from a
-  memory-pulse older than 0.16.0, or written straight into the file.
-  `memory-pulse anchor accept "<why>"` records that you trust it.
+- any other row without this machine's mark is named by `verify` and
+  accepted, and the anchor covers it from the next write on: a row from
+  another machine, from a memory-pulse older than 0.16.0 still installed
+  somewhere, or one someone chained into the file by hand. Nothing on the row
+  tells these apart, and the first two are everyday traffic while a machine
+  upgrades. Where one writer is all there is, `verify --strict` (or
+  `MEMORY_PULSE_STRICT_WRITER=1`) fails on them, and
+  `memory-pulse anchor accept "<why>"` records that you trust them.
 
 **What the anchor and the marks stop, and what they do not.** They stop a
 process that can write the ledger's folder but not the trust store, which is a
@@ -741,6 +745,7 @@ No ledger text, path, term or prompt is in it, and none can be: the client accep
 | `MEMORY_PULSE_BRIEF` | unset | `scaffold` or `engine`: which re-entry `brief` prints, overriding the default (scaffold without a key, engine brief with one) |
 | `MEMORY_PULSE_BRIEF_TIER` | `brief` | tier for `brief` when no budget is given: `index`, `brief`, `notes`, `full` |
 | `MEMORY_PULSE_BOARD` | `./.memory-pulse/board.jsonl` | the shared agent message board; set, the MCP server also lists `board_post` and `board_read` |
+| `MEMORY_PULSE_STRICT_WRITER` | unset | `1`: a row without this machine's mark fails `verify` and gets a guard warning, as `verify --strict` does; for a ledger with one writer |
 | `MEMORY_PULSE_TRUST_DIR` | `$XDG_STATE_HOME/memory-pulse`, else `~/.local/state/memory-pulse` | where this machine's anchors and writer key live; keep it outside every ledger folder |
 | `MEMORY_PULSE_LOCK_TIMEOUT_MS` | `5000` | how long a writer waits for the ledger lock before refusing; a lock whose holder has exited is broken at once |
 | `NO_COLOR`, `TERM` | unset | colour in the guard's block message only on a TTY with `NO_COLOR` unset and `TERM` not `dumb` |

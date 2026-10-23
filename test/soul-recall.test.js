@@ -2,6 +2,8 @@
 // Why BM25: the pre-registered known-item benchmark on 219 real memory notes (engine docs/plans/2026-10-21-soul-as-state.md) read BM25 MRR
 // 0.971 / 0.907 against 0.864 / 0.774 for word overlap; the decision rule chose BM25.
 // Written before the code.
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";

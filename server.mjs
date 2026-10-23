@@ -595,9 +595,17 @@ export function anchorCheck(lines, anchor) {
   return { ok: true, lines: anchor.lines, since: lines.length - anchor.lines };
 }
 /** Rows after the anchor's start that this machine's writer did not write (unverified) or wrote and that changed since (forged). */
+// Three kinds of row after the anchor started, each with its own answer (revised before release, 2026-10-22):
+//   forged   — this machine's mark, content changed since: fails, like a broken chain.
+//   tail     — unchained rows at the very end: no writer since 0.3.1 writes one, so they are moved aside, never sealed in (fails until).
+//   unmarked — any other row without this machine's mark: another machine, a client before 0.16.0, the engine's own capture, or a
+//              planted row someone chained. Nothing on the row tells these apart, and the first ones are everyday traffic on a
+//              machine mid-upgrade (on 2026-10-22 a live machine's own 0.15.1 client read as an intruder and every verify failed).
+//              So they are named and accepted; the anchor covers them from the next write on, and --strict (or
+//              MEMORY_PULSE_STRICT_WRITER=1) fails on them for a ledger that has one writer.
 export function rowTrust(lines, anchor, w = writerKey()) {
   const g = anchor?.genesis?.lines;
-  if (!Number.isInteger(g)) return { genesis: null, unverified: [], forged: [], tail: null };
+  if (!Number.isInteger(g)) return { genesis: null, unverified: [], unmarked: [], forged: [], tail: null };
   const unverified = [], forged = [];
   for (let i = g; i < lines.length; i++) {
     let row = null; try { row = JSON.parse(lines[i]); } catch { row = null; }
@@ -605,10 +613,12 @@ export function rowTrust(lines, anchor, w = writerKey()) {
     if (v === "forged") forged.push({ line: i + 1, t });
     else if (v !== "ok") unverified.push({ line: i + 1, t, chained: typeof row?.hash === "string" });
   }
-  // the unmarked unchained rows at the very end: what the writer (and the guard) move aside instead of sealing in
-  let k = lines.length; while (k > g && unverified.some((u) => u.line === k && !u.chained)) k--;
-  return { genesis: g, unverified, forged, tail: k < lines.length ? { from: k, rows: lines.length - k } : null };
+  const unchained = new Set(unverified.filter((u) => !u.chained).map((u) => u.line));
+  let k = lines.length; while (k > g && unchained.has(k)) k--;
+  const tail = k < lines.length ? { from: k, rows: lines.length - k } : null;
+  return { genesis: g, unverified, unmarked: unverified.filter((u) => !tail || u.line <= tail.from), forged, tail };
 }
+const strictWriter = () => process.env.MEMORY_PULSE_STRICT_WRITER === "1";
 /** Start an anchor at the ledger as it stands (first use on this machine). Returns the anchor, existing or new. */
 function ensureAnchor(ledger, lines = ledgerLines(ledger), why = "first-run") {
   const a = readAnchor(ledger); if (a) return a;
@@ -616,10 +626,12 @@ function ensureAnchor(ledger, lines = ledgerLines(ledger), why = "first-run") {
   writeAnchor(ledger, fresh); return fresh;
 }
 /** Move the anchor forward over rows this writer marked, and only when the ledger still begins with what it anchored. */
+// Moves the anchor forward to the end of the ledger, stopping before a changed marked row or an unchained tail (those stay in
+// question); rows without this machine's mark are covered too, so removing one later is caught as a rollback.
 function advanceAnchor(ledger, lines = ledgerLines(ledger)) {
   const a = readAnchor(ledger); if (!a || anchorCheck(lines, a).ok !== true) return a;
-  const w = writerKey(); let n = a.lines;
-  while (n < lines.length) { let row = null; try { row = JSON.parse(lines[n]); } catch { row = null; } if (n >= a.genesis.lines && macVerdict(row, w) !== "ok") break; n++; }
+  const r = rowTrust(lines, a);
+  const n = Math.min(r.forged.length ? r.forged[0].line - 1 : lines.length, r.tail ? r.tail.from : lines.length);
   if (n > a.lines) writeAnchor(ledger, anchorRecord(ledger, lines, n, a.genesis));
   return readAnchor(ledger);
 }
@@ -627,7 +639,7 @@ const sameLedger = (a, b) => { try { return ledgerId(a) === ledgerId(b); } catch
 // the ledgers a writer starts an anchor for; any other (an episode, a board) is anchored only once something verifies it
 const anchoredByWriter = (path) => sameLedger(path, ledgerPath()) || sameLedger(path, agentPath()) || !!readAnchor(path);
 /** This machine's view of a ledger: the anchor (rollback) and the writer marks. `init` starts an anchor on first sight. */
-export function ledgerTrust(ledger = ledgerPath(), { init = false, lines = null } = {}) {
+export function ledgerTrust(ledger = ledgerPath(), { init = false, lines = null, strict = strictWriter() } = {}) {
   const L = lines ?? ledgerLines(ledger);
   let anchor = readAnchor(ledger);
   if (!anchor && init) { try { anchor = ensureAnchor(ledger, L); } catch { anchor = null; /* read-only trust store: checked as before */ } }
@@ -635,7 +647,7 @@ export function ledgerTrust(ledger = ledgerPath(), { init = false, lines = null 
   const failure = a.ok === false ? { ok: false, kind: "anchor", reason: `rolled back: ${a.reason}`, brokenAt: anchor?.t ?? null }
     : r.forged.length ? { ok: false, kind: "anchor", reason: `${r.forged.length} row(s) changed since this machine's writer marked them (t=${r.forged.slice(0, 8).map((x) => x.t).join(", ")})`, brokenAt: r.forged[0].t }
     : null;
-  return { ok: !failure && !r.unverified.length, anchor: { ...a, path: anchorPathFor(ledger), at: anchor?.at ?? null, genesis: anchor?.genesis ?? null }, ...r, failure, rows: L.length };
+  return { ok: !failure && !r.tail && !(strict && r.unmarked.length), strict, anchor: { ...a, path: anchorPathFor(ledger), at: anchor?.at ?? null, genesis: anchor?.genesis ?? null }, ...r, failure, rows: L.length };
 }
 // The guard runs on every tool call: its verdict is cached in the trust store (never beside the ledger, where the process this
 // guards against could write a cache entry), keyed by the ledger's, the anchor's and the key's inode, size, mtime and ctime.
@@ -645,7 +657,7 @@ export function ledgerTrustCached(ledger) {
   const id = createHash("sha256").update(ledgerId(ledger)).digest("hex").slice(0, 32), file = join(trustDir(), "cache", `${id}.json`);
   const k = () => ({ ledger: keyOf(ledger), anchor: keyOf(anchorPathFor(ledger)), key: keyOf(join(trustDir(), "writer.key")) });
   const now = k();
-  try { const c = JSON.parse(readFileSync(file, "utf8")); if (now.anchor && sameKey(c.k.ledger, now.ledger) && sameKey(c.k.anchor, now.anchor) && (c.k.key === null ? now.key === null : sameKey(c.k.key, now.key))) return { ...c.result, cache: "hit" }; } catch { /* none yet */ }
+  try { const c = JSON.parse(readFileSync(file, "utf8")); if (now.anchor && c.result?.strict === strictWriter() && sameKey(c.k.ledger, now.ledger) && sameKey(c.k.anchor, now.anchor) && (c.k.key === null ? now.key === null : sameKey(c.k.key, now.key))) return { ...c.result, cache: "hit" }; } catch { /* none yet */ }
   const result = ledgerTrust(ledger, { init: true });
   try { mkdirSync(dirname(file), { recursive: true, mode: 0o700 }); const tmp = `${file}.${process.pid}.tmp`; writeFileSync(tmp, JSON.stringify({ k: k(), result })); renameSync(tmp, file); } catch { /* read-only trust store */ }
   return result;
@@ -663,7 +675,8 @@ export function acceptAnchor(ledger, why, { scope = "project", event = true } = 
 export function trustLine(path, tr) {
   if (!tr) return "";
   if (tr.failure) return `memory-pulse: ledger ${path} ${tr.failure.reason}; writes to it are blocked until the newer copy is restored or \`${cliPrefixFor(path)} anchor accept${scopeFlagFor(path)} "<why>"\` records that you trust it as it stands; run ${cliPrefixFor(path)} verify${scopeFlagFor(path)}`;
-  if (tr.unverified.length) return `memory-pulse: ${tr.unverified.length} row(s) in ${path} were not written by this machine's writer (t=${tr.unverified.slice(0, 8).map((u) => u.t ?? "?").join(", ")}${tr.unverified.length > 8 ? ", …" : ""}): another machine, a memory-pulse older than 0.16.0, or a direct file write; \`${cliPrefixFor(path)} anchor accept${scopeFlagFor(path)} "<why>"\` records that you trust them`;
+  // an unchained tail is moved aside by the guard and the writer, and their own lines say so; unmarked rows speak only under strict
+  if (tr.strict && tr.unmarked?.length) return `memory-pulse: ${tr.unmarked.length} row(s) in ${path} carry no mark from this machine's writer (t=${tr.unmarked.slice(0, 8).map((u) => u.t ?? "?").join(", ")}${tr.unmarked.length > 8 ? ", …" : ""}): another machine, a memory-pulse older than 0.16.0, or a write that chained itself; \`${cliPrefixFor(path)} anchor accept${scopeFlagFor(path)} "<why>"\` records that you trust them`;
   return "";
 }
 
@@ -1366,7 +1379,7 @@ export function guardVerdict(action, { events, invariants = [], health = null } 
   v.warnings = [...proj.warnings, ...(agent?.warnings ?? [])];
   for (const h of [proj, agent]) {
     if (h && !h.chain.ok && !targeted) v.warnings.push(`memory-pulse: ledger chain broken in ${h.path} (${h.chain.reason}); writes to that ledger are blocked until it is repaired, other work is not; run ${cliPrefixFor(h.path)} verify${scopeFlagFor(h.path)} for the fix`);
-    else if (h && h.chain.ok && h.trust && (h.trust.unverified.length || (h.trust.failure && !targeted))) v.warnings.push(trustLine(h.path, h.trust));
+    else if (h && h.chain.ok && h.trust && !(h.trust.failure && targeted)) { const line = trustLine(h.path, h.trust); if (line) v.warnings.push(line); }
   }
   return v;
 }
@@ -2514,7 +2527,7 @@ async function cliCheck() {
   const chain0 = verifyChain();
   let tr0 = null; try { tr0 = chain0.ok && existsSync(ledgerPath()) ? ledgerTrustCached(ledgerPath()) : null; } catch { tr0 = null; }
   let v = localCheck(events, { kind, text, path }, invariants, { chain: chain0.ok && tr0?.failure ? tr0.failure : chain0, seal: verifyLocalSeal(events, readSeal(), chain0) });
-  if (tr0?.unverified?.length) v.reasons.push(trustLine(ledgerPath(), tr0).replace(/^memory-pulse: /, ""));
+  { const line = tr0 && !tr0.failure ? trustLine(ledgerPath(), tr0) : ""; if (line) v.reasons.push(line.replace(/^memory-pulse: /, "")); }
   let receipt = null, integrity = null;
   if (wantReceipt) {
     const out = await callApi("/v1/check", { action: { kind, text, path }, events, invariants, ...(readMemoryKey() ? { verifyKey: true } : {}) });
@@ -2799,8 +2812,8 @@ Commands
                                       which corrections bear on the change you are about to make: the exact rung locally, the learned rung from the engine
   check [--ci] [--receipt] [--json] [--kind edit|publish|command|custom] [--path p] (--text "..." | --file f | --diff [base] | stdin)
                                       one of three verdicts: BLOCKED (exit 2), VERIFIED (0), NO_EVIDENCE (1 under --ci, never a pass)
-  verify [--json] [--scope project|agent]
-                                      walk the row chain, check the last engine seal, this machine's anchor and its writer's marks; on a break, name the first bad row and print the command that fixes it; exit 2 if any fails
+  verify [--json] [--strict] [--scope project|agent]
+                                      walk the row chain, check the last engine seal, this machine's anchor and its writer's marks; on a break, name the first bad row and print the command that fixes it; exit 2 if any fails; --strict also fails on rows this machine's writer did not mark
   append [--scope project|agent] (--json '<row>' | -)
                                       the one way for another tool to write a row: takes the ledger lock and computes t, prev and hash; never write a ledger file directly
   repair [--scope project|agent] (--quarantine-tail | --adopt-quarantine <file> [--yes])
@@ -2858,6 +2871,7 @@ Environment
   MEMORY_PULSE_BRIEF_BUDGET           default for brief --budget, in tokens
   MEMORY_PULSE_BRIEF_TIER             tier for brief when no budget is given: index, brief (default), notes or full
   MEMORY_PULSE_BOARD                  the shared agent message board's path (default ./.memory-pulse/board.jsonl); set, the MCP server also lists board_post and board_read
+  MEMORY_PULSE_STRICT_WRITER          1: verify and the guard treat a row without this machine's mark as a problem (for a ledger with one writer); default: named and accepted
   MEMORY_PULSE_TRUST_DIR              where this machine's anchors and writer key live, outside every ledger folder (default $XDG_STATE_HOME/memory-pulse, else ~/.local/state/memory-pulse)
   MEMORY_PULSE_LOCK_TIMEOUT_MS        how long a writer waits for the ledger lock before refusing (default 5000); a lock whose holder has exited is broken at once
   NO_COLOR, TERM                      colour in the guard's block message only when NO_COLOR is unset, TERM is not dumb and stderr is a TTY
@@ -2911,13 +2925,13 @@ function cliVerify() {
   const backups = chain.ok || info?.tail?.allBad ? [] : trustedBackups(ledger);
   const fix = chain.ok ? null : info?.tail?.allBad ? `${prefix} repair${flag} --quarantine-tail` : backups.length ? `cp "${backups[0].file}" "${ledger}"` : null;
   // 0.16.0: this machine's anchor (rollback) and writer marks; the anchor starts here on first sight of a ledger whose chain verifies
-  const hadAnchor = !!readAnchor(ledger), trust = ledgerTrust(ledger, { init: chain.ok });
+  const hadAnchor = !!readAnchor(ledger), trust = ledgerTrust(ledger, { init: chain.ok, ...(argv.includes("--strict") ? { strict: true } : {}) });
   const ts = (xs) => xs.slice(0, 12).map((x) => `t=${x.t ?? "?"}`).join(", ") + (xs.length > 12 ? `, … (${xs.length})` : "");
   const trustOk = trust.ok || trust.anchor.ok === null;
   if (argv.includes("--json")) {
     console.log(JSON.stringify({ ledger, chain, firstBad: info?.firstBad ?? null, tail: info?.tail ? { rows: info.tail.rows, allBad: info.tail.allBad } : null, fix, backups, seal: { ok: seal.ok, reason: seal.reason ?? null, through: seal.seal?.through ?? null, events: seal.seal?.events ?? null, digest: seal.seal?.digest ?? null },
       anchor: { ok: trust.anchor.ok, reason: trust.anchor.reason ?? null, rows: trust.anchor.lines ?? null, since: trust.anchor.since ?? null, started: trust.genesis, file: trust.anchor.path, new: !hadAnchor && trust.anchor.ok !== null },
-      marks: { changed: trust.forged, unverified: trust.unverified, unchained_tail: trust.tail?.rows ?? 0 } }, null, 2));
+      marks: { strict: trust.strict, changed: trust.forged, unmarked: trust.unmarked, unchained_tail: trust.tail?.rows ?? 0 } }, null, 2));
     process.exit(chain.ok && seal.ok !== false && trustOk ? 0 : 2);
   }
   const unsealedNote = chain.unsealed ? (trust.tail ? ` · ${chain.unsealed} unsealed row(s) at the tail (see writer marks)` : ` · ${chain.unsealed} unsealed row(s) from an older writer (the next write seals them)`) : "";
@@ -2940,7 +2954,8 @@ function cliVerify() {
       : !hadAnchor ? `anchor: set at this run — the ${a.lines} row(s) as they stand are this machine's starting point (${a.path})`
       : `anchor: OK — the ledger begins with the ${a.lines} row(s) this machine last saw${a.since ? `, ${a.since} row(s) since` : ""}`);
     if (trust.forged.length) console.log(`writer marks: ${trust.forged.length} row(s) changed since this machine's writer marked them: ${ts(trust.forged)}`);
-    if (trust.unverified.length) console.log(`writer marks: ${trust.unverified.length} row(s) not written by this machine's writer: ${ts(trust.unverified)} (another machine, a memory-pulse older than 0.16.0, or a direct file write)${trust.tail ? `; the ${trust.tail.rows} unchained one(s) at the tail are moved aside by the next write or guard run (${prefix} repair${flag} --quarantine-tail does it now)` : ""}`);
+    if (trust.tail) console.log(`writer marks: ${trust.tail.rows} unchained row(s) at the tail were not written by this machine's writer: ${ts(trust.unverified.filter((u) => u.line > trust.tail.from))} (a direct file write, or a client older than the row chain); the next write or guard run moves them aside, or now: ${prefix} repair${flag} --quarantine-tail`);
+    if (trust.unmarked.length) console.log(`writer marks: ${trust.unmarked.length} row(s) since this machine's anchor started carry no mark from this machine's writer: ${ts(trust.unmarked)} (another machine, a memory-pulse older than 0.16.0, or a write that chained itself)${trust.strict ? "; refused under --strict" : "; accepted, and covered by the anchor from the next write on (verify --strict refuses them)"}`);
     if (a.ok !== null && !trust.forged.length && !trust.unverified.length && trust.genesis !== null && trust.rows > trust.genesis) console.log(`writer marks: OK — every row since this machine's anchor started (${trust.genesis} row(s) in) was written here`);
     if (!trustOk) console.log(`fix: restore the newer copy, or record that you trust the ledger as it stands: ${prefix} anchor accept${flag} "<why>"`);
   }
@@ -2963,7 +2978,7 @@ function cliAnchor() {
     const chain = verifyChain(ledger);
     if (!chain.ok) { console.error(`refused: the row chain itself is broken (${chain.reason}); accept applies to rows that verify as a chain. Restore the ledger from a copy you trust first (memory-pulse verify${flag} lists copies that verify)`); process.exit(1); }
     const had = !!readAnchor(ledger), before = ledgerTrust(ledger, { init: true });
-    if (!had || (before.anchor.ok === true && before.ok)) { console.log(had ? "nothing to accept: the ledger begins with what this machine last saw, and every row since was written here" : `nothing to accept: the anchor starts now, at the ${before.rows} row(s) as they stand`); process.exit(0); }
+    if (!had || (before.anchor.ok === true && !before.forged.length && !before.unverified.length)) { console.log(had ? "nothing to accept: the ledger begins with what this machine last saw, and every row since was written here" : `nothing to accept: the anchor starts now, at the ${before.rows} row(s) as they stand`); process.exit(0); }
     const r = acceptAnchor(ledger, why, { scope });
     if (!r.written) { console.error(`not recorded: ${r.reason}`); process.exit(1); }
     const what = [before.anchor.ok === false ? "a rollback" : null, before.forged.length ? `${before.forged.length} changed row(s)` : null, before.unverified.length ? `${before.unverified.length} row(s) written elsewhere` : null].filter(Boolean).join(", ");
@@ -2978,8 +2993,10 @@ function cliAnchor() {
   if (!a) { console.log(`anchor: none yet for ${ledger} (the next verify, guard run or write starts it)`); process.exit(0); }
   console.log(`anchor: ${a.lines} row(s) through t=${a.t ?? "?"}, recorded ${a.at}; started at ${a.genesis.lines} row(s) on ${a.genesis.at} (${a.genesis.why ?? "first run"})`);
   const line = tr ? trustLine(ledger, tr) : "";
-  console.log(line ? line.replace(/^memory-pulse: /, "") : "the ledger begins with the anchored rows, and every row since was written by this machine's writer");
-  process.exit(line ? 2 : 0);
+  if (line) console.log(line.replace(/^memory-pulse: /, ""));
+  else if (tr?.unmarked?.length) console.log(`${tr.unmarked.length} row(s) since the anchor started carry no mark from this machine's writer (accepted; verify --strict refuses them)`);
+  else console.log("the ledger begins with the anchored rows, and every row since was written by this machine's writer");
+  process.exit(tr && !tr.ok ? 2 : 0);
 }
 
 async function cliRepair() {

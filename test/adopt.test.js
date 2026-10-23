@@ -1,6 +1,8 @@
 // `memory-pulse adopt` (2026-10-21; the market review's first move: guard the memory people already have). It reads the corrections
 // a user already keeps (Claude Code's auto memory `feedback` notes, CLAUDE.md, AGENTS.md, .claude/rules, .cursor/rules), shows what it
 // would enforce, and with --yes records them as corrections the guard blocks. Written before the command.
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";

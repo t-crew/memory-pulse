@@ -3,6 +3,8 @@
 //  4  a 200 whose body is not a push result is not "synced"
 //  5  after a full push, a write sends only the rows after the hosted head (/v1/board/append); a moved head falls back to a full push
 //  7  lib/board.mjs imported on its own still pushes
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";

@@ -5,6 +5,8 @@
 //  9  a 5xx while polling is retried, not fatal
 // 12  login keeps a configured board project, says what it turned on, and warns when MEMORY_PULSE_KEY will override the new key
 // 13  the key file is written whole (no temp file left) and readable only by the user, even over an older looser file
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";

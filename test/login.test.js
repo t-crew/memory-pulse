@@ -1,6 +1,8 @@
 // `memory-pulse login | logout` (2026-10-21): connect a machine without handling a key. The CLI starts a device request, shows the
 // code and opens the console; the user approves there; the CLI saves the key (~/.config/memory-pulse/key, mode 600), turns board sync
 // on and pushes the board. The engine's half is tested in the engine. Here: what the CLI sends, saves and prints. Written first.
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";

@@ -535,7 +535,7 @@ lines and exits 2 when either reports a problem:
 
 ```
 anchor: ROLLED BACK — the ledger holds 5 row(s); this machine last saw 8 (through t=8): rows were removed, or an older copy was put back
-writer marks: 1 row(s) not written by this machine's writer: t=9 (another machine, a memory-pulse older than 0.16.0, or a direct file write)
+writer marks: 1 row(s) since this machine's anchor started carry no mark from this machine's writer: t=9 (another machine, a memory-pulse older than 0.16.0, or a write that chained itself); accepted, and covered by the anchor from the next write on (verify --strict refuses them)
 fix: restore the newer copy, or record that you trust the ledger as it stands: memory-pulse anchor accept "<why>"
 ```
 
@@ -546,7 +546,20 @@ What each finding does:
 | the ledger no longer begins with the anchored rows (an older copy, or rows removed or rewritten below the anchor) | blocks writes to the ledger, its files and the trust store; one warning line elsewhere | writes, but the anchor does not move | restore the newer copy, or `anchor accept "<why>"` |
 | a row this machine marked whose content changed (re-chaining the file does not hide it) | same as above | same as above | same as above |
 | an unchained row at the end of the file, after the anchor started | moves it aside, recorded, like a bad tail | moves it aside first; it is never sealed into the chain | `repair --adopt-quarantine <file> --yes` after reading it |
-| any other row this machine did not write (another machine, an older client, a direct write) | one warning line; nothing blocked | writes after it | `anchor accept "<why>"` |
+| any other row without this machine's mark (another machine, an older client still installed, a row someone chained by hand) | nothing by default; one warning line under strict | writes after it; the anchor covers it | none needed; under strict, `anchor accept "<why>"` |
+
+The last row of that table is a choice. A client before 0.16.0, another
+machine and the engine's own capture all write chained rows without this
+machine's mark, and so does someone who plants a row and chains it with the
+public row hash; nothing on the row tells them apart. Failing on every one of
+them made a machine's own older client read as an intruder while it upgraded
+(found on a live machine on 22 October 2026, before release), so by default
+they are named and accepted, and the anchor stops anyone removing or changing
+them afterwards. A ledger with one writer can ask for more: `verify --strict`,
+or `MEMORY_PULSE_STRICT_WRITER=1` for the guard and every verify, fails on
+them until `anchor accept` records that you trust them. The planted row the
+outside test used, a plain unchained line at the end of the file, is moved
+aside in either mode.
 
 `anchor accept` is refused while the chain itself is broken, needs a reason,
 and records it as a row with the anchor it replaced and what was in question.
@@ -557,8 +570,9 @@ anchored rows (a first install or a fast-forward).
 process that can write a ledger's folder but not the trust store: a sandboxed
 tool limited to the project, a sync or backup that restores an old file,
 `git checkout` of an old `.memory-pulse/`, a commit that rewinds the ledger. That
-process cannot put back an earlier copy, edit a marked row, or slip in a row of
-its own without `verify` saying so.
+process cannot put back an earlier copy or edit a row the anchor covers without
+`verify` failing. A row of its own is moved aside if it is a plain line, and
+named if it is chained; `--strict` refuses the chained one too.
 
 A process running as you can write the trust store too. It can rewrite the
 anchor, read the key and mark its own rows. On one machine the only check it

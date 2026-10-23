@@ -4,6 +4,8 @@
 // One normalizer maps Cursor's payload (conversation_id, Shell / Write / Read, stringified tool_output) onto the shape the rest reads.
 // Also for every host: capture records a tool call once (tool_use_id), and an exit code in tool_response decides a Codex command.
 // Written before the adapter.
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
