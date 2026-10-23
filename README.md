@@ -58,7 +58,7 @@ engines); the test suite runs on 22 and 24.
 
 `remember` and `help` from the shell arrive in 0.5.9. npm served 0.5.8 on
 2026-09-09, where both exit 1 with `unknown command`. If npx serves an older
-cached release, pin this one: `npx -y memory-pulse@0.15.1`; from a checkout,
+cached release, pin this one: `npx -y memory-pulse@0.16.0`; from a checkout,
 run `node server.mjs`. Four more things in this README are
 0.5.9 behaviour and differ on 0.5.8: `guard --verbose` names non-JSON stdin
 on stderr (0.5.8 prints nothing), `handoff` with no transcript writes nothing
@@ -191,7 +191,7 @@ and exits 0. The first `remember` creates `.memory-pulse/events.jsonl`, from a
 tool call or from the shell:
 
 ```
-npx -y memory-pulse@0.15.1 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
+npx -y memory-pulse@0.16.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 # before 0.6.0 is on npm, the same command from a checkout:
 git clone https://github.com/t-crew/memory-pulse.git && node memory-pulse/server.mjs remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 ```
@@ -468,7 +468,8 @@ needs a record somewhere that process cannot write, such as another machine,
 and 0.16.0 does not keep one. The anchor starts the first time 0.16.0 sees a
 ledger, so it trusts whatever is there at that moment. A row written through
 memory-pulse itself carries a valid mark whatever it says: what a row says is
-the instruction check's job, and that check reads text, not intent.
+the instruction check's job, and that check matches patterns in the text. It
+does not judge what a row means.
 
 **Never write a ledger file directly.** Another tool that wants to record a row
 runs `memory-pulse append`, which takes the ledger lock (`events.jsonl.lock`) and
