@@ -36,7 +36,7 @@ const PKG_VERSION = (() => {
     return JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "package.json"), "utf8")).version;
   } catch { return "0.0.0"; }
 })();
-import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync, realpathSync, readdirSync, statSync, renameSync, unlinkSync, openSync, closeSync, writeSync, truncateSync, linkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync, realpathSync, readdirSync, statSync, renameSync, unlinkSync, openSync, closeSync, writeSync, truncateSync, linkSync, copyFileSync, rmSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve as resolvePath, sep } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -1437,18 +1437,20 @@ export function setMode(mode) {
   const file = join(home, "settings.json");
   let settings = {}; if (existsSync(file)) { try { settings = JSON.parse(readFileSync(file, "utf8")); } catch { throw new Error(`refusing to touch ${file}: it is not valid JSON`); } }
   settings.hooks = settings.hooks || {};
-  const wanted = { Stop: "npx -y memory-pulse ambient", UserPromptSubmit: "npx -y memory-pulse observe" };
-  // soul mode also marks a session that reads outside content, synchronously, before the tool runs (lib/soul.mjs taint)
-  const TAINT = "npx -y memory-pulse taint", pre = (settings.hooks.PreToolUse = settings.hooks.PreToolUse || []), hasTaint = JSON.stringify(pre).includes(TAINT);
+  // 0.16.1: node on the pinned copy, not npx (see pinnedRunner); an older npx form is rewritten in place
+  const run = agentLike(mode) ? pinnedRunner() : NPX_RUNNER;
+  const wanted = { Stop: "ambient", UserPromptSubmit: "observe" };
   let installed = 0, removed = 0;
-  for (const [event, cmd] of Object.entries(wanted)) {
+  for (const [event, verb] of Object.entries(wanted)) {
     const arr = (settings.hooks[event] = settings.hooks[event] || []);
-    const has = JSON.stringify(arr).includes(cmd);
-    if (agentLike(mode) && !has) { arr.push({ hooks: [{ type: "command", command: cmd }] }); installed++; }
-    if (mode === "deliberate" && has) { settings.hooks[event] = arr.filter((h) => !JSON.stringify(h).includes(cmd)); removed++; }
+    const has = arr.some((h) => (h.hooks ?? []).some((x) => isOurHook(x.command, [verb])));
+    if (agentLike(mode)) { if (upsertHook(settings, event, verb, `${run} ${verb}`)) installed++; }
+    if (mode === "deliberate" && has) { settings.hooks[event] = arr.filter((h) => !(h.hooks ?? []).some((x) => isOurHook(x.command, [verb]))); removed++; }
   }
-  if (mode === "soul" && !hasTaint) { pre.push({ matcher: "WebFetch|WebSearch|mcp__.*", hooks: [{ type: "command", command: TAINT }] }); installed++; }
-  if (mode !== "soul" && hasTaint) { settings.hooks.PreToolUse = pre.filter((h) => !JSON.stringify(h).includes(TAINT)); removed++; }
+  // soul mode also marks a session that reads outside content, synchronously, before the tool runs (lib/soul.mjs taint)
+  if (mode === "soul" && upsertHook(settings, "PreToolUse", "taint", `${run} taint`, {}, { matcher: "WebFetch|WebSearch|mcp__.*" })) installed++;
+  const pre = (settings.hooks.PreToolUse = settings.hooks.PreToolUse || []);
+  if (mode !== "soul" && pre.some((h) => (h.hooks ?? []).some((x) => isOurHook(x.command, ["taint"])))) { settings.hooks.PreToolUse = pre.filter((h) => !(h.hooks ?? []).some((x) => isOurHook(x.command, ["taint"]))); removed++; }
   if (!settings.hooks.PreToolUse.length) delete settings.hooks.PreToolUse;
   mkdirSync(home, { recursive: true }); writeFileSync(file, JSON.stringify(settings, null, 2) + "\n");
   mkdirSync(dirname(modeConfigPath()), { recursive: true }); writeFileSync(modeConfigPath(), JSON.stringify({ mode }, null, 2) + "\n");
@@ -2624,6 +2626,48 @@ async function cliBench() {
   console.log(`  telemetry: ${readTelemetry()?.counters ? "signed capsule present — run `stats`" : "none yet"}`);
 }
 
+// 0.16.1: a hook runs node on a pinned copy of this package, not npx. Measured on a clean machine 2026-10-23: the npx form cost
+// 0.98-1.54 s per hook call against 0.06 s for node on the same server.mjs, about 2 s on every tool call. The copy lives outside the
+// npx cache (npm may clear it): $MEMORY_PULSE_DATA_DIR, else $XDG_DATA_HOME/memory-pulse, else ~/.local/share/memory-pulse, one
+// folder per version. A --project hook keeps npx, because a committed file has to run on every clone.
+const NPX_RUNNER = "npx -y memory-pulse";
+const HOOK_VERBS = "brief|guard|prompt|handoff|capture|consolidate|observe|ambient|taint";
+const OUR_HOOK = new RegExp(String.raw`^(?:npx\s+(?:-y\s+)?memory-pulse(?:@[\w.^~-]+)?|node\s+"[^"]*[\\/]server\.mjs")\s+((?:${HOOK_VERBS})\b.*)$`);
+export function pinnedRunner() {
+  const base = process.env.MEMORY_PULSE_DATA_DIR || join(process.env.XDG_DATA_HOME || join(process.env.HOME || homedir(), ".local", "share"), "memory-pulse");
+  const own = dirname(fileURLToPath(import.meta.url)), dest = join(base, PKG_VERSION);
+  if (resolvePath(own) !== resolvePath(dest)) {
+    const tmp = `${dest}.${process.pid}.tmp`; rmSync(tmp, { recursive: true, force: true }); mkdirSync(join(tmp, "lib"), { recursive: true });
+    for (const f of ["server.mjs", "package.json", "LICENSE", "README.md"]) if (existsSync(join(own, f))) copyFileSync(join(own, f), join(tmp, f));
+    for (const f of readdirSync(join(own, "lib"))) if (f.endsWith(".mjs")) copyFileSync(join(own, "lib", f), join(tmp, "lib", f));
+    rmSync(dest, { recursive: true, force: true }); renameSync(tmp, dest);
+  }
+  return `node "${join(dest, "server.mjs")}"`;
+}
+const hookRunner = (project) => (project ? NPX_RUNNER : pinnedRunner());
+// One memory-pulse hook per event and verb: an older npx form or another version's copy is rewritten in place, a duplicate is
+// dropped, every other hook is kept. Nested shape (Claude Code, Codex): [{ matcher?, hooks: [{ type, command, ... }] }].
+function upsertHook(settings, event, verb, command, extra = {}, entry = {}) {
+  const list = (settings.hooks[event] = settings.hooks[event] || []);
+  let found = false, changed = false; const emptied = new Set();
+  for (const e of list) {
+    if (!Array.isArray(e?.hooks)) continue; // not this shape: someone else's entry, left exactly as it is
+    const before = e.hooks.length;
+    e.hooks = e.hooks.filter((h) => {
+      const m = typeof h?.command === "string" ? OUR_HOOK.exec(h.command) : null;
+      if (!m || m[1].trim() !== verb) return true;
+      if (found) { changed = true; return false; }
+      found = true; if (h.command !== command) { h.command = command; changed = true; }
+      return true;
+    });
+    if (before && !e.hooks.length) emptied.add(e); // only an entry this call emptied is removed
+  }
+  settings.hooks[event] = list.filter((e) => !emptied.has(e));
+  if (!found) { settings.hooks[event].push({ ...entry, hooks: [{ type: "command", command, ...extra }] }); changed = true; }
+  return changed;
+}
+const isOurHook = (command, verbs) => { const m = typeof command === "string" ? OUR_HOOK.exec(command) : null; return !!m && verbs.includes(m[1].trim()); };
+
 // `npx memory-pulse install-hook` — make re-entry automatic: a Claude Code
 // SessionStart hook that runs the brief. Idempotent; merges, never clobbers.
 // `install-hook --cursor` (2026-10-21): Cursor's own hooks.json (version 1; cursor.com/docs/agent/hooks, read 2026-10-21). The guard
@@ -2635,18 +2679,30 @@ function installCursorHooks() {
   let cfg = { version: 1, hooks: {} };
   if (existsSync(file)) { try { cfg = JSON.parse(readFileSync(file, "utf8")); } catch { console.error(`refusing to touch ${file}: it is not valid JSON`); process.exit(1); } }
   cfg.version = cfg.version ?? 1; cfg.hooks = cfg.hooks || {};
+  const run = hookRunner(project);
   const want = [
-    ["sessionStart", { command: "npx -y memory-pulse brief --host cursor" }],
-    ["preToolUse", { command: "npx -y memory-pulse guard --host cursor", matcher: "Write|Shell", failClosed: true, timeout: 30 }],
+    ["sessionStart", { command: `${run} brief --host cursor` }],
+    ["preToolUse", { command: `${run} guard --host cursor`, matcher: "Write|Shell", failClosed: true, timeout: 30 }],
     ...(process.argv.includes("--no-capture") ? [] : [
-      ["postToolUse", { command: "npx -y memory-pulse capture --host cursor" }],
-      ["postToolUseFailure", { command: "npx -y memory-pulse capture --host cursor" }],
-      ["stop", { command: "npx -y memory-pulse consolidate --host cursor" }],
-      ["sessionEnd", { command: "npx -y memory-pulse consolidate --final --host cursor", timeout: 10 }],
+      ["postToolUse", { command: `${run} capture --host cursor` }],
+      ["postToolUseFailure", { command: `${run} capture --host cursor` }],
+      ["stop", { command: `${run} consolidate --host cursor` }],
+      ["sessionEnd", { command: `${run} consolidate --final --host cursor`, timeout: 10 }],
     ]),
   ];
+  // Cursor's shape is flat ([{ command, ... }]): the same rule, one memory-pulse hook per event and verb, older forms rewritten
   let changed = 0;
-  for (const [ev, h] of want) { const list = (cfg.hooks[ev] = cfg.hooks[ev] || []); if (!list.some((x) => x.command === h.command)) { list.push(h); changed++; } }
+  for (const [ev, h] of want) {
+    const verb = OUR_HOOK.exec(h.command)[1].trim(); let found = false;
+    const list = (cfg.hooks[ev] = (cfg.hooks[ev] || []).filter((x) => {
+      const m = typeof x.command === "string" ? OUR_HOOK.exec(x.command) : null;
+      if (!m || m[1].trim() !== verb) return true;
+      if (found) { changed++; return false; }
+      found = true; if (x.command !== h.command) { x.command = h.command; changed++; }
+      return true;
+    }));
+    if (!found) { list.push(h); changed++; }
+  }
   if (!changed) { console.log("hooks already installed — nothing to do"); return; }
   mkdirSync(dir, { recursive: true }); writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n");
   console.log(`installed ${changed} hook(s) in ${file}`);
@@ -2678,33 +2734,19 @@ async function cliInstallHook() {
   }
   settings.hooks = settings.hooks || {};
   let changed = 0;
-  const BRIEF = "npx -y memory-pulse brief";
-  const start = (settings.hooks.SessionStart = settings.hooks.SessionStart || []);
-  if (!JSON.stringify(start).includes(BRIEF)) { start.push({ hooks: [{ type: "command", command: BRIEF }] }); changed++; }
-  const GUARD = "npx -y memory-pulse guard";
-  const pre = (settings.hooks.PreToolUse = settings.hooks.PreToolUse || []);
-  if (!JSON.stringify(pre).includes(GUARD)) { pre.push({ matcher: codex ? "Edit|Write|apply_patch" : "Edit|Write|MultiEdit|Bash", hooks: [{ type: "command", command: GUARD }] }); changed++; }
-  const PROMPT = "npx -y memory-pulse prompt";
-  const upsP = (settings.hooks.UserPromptSubmit = settings.hooks.UserPromptSubmit || []);
-  if (!JSON.stringify(upsP).includes(PROMPT)) { upsP.push({ hooks: [{ type: "command", command: PROMPT }] }); changed++; }
-  const HANDOFF = "npx -y memory-pulse handoff";
-  const pc = (settings.hooks.PreCompact = settings.hooks.PreCompact || []);
-  if (!JSON.stringify(pc).includes(HANDOFF)) { pc.push({ hooks: [{ type: "command", command: HANDOFF }] }); changed++; }
+  const run = hookRunner(project);
+  changed += upsertHook(settings, "SessionStart", "brief", `${run} brief`);
+  changed += upsertHook(settings, "PreToolUse", "guard", `${run} guard`, {}, { matcher: codex ? "Edit|Write|apply_patch" : "Edit|Write|MultiEdit|Bash" });
+  changed += upsertHook(settings, "UserPromptSubmit", "prompt", `${run} prompt`);
+  changed += upsertHook(settings, "PreCompact", "handoff", `${run} handoff`);
   // automatic capture (2026-10-21): after every tool call (success and failure), async so no tool call waits; consolidation at the
   // end of each turn (async) and of the session (with a timeout above SessionEnd's 1.5 s default). Claude Code only for now.
   if (!codex && !process.argv.includes("--no-capture")) {
-    const CAPTURE = "npx -y memory-pulse capture", CONSOLIDATE = "npx -y memory-pulse consolidate", FINAL = "npx -y memory-pulse consolidate --final";
-    for (const ev of ["PostToolUse", "PostToolUseFailure"]) { const list = (settings.hooks[ev] = settings.hooks[ev] || []); if (!JSON.stringify(list).includes(CAPTURE)) { list.push({ hooks: [{ type: "command", command: CAPTURE, async: true }] }); changed++; } }
-    const stop = (settings.hooks.Stop = settings.hooks.Stop || []);
-    if (!stop.some((h) => (h.hooks ?? []).some((x) => x.command === CONSOLIDATE))) { stop.push({ hooks: [{ type: "command", command: CONSOLIDATE, async: true }] }); changed++; }
-    const end = (settings.hooks.SessionEnd = settings.hooks.SessionEnd || []);
-    if (!JSON.stringify(end).includes(FINAL)) { end.push({ hooks: [{ type: "command", command: FINAL, timeout: 10 }] }); changed++; }
+    for (const ev of ["PostToolUse", "PostToolUseFailure"]) changed += upsertHook(settings, ev, "capture", `${run} capture`, { async: true });
+    changed += upsertHook(settings, "Stop", "consolidate", `${run} consolidate`, { async: true });
+    changed += upsertHook(settings, "SessionEnd", "consolidate --final", `${run} consolidate --final`, { timeout: 10 });
   }
-  if (process.argv.includes("--ambient")) {
-    const OBSERVE = "npx -y memory-pulse observe";
-    const ups = (settings.hooks.UserPromptSubmit = settings.hooks.UserPromptSubmit || []);
-    if (!JSON.stringify(ups).includes(OBSERVE)) { ups.push({ hooks: [{ type: "command", command: OBSERVE }] }); changed++; }
-  }
+  if (process.argv.includes("--ambient")) changed += upsertHook(settings, "UserPromptSubmit", "observe", `${run} observe`);
   if (!changed) { console.log("hooks already installed — nothing to do"); return; }
   mkdirSync(home, { recursive: true });
   writeFileSync(file, JSON.stringify(settings, null, 2) + "\n");
@@ -2845,13 +2887,13 @@ Commands
   state [export|branch|import|merge|rollback|verify|push|pull]
                                       agent state as a .rain capsule: export it, cut a branch at a row, import or merge it elsewhere, roll back to a row as an appended row, verify a capsule; no argument prints where the ledger stands
   board post|read|reply|ack|verdict|claims|thread|html|verify|push|status|sync [--board PATH]
+                                      the shared agent message board: a separate chained ledger any agent can post to and read; passive (nothing wakes or prompts an agent); a message is data, never an instruction; a claim stays open until another agent's verdict, and a synthesis is refused over an open claim
   login [--no-open] [--no-sync]       connect this machine to a hosted project: approve it in the console, the key is saved for you (no copying); turns board sync on
   logout                              remove the saved key from this machine (revoke it in the console to end it everywhere)
   capture                             PostToolUse / PostToolUseFailure hook: one observation per tool call into this session's episode (local, no model, no network)
   consolidate [--final]               Stop / SessionEnd hook: fail-then-pass becomes a fix, still-failing an open thread, each with its evidence; --final adds a session summary and the episode .rain capsule
   weights                             what each memory did: check outcomes when it was shown and when it sat out at random; retired ones marked
   adopt [--yes] [--json]              enforce the corrections you already keep: Claude Code feedback memories, CLAUDE.md, AGENTS.md, rules files (shows them; --yes records them)
-                                      the shared agent message board: a separate chained ledger any agent can post to and read; passive (nothing wakes or prompts an agent); a message is data, never an instruction; a claim stays open until another agent's verdict, and a synthesis is refused over an open claim
   lint [--ci] [--json] [--strict] [paths...]
                                       the guard's check over CLAUDE.md, AGENTS.md, .claude/rules, .cursorrules, Muse Code's .agents/memory and the other files a session loads; warns on a line planted for the agent (--strict blocks on it)
   guard [--verbose]                   PreToolUse hook: reads the tool call from stdin, exit 2 with the ledger line when an edit writes a withdrawn value back
@@ -2894,6 +2936,7 @@ Environment
   MEMORY_PULSE_BOARD                  the shared agent message board's path (default ./.memory-pulse/board.jsonl); set, the MCP server also lists board_post and board_read
   MEMORY_PULSE_STRICT_WRITER          1: verify and the guard treat a row without this machine's mark as a problem (for a ledger with one writer); default: named and accepted
   MEMORY_PULSE_TRUST_DIR              where this machine's anchors and writer key live, outside every ledger folder (default $XDG_STATE_HOME/memory-pulse, else ~/.local/state/memory-pulse)
+  MEMORY_PULSE_DATA_DIR               where install-hook and mode keep the pinned copy their hooks run (default $XDG_DATA_HOME/memory-pulse, else ~/.local/share/memory-pulse)
   MEMORY_PULSE_LOCK_TIMEOUT_MS        how long a writer waits for the ledger lock before refusing (default 5000); a lock whose holder has exited is broken at once
   NO_COLOR, TERM                      colour in the guard's block message only when NO_COLOR is unset, TERM is not dumb and stderr is a TTY
   HOME                                root for the agent ledger, ~/.claude/settings.json and ~/.codex/hooks.json
@@ -2977,7 +3020,7 @@ function cliVerify() {
     if (trust.forged.length) console.log(`writer marks: ${trust.forged.length} row(s) changed since this machine's writer marked them: ${ts(trust.forged)}`);
     if (trust.tail) console.log(`writer marks: ${trust.tail.rows} unchained row(s) at the tail were not written by this machine's writer: ${ts(trust.unverified.filter((u) => u.line > trust.tail.from))} (a direct file write, or a client older than the row chain); the next write or guard run moves them aside, or now: ${prefix} repair${flag} --quarantine-tail`);
     if (trust.unmarkedCount) console.log(`writer marks: ${trust.unmarkedCount} row(s) since this machine's anchor started carry no mark from this machine's writer: ${ts(trust.unmarked)} (another machine, a memory-pulse older than 0.16.0, or a write that chained itself)${trust.strict ? "; refused under --strict" : "; accepted, and covered by the anchor from the next write on (verify --strict refuses them)"}`);
-    if (a.ok !== null && !trust.forged.length && !trust.unmarkedCount && !trust.tail && trust.genesis !== null && trust.rows > trust.genesis) console.log(`writer marks: OK — every row since this machine's anchor started (${trust.genesis} row(s) in) was written here`);
+    if (a.ok !== null && !trust.forged.length && !trust.unmarkedCount && !trust.tail && trust.genesis !== null && trust.rows > trust.genesis) console.log(`writer marks: OK — all ${trust.rows - trust.genesis} row(s) added since this machine's anchor started were written here`);
     if (!trustOk) console.log(`fix: restore the newer copy, or record that you trust the ledger as it stands: ${prefix} anchor accept${flag} "<why>"`);
   }
   process.exit(chain.ok && seal.ok !== false && trustOk ? 0 : 2);

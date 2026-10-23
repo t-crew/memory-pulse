@@ -8,6 +8,7 @@
 // Written before the code.
 // tests never write this machine's trust store (0.16.0): a temp one unless the run names one
 process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
+process.env.MEMORY_PULSE_DATA_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-data-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -103,8 +104,8 @@ test("review 2: agent-scope rows from a tainted session are refused, and soul te
 test("review 2: mode soul installs the taint hook and leaving soul mode removes it", () => {
   const f = fixture(); run(f, ["mode", "soul"]);
   const hooks = () => JSON.parse(readFileSync(join(f.home, ".claude", "settings.json"), "utf8")).hooks;
-  const t = (hooks().PreToolUse ?? []).find((h) => /memory-pulse taint/.test(JSON.stringify(h))); assert.ok(t); assert.equal(t.matcher, "WebFetch|WebSearch|mcp__.*");
-  run(f, ["mode", "agent"]); assert.ok(!(hooks().PreToolUse ?? []).some((h) => /memory-pulse taint/.test(JSON.stringify(h))));
+  const t = (hooks().PreToolUse ?? []).find((h) => /(?:memory-pulse|server\.mjs\\?") taint/.test(JSON.stringify(h))); assert.ok(t); assert.equal(t.matcher, "WebFetch|WebSearch|mcp__.*"); // 0.16.1 (2026-10-23): hooks run node on a pinned copy, not npx (test/fast-hooks.test.js); either form passes
+  run(f, ["mode", "agent"]); assert.ok(!(hooks().PreToolUse ?? []).some((h) => /(?:memory-pulse|server\.mjs\\?") taint/.test(JSON.stringify(h)))); // 0.16.1 (2026-10-23): hooks run node on a pinned copy, not npx (test/fast-hooks.test.js); either form passes
 });
 
 test("live false positive (2026-10-21): a write elsewhere in a command that only reads the agent ledger is not a raw edit of it", () => {

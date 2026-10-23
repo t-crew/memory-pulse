@@ -6,6 +6,7 @@
 // Written before the adapter.
 // tests never write this machine's trust store (0.16.0): a temp one unless the run names one
 process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
+process.env.MEMORY_PULSE_DATA_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-data-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -64,8 +65,8 @@ test("install-hook --cursor writes a version-1 hooks.json with a fail-closed gua
   assert.match(again.out, /already installed/);
   const h = JSON.parse(readFileSync(join(f.home, ".cursor", "hooks.json"), "utf8"));
   assert.equal(h.version, 1);
-  const guard = h.hooks.preToolUse.find((x) => /memory-pulse guard --host cursor/.test(x.command)); assert.ok(guard); assert.equal(guard.failClosed, true);
-  for (const ev of ["sessionStart", "postToolUse", "postToolUseFailure", "stop", "sessionEnd"]) assert.ok((h.hooks[ev] ?? []).some((x) => /memory-pulse/.test(x.command)), ev);
+  const guard = h.hooks.preToolUse.find((x) => /(?:memory-pulse|server\.mjs\\?") guard --host cursor/.test(x.command)); assert.ok(guard); assert.equal(guard.failClosed, true); // 0.16.1 (2026-10-23): hooks run node on a pinned copy, not npx (test/fast-hooks.test.js); either form passes
+  for (const ev of ["sessionStart", "postToolUse", "postToolUseFailure", "stop", "sessionEnd"]) assert.ok((h.hooks[ev] ?? []).some((x) => /memory-pulse|server\.mjs"/.test(x.command)), ev); // 0.16.1 (2026-10-23): hooks run node on a pinned copy, not npx (test/fast-hooks.test.js); either form passes
   assert.ok(h.hooks.sessionEnd.some((x) => /consolidate --final --host cursor/.test(x.command)));
 });
 

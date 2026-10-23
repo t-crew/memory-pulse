@@ -58,7 +58,7 @@ engines); the test suite runs on 22 and 24.
 
 `remember` and `help` from the shell arrive in 0.5.9. npm served 0.5.8 on
 2026-09-09, where both exit 1 with `unknown command`. If npx serves an older
-cached release, pin this one: `npx -y memory-pulse@0.16.0`; from a checkout,
+cached release, pin this one: `npx -y memory-pulse@0.16.1`; from a checkout,
 run `node server.mjs`. Four more things in this README are
 0.5.9 behaviour and differ on 0.5.8: `guard --verbose` names non-JSON stdin
 on stderr (0.5.8 prints nothing), `handoff` with no transcript writes nothing
@@ -191,7 +191,7 @@ and exits 0. The first `remember` creates `.memory-pulse/events.jsonl`, from a
 tool call or from the shell:
 
 ```
-npx -y memory-pulse@0.16.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
+npx -y memory-pulse@0.16.1 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 # before 0.6.0 is on npm, the same command from a checkout:
 git clone https://github.com/t-crew/memory-pulse.git && node memory-pulse/server.mjs remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 ```
@@ -748,6 +748,7 @@ No ledger text, path, term or prompt is in it, and none can be: the client accep
 | `MEMORY_PULSE_BOARD` | `./.memory-pulse/board.jsonl` | the shared agent message board; set, the MCP server also lists `board_post` and `board_read` |
 | `MEMORY_PULSE_STRICT_WRITER` | unset | `1`: a row without this machine's mark fails `verify` and gets a guard warning, as `verify --strict` does; for a ledger with one writer |
 | `MEMORY_PULSE_TRUST_DIR` | `$XDG_STATE_HOME/memory-pulse`, else `~/.local/state/memory-pulse` | where this machine's anchors and writer key live; keep it outside every ledger folder |
+| `MEMORY_PULSE_DATA_DIR` | `$XDG_DATA_HOME/memory-pulse`, else `~/.local/share/memory-pulse` | where `install-hook` and `mode` keep the pinned copy their hooks run with `node` (one folder per version); a hook through `npx` took about a second per call |
 | `MEMORY_PULSE_LOCK_TIMEOUT_MS` | `5000` | how long a writer waits for the ledger lock before refusing; a lock whose holder has exited is broken at once |
 | `NO_COLOR`, `TERM` | unset | colour in the guard's block message only on a TTY with `NO_COLOR` unset and `TERM` not `dumb` |
 | `HOME` | the shell's | root for the agent ledger, `~/.claude/settings.json` and `~/.codex/hooks.json` |

@@ -2,6 +2,26 @@
 
 This file starts at 0.16.0. Earlier releases are described in their tagged commits.
 
+## 0.16.1 (23 October 2026)
+
+**Hooks no longer cost a second each.** A clean-machine test of 0.16.0 timed
+the hooks that `install-hook`, `mode soul` and the one-line installer write.
+They ran through `npx`, which took 0.98 to 1.54 seconds per call. The guard
+itself takes 0.06 seconds. With a hook before and after every tool call, that
+was about two seconds added to each one. Hooks now run `node` on a copy of this
+release kept in `~/.local/share/memory-pulse` (or `MEMORY_PULSE_DATA_DIR`).
+Measured after the change: 0.06 to 0.07 seconds.
+
+Run `npx -y memory-pulse@0.16.1 install-hook` (or `mode soul` again) to upgrade.
+It rewrites the old hooks in place and keeps every hook that is not ours. The
+Claude Code plugin always ran `node` directly, so plugin users have nothing to do.
+`install-hook --project` still writes `npx`, because a committed file has to run
+on every clone.
+
+**Smaller fixes from the same test.** The install page names the right desktop
+extension file. `--help` prints the board's description under the board. And
+`verify` says how many rows were added since the anchor started, in plain words.
+
 ## 0.16.0 (release candidate, 22 October 2026)
 
 On 22 October 2026 an outside test attacked memory-pulse 0.15.1, using its

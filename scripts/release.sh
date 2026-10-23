@@ -28,6 +28,8 @@ if [ "${1:-}" != "" ]; then
   # the docs pin the release a reader copies (test/manifests.test.js holds them to package.json)
   for f in README.md docs/GUIDE.md docs/INSTALL.md; do
     sed -i '' -E "s/memory-pulse@[0-9]+\.[0-9]+\.[0-9]+/memory-pulse@$1/g" "$f"
+    # and the desktop extension's file name (INSTALL.md named memory-pulse-0.8.0.mcpb through 0.16.0)
+    sed -i '' -E "s/memory-pulse-[0-9]+\.[0-9]+\.[0-9]+\.mcpb/memory-pulse-$1.mcpb/g" "$f"
   done
 fi
 VERSION=$(node -p "require('./package.json').version")
