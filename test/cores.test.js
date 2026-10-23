@@ -1,5 +1,7 @@
 // The three "missing cores" (2026-09-03): offline brief, compaction handoff, ambient correction capture.
 // Written red-first. Every function here is deterministic — no model in the loop.
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 // tests never inherit the machine's agent mode or agent ledger

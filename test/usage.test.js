@@ -1,6 +1,8 @@
 // 0.7.0: opt-in usage counts (plan Task 5). Nothing is counted before consent; with it, counts are kept in
 // ~/.memory-pulse/usage.rain and leave the machine at most once per UTC day, as eight integers plus a random install id, the
 // version and the host. Never asked in CI or without a terminal; DO_NOT_TRACK and MEMORY_PULSE_TELEMETRY=0 win over a yes.
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, existsSync, readFileSync } from "node:fs";

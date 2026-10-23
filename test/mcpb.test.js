@@ -1,6 +1,8 @@
 // The Claude Desktop extension (2026-10-16): mcpb/manifest.json packs server.mjs into a one-click .mcpb (MCPB manifest 0.3,
 // github.com/modelcontextprotocol/mcpb MANIFEST.md read 2026-10-16). Desktop passes an optional setting the user left blank as
 // an empty string, so a blank key, ledger or board must behave exactly like an unset one. Written before the manifest.
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, existsSync, mkdtempSync } from "node:fs";

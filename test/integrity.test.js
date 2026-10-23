@@ -8,6 +8,8 @@
 //   - verify names the first bad row and prints the command that fixes it; repair adopts quarantined rows only
 //     with an explicit --yes
 //   - verification is cached by (inode, size, mtime, ctime) and extended over appended bytes only
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";

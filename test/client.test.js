@@ -4,6 +4,8 @@
  * payload, errors arrive with their reasons attached, and the tool surface
  * stays inside the token budget that is the product's own pitch.
  */
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 // tests never inherit the machine's agent mode or agent ledger
@@ -605,8 +607,14 @@ test("gap sealing: an unchained row from an older writer is reported unsealed, n
   const { mkdtempSync, writeFileSync, readFileSync } = await import("node:fs"); const { tmpdir } = await import("node:os"); const { join } = await import("node:path");
   const dir = mkdtempSync(join(tmpdir(), "mpg-")); const ledger = join(dir, "events.jsonl"); writeFileSync(ledger, "");
   process.env.MEMORY_PULSE_LEDGER = ledger;
-  const mod = await import("../server.mjs?gap=" + Date.now()); const { appendEvent, verifyChain, localCheck, readEvents } = mod;
-  appendEvent({ cause: "a", effect: "b" });
+  const mod = await import("../server.mjs?gap=" + Date.now()); const { appendEvent, verifyChain, localCheck, readEvents, rowHash, sealDigest } = mod;
+  // edited 2026-10-22 (0.16.0, rollback anchor and writer marks): an unchained row written AFTER this machine's anchor started is now
+  // moved aside by the next write instead of sealed (the outside measurement's tail-laundering finding, 0/12; test/trust.test.js pins
+  // the new behaviour). Gap sealing still covers the rows an older writer left before the anchor started, which is what this test now
+  // builds: the ledger arrives with one chained row from an older client and one unchained row, and the first write here starts the
+  // anchor and seals the gap. The assertions below are unchanged.
+  const a = { t: 1, cause: "a", effect: "b", kind: "event", legacy_digest: sealDigest([]), prev: null }; a.hash = rowHash(a);
+  writeFileSync(ledger, JSON.stringify(a) + "\n");
   writeFileSync(ledger, readFileSync(ledger, "utf8") + JSON.stringify({ t: 2, cause: "old", effect: "writer", note: "no hash" }) + "\n");
   let v = verifyChain(); assert.equal(v.ok, true, JSON.stringify(v)); assert.equal(v.unsealed, 1);
   assert.notEqual(localCheck(readEvents().events, { kind: "edit", text: "harmless", path: "/x" }, [], { chain: v }).verdict, "blocked");

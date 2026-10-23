@@ -1,6 +1,8 @@
 // Ambient mode (0.5.0): a SEPARATE, opt-in mode. Default stays deliberate. Adds a user-level workspace ledger,
 // a pinned identity block printed first in every tool, Stop-hook ambient capture with strict shapes and a cap,
 // and guard rules that apply across every chat. Written red-first; everything deterministic.
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs";

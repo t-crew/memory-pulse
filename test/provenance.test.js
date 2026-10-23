@@ -9,6 +9,8 @@
 //    user entries): 18 corrections recorded, 0 real. 11 came from skill bodies (isMeta), 6 from compaction
 //    summaries (isCompactSummary), 1 from the typed question "why are we not iterating this", read as
 //    "use 'we', not 'iterating'".
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";

@@ -1,6 +1,8 @@
 // docs/GUIDE.md is executable. Every fenced block with the info string `sh run` is run, in document order, in
 // a scratch project with a scratch HOME and the engine unreachable, and every line of the `text expect`
 // block that follows it must appear in the combined output. So what the guide shows is what the tool prints.
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";

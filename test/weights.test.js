@@ -15,6 +15,8 @@
 // Revised again after the independent review (2026-10-21): a credit row is trusted only as one trial per memory (four non-negative
 // integers summing to 1, a canonical integer key), once per (episode, memory), over rows in force; merges carry credit to the memory it
 // was earned by. Tests changed by that, stated: the fold test and the ranking test now seed one-trial rows instead of rows of many counts.
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";

@@ -1,6 +1,8 @@
 // 0.7.0: the per-prompt and per-edit slices, and the hook wiring that injects them. Written red-first (plan Task 3).
 // Host facts these rely on: docs/HOST_FACTS.md (UserPromptSubmit and PreToolUse additionalContext reach the model on
 // Claude Code 2.1.296; PreToolUse additionalContext did not on Codex 0.160.0).
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";

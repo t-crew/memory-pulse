@@ -2,6 +2,8 @@
 // chain verifies blocks every edit; the block names the way out and never `git checkout`; accept appends a
 // row, sets the seal aside (kept, not deleted), and the guard passes again. A broken chain is refused: accept
 // is not a repair. Driven through the CLI as a hook would run it, with the ledger named by MEMORY_PULSE_LEDGER.
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs";

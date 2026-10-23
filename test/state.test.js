@@ -3,6 +3,8 @@
 // corrections with it (the guard blocks on the new machine), and fails closed when a row inside it was touched.
 // Branch, rollback and merge never rewrite a row: the record only grows, a rollback is one appended row that puts
 // a range out of force, and a merge carries each finding across once in either order.
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";

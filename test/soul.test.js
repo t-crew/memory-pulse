@@ -18,6 +18,8 @@
 // record of the session) is held until the agent confirms it from a clean session or the owner approves it. Every version is kept with its
 // session and date (soul history, soul revert). Raw edits of the agent ledger file stay blocked: the log is written through memory-pulse so
 // every entry stays chained. Tests changed by the revision, stated: the guard test and the self-review test below.
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";

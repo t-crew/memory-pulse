@@ -515,6 +515,66 @@ decision.
 `events.jsonl.lock`, re-reads the file and computes `t`, `prev` and `hash`. Any
 `t`, `prev` or `hash` in the input is ignored.
 
+### Rollback anchor and writer marks
+
+Since 0.16.0 each machine keeps two things for its ledgers in the trust store,
+`~/.local/state/memory-pulse/` (`$XDG_STATE_HOME/memory-pulse` when that is set,
+`MEMORY_PULSE_TRUST_DIR` to move it). Keep it outside every ledger folder.
+
+- **An anchor per ledger**: how many rows this machine last saw and a digest of
+  exactly those rows. It starts the first time 0.16.0 verifies, guards or
+  writes a ledger, and moves forward only over rows this machine's writer
+  marked.
+- **A writer key** (`writer.key`, 32 random bytes, mode 0600). Every row the
+  writer appends carries `mac`, a mark made with that key over the row
+  (including `prev`). The mark is inside the hashed row, so older versions
+  verify the chain unchanged.
+
+`npx memory-pulse anchor` shows where the anchor stands. `verify` adds two
+lines and exits 2 when either reports a problem:
+
+```
+anchor: ROLLED BACK — the ledger holds 5 row(s); this machine last saw 8 (through t=8): rows were removed, or an older copy was put back
+writer marks: 1 row(s) not written by this machine's writer: t=9 (another machine, a memory-pulse older than 0.16.0, or a direct file write)
+fix: restore the newer copy, or record that you trust the ledger as it stands: memory-pulse anchor accept "<why>"
+```
+
+What each finding does:
+
+| finding | guard | the next write | way out |
+|---|---|---|---|
+| the ledger no longer begins with the anchored rows (an older copy, or rows removed or rewritten below the anchor) | blocks writes to the ledger, its files and the trust store; one warning line elsewhere | writes, but the anchor does not move | restore the newer copy, or `anchor accept "<why>"` |
+| a row this machine marked whose content changed (re-chaining the file does not hide it) | same as above | same as above | same as above |
+| an unchained row at the end of the file, after the anchor started | moves it aside, recorded, like a bad tail | moves it aside first; it is never sealed into the chain | `repair --adopt-quarantine <file> --yes` after reading it |
+| any other row this machine did not write (another machine, an older client, a direct write) | one warning line; nothing blocked | writes after it | `anchor accept "<why>"` |
+
+`anchor accept` is refused while the chain itself is broken, needs a reason,
+and records it as a row with the anchor it replaced and what was in question.
+`state import` counts as that decision when the ledger still begins with the
+anchored rows (a first install or a fast-forward).
+
+**What this stops, and what it does not.** The threat it is built for is a
+process that can write a ledger's folder but not the trust store: a sandboxed
+tool limited to the project, a sync or backup that restores an old file,
+`git checkout` of an old `.memory-pulse/`, a commit that rewinds the ledger. That
+process cannot put back an earlier copy, edit a marked row, or slip in a row of
+its own without `verify` saying so.
+
+A process running as you can write the trust store too. It can rewrite the
+anchor, read the key and mark its own rows. On one machine the only check it
+cannot reach is the engine's signature on the seal, which still catches an
+edit below the sealed watermark on the next engine call. The engine keeps
+nothing between calls, so a whole earlier state put back together with its
+seal and its anchor passes. Catching that needs a record kept where that
+process cannot write; 0.16.0 does not keep one. Operating-system permissions
+on the trust store are the other answer.
+
+The anchor trusts whatever a ledger holds the first time 0.16.0 sees it. A row
+written through memory-pulse carries a valid mark whatever it says: the
+instruction check decides what a row may say, and it reads text, not intent.
+It reads past invisible characters, look-alike letters, fullwidth forms and
+base64; a paraphrase or a translation of an instruction still passes it.
+
 ## 14. Agent state: export, import, branch, rollback, merge
 
 An agent's state is its ledger. `state export` packs it as a `.rain` state capsule: the rows verbatim, the row-chain head, the order-free set head, the engine's last seal and the declared invariants, under one digest. Another machine verifies the capsule before it trusts it, installs the rows byte-identical, and records where they came from as a row of its own. The corrections travel with the state: the guard blocks there exactly as it does here. The block records a fresh correction first so the check on the other side has something to bind.

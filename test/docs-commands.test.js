@@ -1,6 +1,8 @@
 // Every `memory-pulse <sub>` / `npx memory-pulse <sub>` a document tells the reader to type must exist in
 // the dispatch table. The Action's PR comment once recommended `memory-pulse remember` while no such
 // subcommand existed; this test makes that class of drift a red test.
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
