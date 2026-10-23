@@ -3,6 +3,8 @@
 // slug binds a word the caller never saw; a duplicate is refused after the product's own hint; a dropped term
 // reports success; report and brief disagree on superseded rows; three commands print stack traces, "undefined"
 // or a phantom row. No fake engine is needed, so this file runs inside the sandbox.
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";

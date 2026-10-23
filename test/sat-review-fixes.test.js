@@ -1,5 +1,7 @@
 // The pre-release review of the lesson bank and board claims (2026-10-16) reproduced six defects and six concerns; each test below is one
 // of them, written red before the fix.
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, appendFileSync } from "node:fs";

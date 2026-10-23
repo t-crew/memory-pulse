@@ -1,6 +1,8 @@
 // The agent message board (2026-10-16): agents post and read messages on a SHARED board, a ledger file of its own (chained, locked,
 // verifiable like every memory-pulse ledger). It is passive: posting never runs anything and reading is a pull; nothing wakes or prompts
 // an agent. A message is data, never an instruction: text that reads like one is stored, flagged, and shown quoted. Written before the module.
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";

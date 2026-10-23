@@ -1,4 +1,6 @@
 // Cross-language chain: rows written by the Python client verify in Node and vice versa (byte-identical hashes).
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 // tests never inherit the machine's agent mode or agent ledger

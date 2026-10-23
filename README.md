@@ -58,7 +58,7 @@ engines); the test suite runs on 22 and 24.
 
 `remember` and `help` from the shell arrive in 0.5.9. npm served 0.5.8 on
 2026-09-09, where both exit 1 with `unknown command`. If npx serves an older
-cached release, pin this one: `npx -y memory-pulse@0.15.1`; from a checkout,
+cached release, pin this one: `npx -y memory-pulse@0.16.0`; from a checkout,
 run `node server.mjs`. Four more things in this README are
 0.5.9 behaviour and differ on 0.5.8: `guard --verbose` names non-JSON stdin
 on stderr (0.5.8 prints nothing), `handoff` with no transcript writes nothing
@@ -191,7 +191,7 @@ and exits 0. The first `remember` creates `.memory-pulse/events.jsonl`, from a
 tool call or from the shell:
 
 ```
-npx -y memory-pulse@0.15.1 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
+npx -y memory-pulse@0.16.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 # before 0.6.0 is on npm, the same command from a checkout:
 git clone https://github.com/t-crew/memory-pulse.git && node memory-pulse/server.mjs remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 ```
@@ -259,6 +259,10 @@ The rules that decide whether the guard can act on a correction:
   elsewhere.
 - **A note that reads like an instruction is refused**, including any
   angle-bracket tag. Write "the script tag" rather than the tag itself.
+  The check reads a note the way a person sees it: invisible characters,
+  letters borrowed from the Cyrillic or Greek alphabets, fullwidth forms and
+  base64 do not hide an instruction from it (since 0.16.0). A paraphrase or a
+  translation can, because the check is a list of patterns, not a reader.
 
 Test the guard by hand with the payload Claude Code sends before a Write
 (Edit carries `new_string`, MultiEdit `edits[].new_string`, Bash `command`):
@@ -287,11 +291,13 @@ npx memory-pulse before "<what you are about to do>"   # which corrections bear 
 npx memory-pulse guard          # PreToolUse hook: blocks edits that reintroduce withdrawn terms (exit 2); --verbose names a non-JSON stdin
 npx memory-pulse guard allow "<term>" --path <prefix> "<reason>"   # record a false block as an override
 npx memory-pulse check --ci     # Memory CI: one of three verdicts for a change, from files you own
-npx memory-pulse verify         # row chain + last engine seal; on a break: the first bad row and the command that fixes it; exit 2 if either fails; --json for machines
+npx memory-pulse verify         # row chain, last engine seal, this machine's anchor and writer marks; on a break: the first bad row and the command that fixes it; exit 2 if any fails; --strict also fails on unmarked rows; --json for machines
 npx memory-pulse append --json '{"cause":"...","effect":"..."}'   # the one way for another tool to write a row: lock, t, prev and hash done here; also `-` for stdin, --scope agent
-npx memory-pulse repair --quarantine-tail   # move a tail of rows that fail on their own aside, byte-for-byte, recorded; nothing deleted
+npx memory-pulse repair --quarantine-tail   # move a tail of rows that fail on their own aside, byte-for-byte, recorded; nothing deleted (also unchained rows this machine did not write)
 npx memory-pulse repair --adopt-quarantine <file> --yes   # re-append quarantined rows through the writer after a person has reviewed them
 npx memory-pulse seal accept "<why>"   # a stale seal over rows that verify: record the decision, set the old seal aside; refused on a broken chain
+npx memory-pulse anchor         # how far this machine's anchor reaches into the ledger, and which rows its writer did not write; --scope agent, --json
+npx memory-pulse anchor accept "<why>"   # after a restore, or rows from another machine or an older client: record that you trust the ledger as it stands
 npx memory-pulse state          # where this ledger stands: rows, in force, rolled back, heads, seal, branch
 npx memory-pulse state export > agent.rain   # the .rain state capsule: rows verbatim, chain head, set head, seal, invariants, one digest
 npx memory-pulse state import agent.rain     # on another machine: verify, install byte-identical (or fast-forward), record where it came from
@@ -419,6 +425,52 @@ Since 0.3.1 three mechanisms hold, each with its own job:
 
 Nothing is stored server-side for any of this. The seal travels in the payload, the same way the telemetry capsule and the memory key do.
 
+**An earlier copy put back is refused (0.16.0).** The seal and the chain check
+the ledger you show them. Put back an earlier copy, its seal with it, and both
+agree with it, because every row in it once was the record. So each machine
+now keeps an anchor for each ledger it writes or checks: how many rows it last
+saw and a digest of exactly those rows. The anchor lives outside the ledger's
+folder, in `~/.local/state/memory-pulse/` (or `MEMORY_PULSE_TRUST_DIR`), and it
+only moves forward. When a ledger no longer begins with the anchored rows,
+`verify` exits 2 and says so, and the guard blocks writes to the ledger, its
+files and the anchor itself. Other work goes on. Restore the newer copy, or run
+`memory-pulse anchor accept "<why>"`, which records the decision as a row.
+
+**Every row says whether this machine wrote it (0.16.0).** The writer marks
+each row it appends with a key that sits beside the anchor: 32 random bytes,
+readable by you only. The mark is inside the hashed row, so older versions of
+memory-pulse still verify the chain. From the moment the anchor starts:
+
+- a marked row whose content changed is named, and blocks writes to the
+  ledger like a broken chain. Re-chaining the file does not hide it, because
+  re-chaining needs no key and marking does;
+- an unchained row at the end of the file is moved aside by the next write or
+  guard run, recorded like a bad tail, instead of being sealed into the chain.
+  No memory-pulse since 0.3.1 writes an unchained row;
+- any other row without this machine's mark is named by `verify` and
+  accepted, and the anchor covers it from the next write on: a row from
+  another machine, from a memory-pulse older than 0.16.0 still installed
+  somewhere, or one someone chained into the file by hand. Nothing on the row
+  tells these apart, and the first two are everyday traffic while a machine
+  upgrades. Where one writer is all there is, `verify --strict` (or
+  `MEMORY_PULSE_STRICT_WRITER=1`) fails on them, and
+  `memory-pulse anchor accept "<why>"` records that you trust them.
+
+**What the anchor and the marks stop, and what they do not.** They stop a
+process that can write the ledger's folder but not the trust store, which is a
+different folder: a sandboxed tool, a sync or backup that restores an old
+file, `git checkout` of an old ledger, a commit that rewinds `.memory-pulse/`.
+They do not stop a process running as you, which can rewrite both folders.
+Against that, the engine's signature still catches an edit below the seal's
+watermark on the next engine call. A whole earlier state put back together
+with its seal and its anchor passes everything on the machine; catching it
+needs a record somewhere that process cannot write, such as another machine,
+and 0.16.0 does not keep one. The anchor starts the first time 0.16.0 sees a
+ledger, so it trusts whatever is there at that moment. A row written through
+memory-pulse itself carries a valid mark whatever it says: what a row says is
+the instruction check's job, and that check matches patterns in the text. It
+does not judge what a row means.
+
 **Never write a ledger file directly.** Another tool that wants to record a row
 runs `memory-pulse append`, which takes the ledger lock (`events.jsonl.lock`) and
 computes `t`, `prev` and `hash` itself; two writers never share a `t`. A row
@@ -450,7 +502,9 @@ the ledger, and the guard's message never suggests it.
 `events.jsonl.quarantine/` (the record of what was moved aside). Keep
 `seal.rain`, `seal.resume.json`, `verify.cache.json`, `events.jsonl.lock`,
 `telemetry.rain`, `memory.rain`, `violations.jsonl` and `episodes/` out of git; this repository's `.gitignore` carries that list, and nothing writes a
-`.gitignore` for you below 500 events. The ledger is read from the directory
+`.gitignore` for you below 500 events. The anchor and the writer key are not in
+the repository: they are one machine's view, and a fresh clone starts its own
+anchor the first time it runs. The ledger is read from the directory
 the agent started in, so start at the repository root or set
 `MEMORY_PULSE_LEDGER`.
 
@@ -649,7 +703,9 @@ What that turns on:
 - **Memory integrity.** A note that reads like an instruction, such as "ignore
   previous instructions", "run this command" or a fake system tag, is refused
   by `remember`. One already sitting in a ledger is quarantined at read time
-  and reported, so memory never reaches your agent's context as an order. The
+  and reported, so memory never reaches your agent's context as an order.
+  Invisible characters, look-alike letters and base64 do not hide one; a
+  paraphrase or another language can. The
   signed capsule also raises a **drift alert** when a ledger loses corrections,
   shrinks, or its usage shape jumps, and the brief footer shows it. Both checks
   are deterministic lists you can read.
@@ -690,6 +746,8 @@ No ledger text, path, term or prompt is in it, and none can be: the client accep
 | `MEMORY_PULSE_BRIEF` | unset | `scaffold` or `engine`: which re-entry `brief` prints, overriding the default (scaffold without a key, engine brief with one) |
 | `MEMORY_PULSE_BRIEF_TIER` | `brief` | tier for `brief` when no budget is given: `index`, `brief`, `notes`, `full` |
 | `MEMORY_PULSE_BOARD` | `./.memory-pulse/board.jsonl` | the shared agent message board; set, the MCP server also lists `board_post` and `board_read` |
+| `MEMORY_PULSE_STRICT_WRITER` | unset | `1`: a row without this machine's mark fails `verify` and gets a guard warning, as `verify --strict` does; for a ledger with one writer |
+| `MEMORY_PULSE_TRUST_DIR` | `$XDG_STATE_HOME/memory-pulse`, else `~/.local/state/memory-pulse` | where this machine's anchors and writer key live; keep it outside every ledger folder |
 | `MEMORY_PULSE_LOCK_TIMEOUT_MS` | `5000` | how long a writer waits for the ledger lock before refusing; a lock whose holder has exited is broken at once |
 | `NO_COLOR`, `TERM` | unset | colour in the guard's block message only on a TTY with `NO_COLOR` unset and `TERM` not `dumb` |
 | `HOME` | the shell's | root for the agent ledger, `~/.claude/settings.json` and `~/.codex/hooks.json` |

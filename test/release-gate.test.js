@@ -1,6 +1,8 @@
 // The release runs the IP gate over exactly what npm publishes, and stops before anything leaves the machine when it fails.
 // Added 2026-10-22 (red first): ip-gate's --publish mode had scanned 3 of the 19 shipped files, and release.sh never ran it, so a comment
 // naming an engine technique shipped in lib/scaffold.mjs from 0.7.0 to 0.15.0.
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

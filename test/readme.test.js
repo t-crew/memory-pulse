@@ -1,6 +1,8 @@
 // The README is byte-identical to the npm readme and is the first thing most users read. It must name every
 // subcommand and environment variable the client has, carry the strings the 2026-09-09 review found missing,
 // state the tool-size number the size test measures, and obey the copy rules in its prose.
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

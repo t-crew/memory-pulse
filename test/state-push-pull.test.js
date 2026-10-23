@@ -1,6 +1,8 @@
 // `memory-pulse state push | pull` (2026-10-16): .rain state transfer to and from a hosted project ledger. The hosted side is a
 // local stand-in for /v1/state that keeps the last pushed capsule and answers it on pull; the engine's own merge is tested in the
 // engine. Here: the request the client sends, and what it does with each answer. Written before the commands.
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";

@@ -1,6 +1,8 @@
 // 0.7.0: the scaffolded prompt memory. The ledger stays the only source of truth; the scaffold renders its in-force rows in
 // fixed sections with budgets, every line citing its row, so the agent starts from an organized memory instead of a flat dump.
 // Written red-first (plan Task 2).
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, mkdtempSync, writeFileSync } from "node:fs";

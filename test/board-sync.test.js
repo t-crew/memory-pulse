@@ -2,6 +2,8 @@
 // what each agent is working on and every message. The hosted side here is a local stand-in for /v1/board; its own rules (board only,
 // fast-forward only, the opt-in) are tested in the engine. Here: what the client sends, when it sends it, and that a failed sync never
 // fails a post. Written before the commands.
+// tests never write this machine's trust store (0.16.0): a temp one unless the run names one
+process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
