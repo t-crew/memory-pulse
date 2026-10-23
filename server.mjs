@@ -127,9 +127,50 @@ const INSTRUCTION_PATTERNS = [
   ["protect-credentials", /\b(send|post|upload|exfiltrat\w*|leak|forward|email)\b[^.\n]{0,40}\b(api[\s_-]?keys?|secrets?|tokens?|passwords?|credentials?)\b[^.\n]{0,40}\b(to|via|at)\b[^.\n]{0,4}(https?:\/\/|[\w.-]+@[\w.-]+\b|this\b|the following\b|that (address|url|endpoint|server)\b|me\b)|\b(send|give|show|tell) me\b[^.\n]{0,30}\b(api[\s_-]?keys?|secrets?|tokens?|passwords?|credentials?)\b/i ],
   ["protect-transparency", /\b(do not|don't|never)\b[^.\n]{0,20}\b(tell|show|mention|reveal)\b[^.\n]{0,20}\b(the )?(user|human|operator)\b/i],
 ];
+// How the screens read a text (0.16.0). An outside measurement on 2026-10-22 hid an override from both screens with two
+// zero-width spaces ("Ig<U+200B>nore all previous instruc<U+200B>tions"): 0 of 4 evasive texts were caught. A pattern now
+// sees the text as a reader does. Invisible and direction-control characters are dropped. Unicode tag characters
+// (U+E0000-E007F, which render as nothing) are read as the ASCII they shadow, so text hidden in them is screened, not
+// discarded. Compatibility forms (fullwidth, mathematical, ligatures) and accents are folded, and so are the Cyrillic and
+// Greek letters that look like Latin ones. A base64 run that decodes to readable text is read as well. The text as written
+// is always one of the forms, so nothing caught before is lost. This is a normaliser, not a reader: a paraphrase or a
+// translation of an override still passes (test/screen-normalise.test.js keeps that limit stated). Twin of
+// screenForms in the engine's worker/integrity.js; keep the two in step.
+const INVISIBLE = /[­͏؜ᅟᅠ឴឵᠋-᠏​-‏‪-‮⁠-⁯ㅤ︀-️﻿ﾠ]/g;
+const TAG_CHARS = /[\u{E0000}-\u{E007F}]/gu;
+const LOOKALIKE = {
+  "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "у": "y", "х": "x", "ѕ": "s", "і": "i", "ј": "j", "һ": "h", "ӏ": "l", "ԁ": "d", "ԛ": "q", "ԝ": "w",
+  "А": "A", "В": "B", "Е": "E", "К": "K", "М": "M", "Н": "H", "О": "O", "Р": "P", "С": "C", "Т": "T", "У": "Y", "Х": "X", "Ѕ": "S", "І": "I", "Ј": "J", "Ү": "Y", "Ԁ": "D",
+  "Α": "A", "Β": "B", "Ε": "E", "Ζ": "Z", "Η": "H", "Ι": "I", "Κ": "K", "Μ": "M", "Ν": "N", "Ο": "O", "Ρ": "P", "Τ": "T", "Υ": "Y", "Χ": "X",
+  "α": "a", "ι": "i", "κ": "k", "ν": "v", "ο": "o", "ρ": "p", "υ": "u", "χ": "x", "ı": "i", "ȷ": "j", "օ": "o", "ս": "u",
+};
+const LOOKALIKE_RE = new RegExp(`[${Object.keys(LOOKALIKE).join("")}]`, "g");
+const B64_RUN = /[A-Za-z0-9+/_-]{16,}={0,2}/g;
+function decodeB64Text(run) {
+  let s = run.replace(/=+$/, "").replace(/-/g, "+").replace(/_/g, "/");
+  if (s.length % 4 === 1) return null;
+  s += "=".repeat((4 - (s.length % 4)) % 4);
+  let bin; try { bin = atob(s); } catch { return null; }
+  let text; try { text = new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(bin, (c) => c.charCodeAt(0))); } catch { return null; }
+  return text.length >= 8 && /^[\t\n\r\x20-\x7E -￿]*$/.test(text) && /[A-Za-z]{3}/.test(text) ? text : null;
+}
+export function readable(text) {
+  const s = String(text ?? "");
+  if (!/[^\x00-\x7E]/.test(s)) return s; // plain ASCII reads as written (the common case: no work)
+  return s.replace(TAG_CHARS, (c) => { const a = c.codePointAt(0) - 0xe0000; return a >= 0x20 && a < 0x7f ? String.fromCharCode(a) : ""; })
+    .replace(INVISIBLE, "").normalize("NFKD").replace(/\p{Mn}/gu, "").replace(LOOKALIKE_RE, (c) => LOOKALIKE[c]).normalize("NFKC");
+}
+/** The forms a screen reads: the text as written, as a reader sees it, and any base64 run in either that decodes to text. */
+export function screenForms(text) {
+  if (typeof text !== "string" || !text) return [];
+  const r = readable(text), forms = r === text ? [text] : [text, r];
+  for (const src of forms.slice()) for (const m of src.matchAll(B64_RUN)) { const d = decodeB64Text(m[0]); if (d) forms.push(readable(d)); if (forms.length >= 16) return forms; }
+  return forms;
+}
 export function instructionLike(text) {
   if (typeof text !== "string" || !text) return [];
-  return INSTRUCTION_PATTERNS.filter(([, re]) => re.test(text)).map(([id]) => id);
+  const forms = screenForms(text);
+  return INSTRUCTION_PATTERNS.filter(([, re]) => forms.some((f) => re.test(f))).map(([id]) => id);
 }
 // Lines planted for the agent in a file a session loads (lint, 2026-10-22). Not instructionLike(): those patterns screen memory ROWS,
 // where any instruction is suspect, and on instruction files they flagged 17 of 20 ordinary lines ("run the following command", "never
@@ -161,7 +202,7 @@ const plantedIn = (text) => {
 // a withdrawn or replacement term is screened with the same narrow shapes plus a role override: the note patterns refused real
 // corrections such as "DROP TABLE sessions" and "<OldButton" (re-verification 2026-10-22)
 const ROLE = /\byou are now\b|\bfrom now on,? you\b|\bact as (an?|the) (system|admin|developer)\b/i;
-export const termLike = (x) => { const t = String(x ?? "").replace(ZERO_WIDTH, ""); return [...plantedIn(t), ...(ROLE.test(t) ? ["protect-role"] : [])]; };
+export const termLike = (x) => { const forms = screenForms(String(x ?? "").replace(ZERO_WIDTH, "")); return [...new Set(forms.flatMap((t) => [...plantedIn(t), ...(ROLE.test(t) ? ["protect-role"] : [])]))]; };
 export function plantedLines(text) {
   const lines = String(text ?? "").replace(ZERO_WIDTH, "").split("\n");
   const out = [];
