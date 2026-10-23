@@ -116,3 +116,14 @@ test("verify says how many rows the writer wrote, in plain words", () => {
   assert.doesNotMatch(v, /row\(s\) in\)/, v);
   assert.match(v, /writer marks: OK/);
 });
+
+test("install-hook never drops a hook entry it did not empty, whatever its shape", () => {
+  const { settings, run } = mk("foreign");
+  mkdirSync(settings, { recursive: true });
+  const mine = { matcher: "Bash", command: "my-flat-hook" }, empty = { matcher: "Edit", hooks: [] };
+  writeFileSync(join(settings, "settings.json"), JSON.stringify({ hooks: { PreToolUse: [mine, empty, { hooks: [{ type: "command", command: "npx -y memory-pulse guard" }] }] } }));
+  assert.equal(run(["install-hook"]).status, 0);
+  const pre = JSON.parse(readFileSync(join(settings, "settings.json"), "utf8")).hooks.PreToolUse;
+  assert.ok(pre.some((e) => e.command === "my-flat-hook"), JSON.stringify(pre));
+  assert.ok(pre.some((e) => e.matcher === "Edit" && Array.isArray(e.hooks) && e.hooks.length === 0), JSON.stringify(pre));
+});

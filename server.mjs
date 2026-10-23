@@ -2649,17 +2649,20 @@ const hookRunner = (project) => (project ? NPX_RUNNER : pinnedRunner());
 // dropped, every other hook is kept. Nested shape (Claude Code, Codex): [{ matcher?, hooks: [{ type, command, ... }] }].
 function upsertHook(settings, event, verb, command, extra = {}, entry = {}) {
   const list = (settings.hooks[event] = settings.hooks[event] || []);
-  let found = false, changed = false;
+  let found = false, changed = false; const emptied = new Set();
   for (const e of list) {
-    e.hooks = (e.hooks ?? []).filter((h) => {
-      const m = typeof h.command === "string" ? OUR_HOOK.exec(h.command) : null;
+    if (!Array.isArray(e?.hooks)) continue; // not this shape: someone else's entry, left exactly as it is
+    const before = e.hooks.length;
+    e.hooks = e.hooks.filter((h) => {
+      const m = typeof h?.command === "string" ? OUR_HOOK.exec(h.command) : null;
       if (!m || m[1].trim() !== verb) return true;
       if (found) { changed = true; return false; }
       found = true; if (h.command !== command) { h.command = command; changed = true; }
       return true;
     });
+    if (before && !e.hooks.length) emptied.add(e); // only an entry this call emptied is removed
   }
-  settings.hooks[event] = list.filter((e) => (e.hooks ?? []).length);
+  settings.hooks[event] = list.filter((e) => !emptied.has(e));
   if (!found) { settings.hooks[event].push({ ...entry, hooks: [{ type: "command", command, ...extra }] }); changed = true; }
   return changed;
 }
