@@ -225,3 +225,22 @@ test("the guard treats the trust store like the ledger's own files while the led
   const r = run(["guard"], bashHook(`rm -rf ${join(trust, "anchors")}`));
   assert.equal(r.status, 2, `deleting the anchor of a rolled-back ledger is blocked: ${r.stderr}`);
 });
+
+// Cost (2026-10-22): checking every mark since the anchor started grows with the ledger (23 ms at 1,024 marked rows, paid after every
+// write). Rows inside the anchor are pinned by its digest, and the anchor never covers a changed marked row, so only rows past it are
+// checked; the anchor carries the count of unmarked rows it covers.
+test("the trust check reads marks only past the anchor; the unmarked rows it covers are still counted", async () => {
+  const { ledger, trust, run, remember } = mk("incremental");
+  for (let i = 1; i <= 3; i++) remember(`c${i}`, `e${i}`);
+  oldClientAppend(ledger, { cause: "old-client", effect: "unmarked" });
+  for (let i = 5; i <= 40; i++) remember(`c${i}`, `e${i}`);
+  process.env.MEMORY_PULSE_TRUST_DIR = trust;
+  const { ledgerTrust } = await import("../server.mjs?incremental=" + Date.now());
+  const tr = ledgerTrust(ledger);
+  assert.equal(tr.anchor.ok, true); assert.equal(tr.scanned, 0, "every row is inside the anchor");
+  assert.equal(tr.unmarkedCount, 1); assert.deepEqual(tr.unmarked.map((u) => u.t), [4]);
+  assert.equal(run(["verify"]).status, 0); assert.equal(run(["verify", "--strict"]).status, 2);
+  appendFileSync(ledger, JSON.stringify({ cause: "raw", effect: "tail", t: 41 }) + "\n");
+  const tr2 = ledgerTrust(ledger);
+  assert.equal(tr2.scanned, 1, "only the row past the anchor"); assert.equal(tr2.tail.rows, 1);
+});

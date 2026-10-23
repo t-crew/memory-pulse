@@ -366,6 +366,10 @@ const UNMARKED_TAIL = "not written by this machine's writer (unchained, no mark 
 function quarantineUnmarkedTailLocked(path) {
   if (!existsSync(path) || !readAnchor(path)) return { quarantined: false, reason: "no anchor" };
   const buf = readFileSync(path);
+  // the common case costs one parse of the last line: a tail needs the last row to be unchained
+  let end = buf.length; while (end > 0 && (buf[end - 1] === 0x0a || buf[end - 1] === 0x0d || buf[end - 1] === 0x20)) end--;
+  const lastLine = buf.subarray(buf.lastIndexOf(0x0a, end - 1) + 1, end).toString("utf8");
+  try { if (typeof JSON.parse(lastLine).hash === "string") return { quarantined: false, reason: "no unmarked tail" }; } catch { /* torn or not JSON: judged below */ }
   const entries = lineEntries(buf).filter((e) => e.text.trim());
   const tr = rowTrust(entries.map((e) => e.text.trim()), readAnchor(path));
   if (!tr.tail) return { quarantined: false, reason: "no unmarked tail" };
@@ -586,7 +590,9 @@ function writeAnchor(ledger, a) {
 }
 const ledgerLines = (path) => (existsSync(path) ? readFileSync(path, "utf8").split("\n").map((l) => l.trim()).filter(Boolean) : []);
 const lastT = (lines, n = lines.length) => { for (let i = n - 1; i >= 0; i--) { const t = rowT(lines[i]); if (t !== null) return t; } return null; };
-const anchorRecord = (ledger, lines, n, genesis) => ({ schema: ANCHOR_SCHEMA, ledger: ledgerId(ledger), lines: n, digest: sealDigest(lines.slice(0, n)), t: lastT(lines, n), at: new Date().toISOString(), genesis });
+// `unmarked`: how many rows the anchor covers that carry no mark from this machine's writer (and the first few t), so a check never
+// has to read the marks of rows the anchor already pins
+const anchorRecord = (ledger, lines, n, genesis, unmarked = { count: 0, sample: [] }) => ({ schema: ANCHOR_SCHEMA, ledger: ledgerId(ledger), lines: n, digest: sealDigest(lines.slice(0, n)), t: lastT(lines, n), at: new Date().toISOString(), genesis, unmarked });
 /** Does the ledger still begin with the rows this machine anchored? { ok: null } when there is no anchor yet. */
 export function anchorCheck(lines, anchor) {
   if (!anchor) return { ok: null, reason: "no anchor yet" };
@@ -603,20 +609,25 @@ export function anchorCheck(lines, anchor) {
 //              machine mid-upgrade (on 2026-10-22 a live machine's own 0.15.1 client read as an intruder and every verify failed).
 //              So they are named and accepted; the anchor covers them from the next write on, and --strict (or
 //              MEMORY_PULSE_STRICT_WRITER=1) fails on them for a ledger that has one writer.
-export function rowTrust(lines, anchor, w = writerKey()) {
+export function rowTrust(lines, anchor, w = writerKey(), intact = anchorCheck(lines, anchor).ok === true) {
   const g = anchor?.genesis?.lines;
-  if (!Number.isInteger(g)) return { genesis: null, unverified: [], unmarked: [], forged: [], tail: null };
+  if (!Number.isInteger(g)) return { genesis: null, unverified: [], unmarked: [], unmarkedCount: 0, forged: [], tail: null, scanned: 0 };
+  // rows inside an intact anchor are pinned by its digest and were judged when it moved over them (it never covers a changed marked
+  // row): only rows past it are read. A broken anchor, or one without the count, is read from where it started.
+  const covered = intact && Number.isInteger(anchor.unmarked?.count);
+  const from = covered ? Math.max(g, anchor.lines) : g;
   const unverified = [], forged = [];
-  for (let i = g; i < lines.length; i++) {
+  for (let i = from; i < lines.length; i++) {
     let row = null; try { row = JSON.parse(lines[i]); } catch { row = null; }
     const v = macVerdict(row, w), t = Number.isInteger(row?.t) ? row.t : null;
     if (v === "forged") forged.push({ line: i + 1, t });
     else if (v !== "ok") unverified.push({ line: i + 1, t, chained: typeof row?.hash === "string" });
   }
   const unchained = new Set(unverified.filter((u) => !u.chained).map((u) => u.line));
-  let k = lines.length; while (k > g && unchained.has(k)) k--;
+  let k = lines.length; while (k > from && unchained.has(k)) k--;
   const tail = k < lines.length ? { from: k, rows: lines.length - k } : null;
-  return { genesis: g, unverified, unmarked: unverified.filter((u) => !tail || u.line <= tail.from), forged, tail };
+  const past = unverified.filter((u) => !tail || u.line <= tail.from), prior = covered ? anchor.unmarked : { count: 0, sample: [] };
+  return { genesis: g, unverified, unmarked: [...(prior.sample ?? []).map((t) => ({ line: null, t, chained: true })), ...past], unmarkedCount: prior.count + past.length, forged, tail, scanned: lines.length - from };
 }
 const strictWriter = () => process.env.MEMORY_PULSE_STRICT_WRITER === "1";
 /** Start an anchor at the ledger as it stands (first use on this machine). Returns the anchor, existing or new. */
@@ -630,9 +641,13 @@ function ensureAnchor(ledger, lines = ledgerLines(ledger), why = "first-run") {
 // question); rows without this machine's mark are covered too, so removing one later is caught as a rollback.
 function advanceAnchor(ledger, lines = ledgerLines(ledger)) {
   const a = readAnchor(ledger); if (!a || anchorCheck(lines, a).ok !== true) return a;
-  const r = rowTrust(lines, a);
+  const r = rowTrust(lines, a, writerKey(), true);
   const n = Math.min(r.forged.length ? r.forged[0].line - 1 : lines.length, r.tail ? r.tail.from : lines.length);
-  if (n > a.lines) writeAnchor(ledger, anchorRecord(ledger, lines, n, a.genesis));
+  if (n > a.lines) {
+    const base = Number.isInteger(a.unmarked?.count) ? a.unmarked : { count: 0, sample: [] }, start = Number.isInteger(a.unmarked?.count) ? a.lines : a.genesis.lines;
+    const added = r.unverified.filter((u) => u.line > start && u.line <= n);
+    writeAnchor(ledger, anchorRecord(ledger, lines, n, a.genesis, { count: base.count + added.length, sample: [...(base.sample ?? []), ...added.map((u) => u.t)].slice(0, 12) }));
+  }
   return readAnchor(ledger);
 }
 const sameLedger = (a, b) => { try { return ledgerId(a) === ledgerId(b); } catch { return false; } };
@@ -643,11 +658,11 @@ export function ledgerTrust(ledger = ledgerPath(), { init = false, lines = null,
   const L = lines ?? ledgerLines(ledger);
   let anchor = readAnchor(ledger);
   if (!anchor && init) { try { anchor = ensureAnchor(ledger, L); } catch { anchor = null; /* read-only trust store: checked as before */ } }
-  const a = anchorCheck(L, anchor), r = rowTrust(L, anchor);
+  const a = anchorCheck(L, anchor), r = rowTrust(L, anchor, writerKey(), a.ok === true);
   const failure = a.ok === false ? { ok: false, kind: "anchor", reason: `rolled back: ${a.reason}`, brokenAt: anchor?.t ?? null }
     : r.forged.length ? { ok: false, kind: "anchor", reason: `${r.forged.length} row(s) changed since this machine's writer marked them (t=${r.forged.slice(0, 8).map((x) => x.t).join(", ")})`, brokenAt: r.forged[0].t }
     : null;
-  return { ok: !failure && !r.tail && !(strict && r.unmarked.length), strict, anchor: { ...a, path: anchorPathFor(ledger), at: anchor?.at ?? null, genesis: anchor?.genesis ?? null }, ...r, failure, rows: L.length };
+  return { ok: !failure && !r.tail && !(strict && r.unmarkedCount), strict, anchor: { ...a, path: anchorPathFor(ledger), at: anchor?.at ?? null, genesis: anchor?.genesis ?? null }, ...r, failure, rows: L.length };
 }
 // The guard runs on every tool call: its verdict is cached in the trust store (never beside the ledger, where the process this
 // guards against could write a cache entry), keyed by the ledger's, the anchor's and the key's inode, size, mtime and ctime.
@@ -669,14 +684,14 @@ export function acceptAnchor(ledger, why, { scope = "project", event = true } = 
   writeAnchor(ledger, anchorRecord(ledger, lines, lines.length, { lines: lines.length, at: new Date().toISOString(), why: String(why).slice(0, 200) }));
   if (!event) return { written: false, anchor: readAnchor(ledger) };
   return appendEvent({ cause: "anchor-accepted", effect: `trusted-${lines.length}-rows-through-t${lastT(lines) ?? 0}`, note: why, kind: "decision", tags: ["integrity", "anchor"], scope,
-    fields: { anchor: { rows: lines.length, digest: sealDigest(lines), previous: before ? { rows: before.lines, digest: before.digest, t: before.t } : null, rolled_back: t.anchor.ok === false, unverified: t.unverified.length, changed: t.forged.length } } });
+    fields: { anchor: { rows: lines.length, digest: sealDigest(lines), previous: before ? { rows: before.lines, digest: before.digest, t: before.t } : null, rolled_back: t.anchor.ok === false, unmarked: t.unmarkedCount, unchained_tail: t.tail?.rows ?? 0, changed: t.forged.length } } });
 }
 /** One line for a brief or a warning when the trust check has something to say; "" when it does not. */
 export function trustLine(path, tr) {
   if (!tr) return "";
   if (tr.failure) return `memory-pulse: ledger ${path} ${tr.failure.reason}; writes to it are blocked until the newer copy is restored or \`${cliPrefixFor(path)} anchor accept${scopeFlagFor(path)} "<why>"\` records that you trust it as it stands; run ${cliPrefixFor(path)} verify${scopeFlagFor(path)}`;
   // an unchained tail is moved aside by the guard and the writer, and their own lines say so; unmarked rows speak only under strict
-  if (tr.strict && tr.unmarked?.length) return `memory-pulse: ${tr.unmarked.length} row(s) in ${path} carry no mark from this machine's writer (t=${tr.unmarked.slice(0, 8).map((u) => u.t ?? "?").join(", ")}${tr.unmarked.length > 8 ? ", …" : ""}): another machine, a memory-pulse older than 0.16.0, or a write that chained itself; \`${cliPrefixFor(path)} anchor accept${scopeFlagFor(path)} "<why>"\` records that you trust them`;
+  if (tr.strict && tr.unmarkedCount) return `memory-pulse: ${tr.unmarkedCount} row(s) in ${path} carry no mark from this machine's writer (t=${tr.unmarked.slice(0, 8).map((u) => u.t ?? "?").join(", ")}${tr.unmarkedCount > 8 ? ", …" : ""}): another machine, a memory-pulse older than 0.16.0, or a write that chained itself; \`${cliPrefixFor(path)} anchor accept${scopeFlagFor(path)} "<why>"\` records that you trust them`;
   return "";
 }
 
@@ -2931,7 +2946,7 @@ function cliVerify() {
   if (argv.includes("--json")) {
     console.log(JSON.stringify({ ledger, chain, firstBad: info?.firstBad ?? null, tail: info?.tail ? { rows: info.tail.rows, allBad: info.tail.allBad } : null, fix, backups, seal: { ok: seal.ok, reason: seal.reason ?? null, through: seal.seal?.through ?? null, events: seal.seal?.events ?? null, digest: seal.seal?.digest ?? null },
       anchor: { ok: trust.anchor.ok, reason: trust.anchor.reason ?? null, rows: trust.anchor.lines ?? null, since: trust.anchor.since ?? null, started: trust.genesis, file: trust.anchor.path, new: !hadAnchor && trust.anchor.ok !== null },
-      marks: { strict: trust.strict, changed: trust.forged, unmarked: trust.unmarked, unchained_tail: trust.tail?.rows ?? 0 } }, null, 2));
+      marks: { strict: trust.strict, changed: trust.forged, unmarked: trust.unmarkedCount, unmarked_sample: trust.unmarked.slice(0, 12), unchained_tail: trust.tail?.rows ?? 0 } }, null, 2));
     process.exit(chain.ok && seal.ok !== false && trustOk ? 0 : 2);
   }
   const unsealedNote = chain.unsealed ? (trust.tail ? ` · ${chain.unsealed} unsealed row(s) at the tail (see writer marks)` : ` · ${chain.unsealed} unsealed row(s) from an older writer (the next write seals them)`) : "";
@@ -2955,8 +2970,8 @@ function cliVerify() {
       : `anchor: OK — the ledger begins with the ${a.lines} row(s) this machine last saw${a.since ? `, ${a.since} row(s) since` : ""}`);
     if (trust.forged.length) console.log(`writer marks: ${trust.forged.length} row(s) changed since this machine's writer marked them: ${ts(trust.forged)}`);
     if (trust.tail) console.log(`writer marks: ${trust.tail.rows} unchained row(s) at the tail were not written by this machine's writer: ${ts(trust.unverified.filter((u) => u.line > trust.tail.from))} (a direct file write, or a client older than the row chain); the next write or guard run moves them aside, or now: ${prefix} repair${flag} --quarantine-tail`);
-    if (trust.unmarked.length) console.log(`writer marks: ${trust.unmarked.length} row(s) since this machine's anchor started carry no mark from this machine's writer: ${ts(trust.unmarked)} (another machine, a memory-pulse older than 0.16.0, or a write that chained itself)${trust.strict ? "; refused under --strict" : "; accepted, and covered by the anchor from the next write on (verify --strict refuses them)"}`);
-    if (a.ok !== null && !trust.forged.length && !trust.unverified.length && trust.genesis !== null && trust.rows > trust.genesis) console.log(`writer marks: OK — every row since this machine's anchor started (${trust.genesis} row(s) in) was written here`);
+    if (trust.unmarkedCount) console.log(`writer marks: ${trust.unmarkedCount} row(s) since this machine's anchor started carry no mark from this machine's writer: ${ts(trust.unmarked)} (another machine, a memory-pulse older than 0.16.0, or a write that chained itself)${trust.strict ? "; refused under --strict" : "; accepted, and covered by the anchor from the next write on (verify --strict refuses them)"}`);
+    if (a.ok !== null && !trust.forged.length && !trust.unmarkedCount && !trust.tail && trust.genesis !== null && trust.rows > trust.genesis) console.log(`writer marks: OK — every row since this machine's anchor started (${trust.genesis} row(s) in) was written here`);
     if (!trustOk) console.log(`fix: restore the newer copy, or record that you trust the ledger as it stands: ${prefix} anchor accept${flag} "<why>"`);
   }
   process.exit(chain.ok && seal.ok !== false && trustOk ? 0 : 2);
@@ -2978,10 +2993,10 @@ function cliAnchor() {
     const chain = verifyChain(ledger);
     if (!chain.ok) { console.error(`refused: the row chain itself is broken (${chain.reason}); accept applies to rows that verify as a chain. Restore the ledger from a copy you trust first (memory-pulse verify${flag} lists copies that verify)`); process.exit(1); }
     const had = !!readAnchor(ledger), before = ledgerTrust(ledger, { init: true });
-    if (!had || (before.anchor.ok === true && !before.forged.length && !before.unverified.length)) { console.log(had ? "nothing to accept: the ledger begins with what this machine last saw, and every row since was written here" : `nothing to accept: the anchor starts now, at the ${before.rows} row(s) as they stand`); process.exit(0); }
+    if (!had || (before.anchor.ok === true && !before.forged.length && !before.unmarkedCount && !before.tail)) { console.log(had ? "nothing to accept: the ledger begins with what this machine last saw, and every row since was written here" : `nothing to accept: the anchor starts now, at the ${before.rows} row(s) as they stand`); process.exit(0); }
     const r = acceptAnchor(ledger, why, { scope });
     if (!r.written) { console.error(`not recorded: ${r.reason}`); process.exit(1); }
-    const what = [before.anchor.ok === false ? "a rollback" : null, before.forged.length ? `${before.forged.length} changed row(s)` : null, before.unverified.length ? `${before.unverified.length} row(s) written elsewhere` : null].filter(Boolean).join(", ");
+    const what = [before.anchor.ok === false ? "a rollback" : null, before.forged.length ? `${before.forged.length} changed row(s)` : null, (before.unmarkedCount + (before.tail?.rows ?? 0)) ? `${before.unmarkedCount + (before.tail?.rows ?? 0)} row(s) written elsewhere` : null].filter(Boolean).join(", ");
     console.log(`accepted at t${r.t}: ${what || "the ledger"} trusted as it stands; this machine's anchor now starts at ${before.rows} row(s) and moves forward from here`);
     process.exit(0);
   }
@@ -2994,7 +3009,7 @@ function cliAnchor() {
   console.log(`anchor: ${a.lines} row(s) through t=${a.t ?? "?"}, recorded ${a.at}; started at ${a.genesis.lines} row(s) on ${a.genesis.at} (${a.genesis.why ?? "first run"})`);
   const line = tr ? trustLine(ledger, tr) : "";
   if (line) console.log(line.replace(/^memory-pulse: /, ""));
-  else if (tr?.unmarked?.length) console.log(`${tr.unmarked.length} row(s) since the anchor started carry no mark from this machine's writer (accepted; verify --strict refuses them)`);
+  else if (tr?.unmarkedCount) console.log(`${tr.unmarkedCount} row(s) since the anchor started carry no mark from this machine's writer (accepted; verify --strict refuses them)`);
   else console.log("the ledger begins with the anchored rows, and every row since was written by this machine's writer");
   process.exit(tr && !tr.ok ? 2 : 0);
 }

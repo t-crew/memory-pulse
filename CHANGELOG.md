@@ -80,7 +80,10 @@ On Cloudflare Workers nothing changes. The output is byte for byte the same.
 
 ### What it costs
 
-Measured on 22 October 2026 on a copy of a 2,100-row ledger (an M1 Pro, Node
-26.5, with other measuring runs loading the machine): a write takes 59 ms
-instead of 42 ms, the guard's check on each tool call 69 ms instead of 68 ms,
-and the anchor and mark check alone 11 ms when nothing is cached.
+Measured on 22 October 2026 on an M1 Pro with Node 26.5, while other
+measuring runs loaded the machine. On a 1,024-row ledger written by this
+release, a write takes 9 ms and the anchor and mark check under 1 ms. On a
+copy of our largest ledger (2,100 rows, 2.8 MB, written by older versions) a
+write takes about 65 ms instead of 41 ms, because each write reads and hashes
+the whole file to confirm the anchor; the check the guard runs on each tool
+call takes 69 ms instead of 68 ms.
