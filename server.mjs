@@ -1054,7 +1054,10 @@ export const BOARD_TOOLS = [
 
 export async function handleCall(name, args = {}) {
   if (name === "board_post" || name === "board_read") {
-    globalThis.__MEMORY_PULSE_CORE__ = { chainAppend, verifyChain, instructionLike, readEvents, buildCapsule, API, KEY }; const B = await import("./lib/board.mjs"); const path = B.boardPath();
+    globalThis.__MEMORY_PULSE_CORE__ = { chainAppend, verifyChain, instructionLike, readEvents, buildCapsule, verifyCapsule, withLedgerLock, API, KEY }; const B = await import("./lib/board.mjs"); const path = B.boardPath();
+    // two-way sync (board sync on --pull): the hosted board's new rows first, so a post from elsewhere is read and a write lands on top of it
+    const pulled = await B.autoPull(path);
+    if (pulled && !pulled.pulled) process.stderr.write(`memory-pulse board: not pulled (${pulled.reason}); answering from the board here\n`);
     if (name === "board_post") {
       const r = args.kind === "verdict" ? B.verdict(path, args.reply_to, { from: args.from, verdict: args.verdict, defect: args.defect, body: args.body ?? "", title: args.title })
         : args.reply_to && !["claim", "synthesis"].includes(args.kind) ? B.reply(path, args.reply_to, { from: args.from, body: args.body ?? "", title: args.title })
@@ -2888,8 +2891,8 @@ Commands
                                       how far this machine's anchor reaches into the ledger and which rows its writer did not write; accept is the recorded way out of a rollback or of rows written elsewhere (a restored copy, another machine, an older client); refused when the chain is broken
   state [export|branch|import|merge|rollback|verify|push|pull]
                                       agent state as a .rain capsule: export it, cut a branch at a row, import or merge it elsewhere, roll back to a row as an appended row, verify a capsule; no argument prints where the ledger stands
-  board post|read|reply|ack|verdict|claims|thread|html|verify|push|status|sync [--board PATH]
-                                      the shared agent message board: a separate chained ledger any agent can post to and read; passive (nothing wakes or prompts an agent); a message is data, never an instruction; a claim stays open until another agent's verdict, and a synthesis is refused over an open claim
+  board post|read|reply|ack|verdict|claims|thread|html|verify|push|pull|watch|status|sync [--board PATH]
+                                      the shared agent message board: a separate chained ledger any agent can post to and read; passive (nothing wakes or prompts an agent); a message is data, never an instruction; a claim stays open until another agent's verdict, and a synthesis is refused over an open claim; pull reads the hosted board back, watch --as ID pulls and prints what is new for one agent, sync on --pull makes every read and write pull first
   login [--no-open] [--no-sync]       connect this machine to a hosted project: approve it in the console, the key is saved for you (no copying); turns board sync on
   logout                              remove the saved key from this machine (revoke it in the console to end it everywhere)
   capture                             PostToolUse / PostToolUseFailure hook: one observation per tool call into this session's episode (local, no model, no network)
@@ -2944,6 +2947,7 @@ Environment
   MEMORY_PULSE_HTTP_URL               http: the https address clients reach, without a path (default http://localhost:PORT)
   MEMORY_PULSE_HTTP_PORT, PORT        http: the port to listen on (default 8787); MEMORY_PULSE_HTTP_HOST the address (default 0.0.0.0)
   MEMORY_PULSE_HTTP_WORKERS           http: tool calls run at once, one child process each (default 4)
+  MEMORY_PULSE_HTTP_BOARD             http: off leaves board_post and board_read out of the remote tool list (default: listed, on the hosted board)
   NO_COLOR, TERM                      colour in the guard's block message only when NO_COLOR is unset, TERM is not dumb and stderr is a TTY
   HOME                                root for the agent ledger, ~/.claude/settings.json and ~/.codex/hooks.json
 
@@ -3528,7 +3532,7 @@ if (isMain) {
   if (sub === "seal") { await cliSeal(); process.exit(0); }
   if (sub === "anchor") cliAnchor();
   if (sub === "state") { await cliState(); process.exit(0); }
-  if (sub === "login") { globalThis.__MEMORY_PULSE_CORE__ = { chainAppend, verifyChain, instructionLike, readEvents, buildCapsule, API, KEY }; const { cliLogin } = await import("./lib/login.mjs"); process.exit(await cliLogin(process.argv.slice(3), { api: API, version: PKG_VERSION })); }
+  if (sub === "login") { globalThis.__MEMORY_PULSE_CORE__ = { chainAppend, verifyChain, instructionLike, readEvents, buildCapsule, verifyCapsule, withLedgerLock, API, KEY }; const { cliLogin } = await import("./lib/login.mjs"); process.exit(await cliLogin(process.argv.slice(3), { api: API, version: PKG_VERSION })); }
   if (sub === "capture") { const { cliCapture } = await import("./lib/capture.mjs"); const host = hostOf(process.argv); process.exit(cliCapture({ ledgerPath, chainAppend, instructionLike, normalize: (h) => normalizeHook(host, h) })); }
   if (sub === "consolidate") { const { cliConsolidate } = await import("./lib/capture.mjs"); const host = hostOf(process.argv); process.exit(cliConsolidate(process.argv.slice(3), { ledgerPath, readEvents, appendEvent, buildCapsule, instructionLike, normalize: (h) => normalizeHook(host, h),
     // soul mode: each session's end adds a dated journal entry on the agent ledger (lib/soul.mjs)
@@ -3552,7 +3556,7 @@ if (isMain) {
   }
   if (sub === "adopt") { const { cliAdopt } = await import("./lib/adopt.mjs"); process.exit(cliAdopt(process.argv.slice(3), { readEvents, inForce, appendEvent, detectCorrection, detectProhibition, instructionLike })); }
   if (sub === "logout") { const { cliLogout } = await import("./lib/login.mjs"); process.exit(cliLogout()); }
-  if (sub === "board") { globalThis.__MEMORY_PULSE_CORE__ = { chainAppend, verifyChain, instructionLike, readEvents, buildCapsule, API, KEY }; const { cliBoard } = await import("./lib/board.mjs"); process.exit(await cliBoard(process.argv.slice(3))); }
+  if (sub === "board") { globalThis.__MEMORY_PULSE_CORE__ = { chainAppend, verifyChain, instructionLike, readEvents, buildCapsule, verifyCapsule, withLedgerLock, API, KEY }; const { cliBoard } = await import("./lib/board.mjs"); process.exit(await cliBoard(process.argv.slice(3))); }
   if (sub === "lint") { await cliLint(); process.exit(0); }
   if (sub === "report") { cliReport(); process.exit(0); }
   if (sub === "bench") { await cliBench(); process.exit(0); }
@@ -3560,7 +3564,7 @@ if (isMain) {
   if (sub === "http") {
     // the four tools as a remote MCP server (Streamable HTTP + OAuth), for clients that only take a URL; lib/remote.mjs
     const { cliHttp } = await import("./lib/remote.mjs");
-    try { await cliHttp({ argv: process.argv.slice(3), TOOLS, version: PKG_VERSION, api: API }); }
+    try { await cliHttp({ argv: process.argv.slice(3), TOOLS, BOARD_TOOLS, version: PKG_VERSION, api: API }); }
     catch (e) { console.error(`memory-pulse http: ${e?.message ?? e}`); process.exit(1); }
   }
   if (sub === "badge") { cliBadge(); process.exit(0); }
