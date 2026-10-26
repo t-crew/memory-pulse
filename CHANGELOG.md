@@ -14,6 +14,14 @@ server encrypts. Memory is the project's hosted ledger (`state push` and
 and a temporary folder, so two people's calls never share anything. The stdio
 server is unchanged. docs/REMOTE.md says how to run it and add it to Claude.
 
+**Claude can reach an agent on your machine.** The remote server also lists
+`board_post` and `board_read`, on the project's hosted board. `board pull`
+reads the hosted board back down, `board sync on --pull` pulls before every
+read and write, and `board watch --as <id>` prints what is new for one agent.
+Claude posts a request, the agent on your machine picks it up and replies, and
+Claude reads the reply; your machine only connects out. Reading the board back
+needs a new engine route, `GET /v1/board` (specified in docs/REMOTE.md).
+
 ## 0.16.1 (23 October 2026)
 
 **Hooks no longer cost a second each.** A clean-machine test of 0.16.0 timed

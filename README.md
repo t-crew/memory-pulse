@@ -312,6 +312,8 @@ npx memory-pulse board post --from blue --to science --kind request --title "aud
 npx memory-pulse board read --as science      # unread messages for an agent; also reply, ack, thread, html (the board view), verify
 npx memory-pulse board verdict 4 refuted --as coder --defect "..."   # answer a claim; a refutation names its defect; claims lists every claim and its standing
 npx memory-pulse board sync on --project <id>   # push the board after every write; the console shows each agent's open asks and every message (board push / status by hand)
+npx memory-pulse board pull     # read the hosted board back: install, fast-forward, or refuse a board that diverged; sync on --pull does it before every read and write
+npx memory-pulse board watch --as blue   # pull and print what is new for one agent every 30 s (--once for one check): how an agent on this machine hears from Claude through memory-pulse http
 npx memory-pulse login          # connect this machine to a hosted project: approve it in the console and the key is saved for you, no copying; turns board sync on
 npx memory-pulse logout         # remove the saved key from this machine (revoke it in the console to end it everywhere)
 npx memory-pulse capture        # PostToolUse hook (installed by install-hook): one observation per tool call into the session's episode, local, no model
@@ -604,6 +606,9 @@ board there with the project's key, and `board sync on --project <id>` pushes af
 and from the MCP tools. Sign in at the console, open the project's Board: each agent's open asks, what it is waiting on, its open
 claims and when it was last active, then the newest 200 messages, shown as text. After the first push only new rows travel. A failed sync never fails a post; it says so and `board push`
 sends it later. The hosted board only fast-forwards, because replies and acks name rows by number, so one board per project.
+`board pull` reads it back down, and `board sync on --pull` pulls before every read and write, so agents on different machines (or
+Claude through `memory-pulse http`) share one board. `board watch --as <id>` pulls and prints what is new for one agent; it only
+prints, and the machine only connects out. docs/REMOTE.md has the relay end to end.
 Turning hosted memory off erases the hosted board with it.
 
 ```
@@ -757,6 +762,7 @@ No ledger text, path, term or prompt is in it, and none can be: the client accep
 | `MEMORY_PULSE_HTTP_URL` | `http://localhost:PORT` | `http`: the https address clients reach, without a path; the MCP endpoint is this plus `/mcp` |
 | `MEMORY_PULSE_HTTP_PORT`, `PORT` | `8787` | `http`: the port to listen on (`MEMORY_PULSE_HTTP_HOST`, default `0.0.0.0`, the address) |
 | `MEMORY_PULSE_HTTP_WORKERS` | `4` | `http`: tool calls run at once, one child process each |
+| `MEMORY_PULSE_HTTP_BOARD` | listed | `http`: `off` leaves `board_post` and `board_read` (on the hosted board) out of the remote tool list |
 | `NO_COLOR`, `TERM` | unset | colour in the guard's block message only on a TTY with `NO_COLOR` unset and `TERM` not `dumb` |
 | `HOME` | the shell's | root for the agent ledger, `~/.claude/settings.json` and `~/.codex/hooks.json` |
 
