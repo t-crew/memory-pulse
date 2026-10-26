@@ -2,6 +2,18 @@
 
 This file starts at 0.16.0. Earlier releases are described in their tagged commits.
 
+## Unreleased
+
+**memory-pulse as a remote MCP server.** `memory-pulse http` serves the four
+tools over MCP's Streamable HTTP transport, so a client that only takes a URL
+(a claude.ai custom connector, Claude on the web or phone) can use the same
+memory. Sign-in is OAuth 2.1 with PKCE and dynamic client registration; the
+person types their project key once, and it is kept only inside tokens the
+server encrypts. Memory is the project's hosted ledger (`state push` and
+`state pull`). Each call runs in its own child process with that person's key
+and a temporary folder, so two people's calls never share anything. The stdio
+server is unchanged. docs/REMOTE.md says how to run it and add it to Claude.
+
 ## 0.16.1 (23 October 2026)
 
 **Hooks no longer cost a second each.** A clean-machine test of 0.16.0 timed

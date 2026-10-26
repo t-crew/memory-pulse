@@ -53,6 +53,8 @@ floor it returns an empty result, and the brief says so.
 
 Every route, host by host, with what runs on each: [docs/INSTALL.md](docs/INSTALL.md) (also at pulse.strategic-innovations.ai/install).
 
+For a client that only takes a URL (a claude.ai custom connector, Claude on the web or phone): run `memory-pulse http` as a remote MCP server over your hosted ledger, as [docs/REMOTE.md](docs/REMOTE.md) describes.
+
 Six routes. Pick the row for your agent. Node 18 or newer (`package.json`
 engines); the test suite runs on 22 and 24.
 
@@ -280,6 +282,7 @@ is how you tell a miswired hook from "no evidence".
 ```
 npx memory-pulse help           # every command and environment variable; also --help, -h
 npx memory-pulse serve          # the MCP server on stdio (the default with no command)
+npx memory-pulse http           # the same four tools as a remote MCP server (Streamable HTTP, OAuth sign-in) for clients that take a URL, such as a claude.ai custom connector; see docs/REMOTE.md
 npx memory-pulse brief          # the SessionStart re-entry: the organized memory (scaffold) by default; with a key, --engine or --budget the engine brief
 npx memory-pulse scaffold       # the organized memory: identity and rules, corrections in force, project state, recent findings, open threads; --section S, --all
 npx memory-pulse telemetry show # the opt-in usage counts: exactly what would be sent once a day (on, off, reset)
@@ -750,6 +753,10 @@ No ledger text, path, term or prompt is in it, and none can be: the client accep
 | `MEMORY_PULSE_TRUST_DIR` | `$XDG_STATE_HOME/memory-pulse`, else `~/.local/state/memory-pulse` | where this machine's anchors and writer key live; keep it outside every ledger folder |
 | `MEMORY_PULSE_DATA_DIR` | `$XDG_DATA_HOME/memory-pulse`, else `~/.local/share/memory-pulse` | where `install-hook` and `mode` keep the pinned copy their hooks run with `node` (one folder per version); a hook through `npx` took about a second per call |
 | `MEMORY_PULSE_LOCK_TIMEOUT_MS` | `5000` | how long a writer waits for the ledger lock before refusing; a lock whose holder has exited is broken at once |
+| `MEMORY_PULSE_HTTP_SECRET` | unset (required by `http`) | 32 or more characters; encrypts the client ids, codes and tokens `http` issues; changing it signs every client out |
+| `MEMORY_PULSE_HTTP_URL` | `http://localhost:PORT` | `http`: the https address clients reach, without a path; the MCP endpoint is this plus `/mcp` |
+| `MEMORY_PULSE_HTTP_PORT`, `PORT` | `8787` | `http`: the port to listen on (`MEMORY_PULSE_HTTP_HOST`, default `0.0.0.0`, the address) |
+| `MEMORY_PULSE_HTTP_WORKERS` | `4` | `http`: tool calls run at once, one child process each |
 | `NO_COLOR`, `TERM` | unset | colour in the guard's block message only on a TTY with `NO_COLOR` unset and `TERM` not `dumb` |
 | `HOME` | the shell's | root for the agent ledger, `~/.claude/settings.json` and `~/.codex/hooks.json` |
 
