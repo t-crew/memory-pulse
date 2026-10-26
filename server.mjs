@@ -2863,6 +2863,8 @@ usage: memory-pulse <command> [options]        (npx -y memory-pulse <command> wi
 
 Commands
   serve                               start the MCP server on stdio (the default with no command); tools: pulse, recall, remember, execute
+  http [--port N] [--url https://host]
+                                      the four tools as a remote MCP server (Streamable HTTP at /mcp, OAuth sign-in with a project key) for clients that only take a URL, such as a claude.ai custom connector; memory is the project's hosted ledger; see docs/REMOTE.md
   help                                this text (also --help, -h, or --help after any command)
   brief [--engine] [--budget N] [--offline]
                                       the SessionStart re-entry: the scaffold by default; with a key, --engine or --budget the engine brief (tier fitting N tokens), replaced by the scaffold when over 9,500 chars; --offline is the plain local list
@@ -2938,6 +2940,10 @@ Environment
   MEMORY_PULSE_TRUST_DIR              where this machine's anchors and writer key live, outside every ledger folder (default $XDG_STATE_HOME/memory-pulse, else ~/.local/state/memory-pulse)
   MEMORY_PULSE_DATA_DIR               where install-hook and mode keep the pinned copy their hooks run (default $XDG_DATA_HOME/memory-pulse, else ~/.local/share/memory-pulse)
   MEMORY_PULSE_LOCK_TIMEOUT_MS        how long a writer waits for the ledger lock before refusing (default 5000); a lock whose holder has exited is broken at once
+  MEMORY_PULSE_HTTP_SECRET            http: required, 32+ characters; encrypts the client ids, codes and tokens it issues (changing it signs every client out)
+  MEMORY_PULSE_HTTP_URL               http: the https address clients reach, without a path (default http://localhost:PORT)
+  MEMORY_PULSE_HTTP_PORT, PORT        http: the port to listen on (default 8787); MEMORY_PULSE_HTTP_HOST the address (default 0.0.0.0)
+  MEMORY_PULSE_HTTP_WORKERS           http: tool calls run at once, one child process each (default 4)
   NO_COLOR, TERM                      colour in the guard's block message only when NO_COLOR is unset, TERM is not dumb and stderr is a TTY
   HOME                                root for the agent ledger, ~/.claude/settings.json and ~/.codex/hooks.json
 
@@ -3551,28 +3557,36 @@ if (isMain) {
   if (sub === "report") { cliReport(); process.exit(0); }
   if (sub === "bench") { await cliBench(); process.exit(0); }
   if (sub === "stats") { await cliStats(); process.exit(0); }
+  if (sub === "http") {
+    // the four tools as a remote MCP server (Streamable HTTP + OAuth), for clients that only take a URL; lib/remote.mjs
+    const { cliHttp } = await import("./lib/remote.mjs");
+    try { await cliHttp({ argv: process.argv.slice(3), TOOLS, version: PKG_VERSION, api: API }); }
+    catch (e) { console.error(`memory-pulse http: ${e?.message ?? e}`); process.exit(1); }
+  }
   if (sub === "badge") { cliBadge(); process.exit(0); }
-  if (sub && sub !== "serve") { console.error(`unknown command: ${sub} (run memory-pulse help for the list)`); process.exit(1); }
-  process.stderr.write(`memory-pulse: ledger ${ledgerPath()} — api ${API}\n`);
-  const rl = builtin("readline").createInterface({ input: process.stdin, terminal: false });
-  // In-flight calls are drained before exit. Exiting the moment stdin closes
-  // would kill network requests mid-flight and swallow their responses — found
-  // by piping a scripted session rather than assuming the happy path.
-  const inflight = new Set();
-  rl.on("line", (line) => {
-    const s = line.trim();
-    if (!s) return;
-    let msg;
-    try { msg = JSON.parse(s); }
-    catch { process.stderr.write("memory-pulse: dropped malformed line\n"); return; }
-    const job = dispatch(msg)
-      .catch((e) => { if (msg && msg.id !== undefined) fail(msg.id, -32603, String(e?.message ?? e)); })
-      .finally(() => inflight.delete(job));
-    inflight.add(job);
-  });
-  rl.on("close", async () => {
-    await Promise.allSettled([...inflight]);
-    process.exit(0);
-  });
-  process.on("uncaughtException", (e) => process.stderr.write(`memory-pulse: ${e.stack}\n`));
+  if (sub && sub !== "serve" && sub !== "http") { console.error(`unknown command: ${sub} (run memory-pulse help for the list)`); process.exit(1); }
+  if (sub !== "http") {
+    process.stderr.write(`memory-pulse: ledger ${ledgerPath()} — api ${API}\n`);
+    const rl = builtin("readline").createInterface({ input: process.stdin, terminal: false });
+    // In-flight calls are drained before exit. Exiting the moment stdin closes
+    // would kill network requests mid-flight and swallow their responses — found
+    // by piping a scripted session rather than assuming the happy path.
+    const inflight = new Set();
+    rl.on("line", (line) => {
+      const s = line.trim();
+      if (!s) return;
+      let msg;
+      try { msg = JSON.parse(s); }
+      catch { process.stderr.write("memory-pulse: dropped malformed line\n"); return; }
+      const job = dispatch(msg)
+        .catch((e) => { if (msg && msg.id !== undefined) fail(msg.id, -32603, String(e?.message ?? e)); })
+        .finally(() => inflight.delete(job));
+      inflight.add(job);
+    });
+    rl.on("close", async () => {
+      await Promise.allSettled([...inflight]);
+      process.exit(0);
+    });
+    process.on("uncaughtException", (e) => process.stderr.write(`memory-pulse: ${e.stack}\n`));
+  }
 }
