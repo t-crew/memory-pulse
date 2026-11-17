@@ -58,7 +58,7 @@ engines); the test suite runs on 22 and 24.
 
 `remember` and `help` from the shell arrive in 0.5.9. npm served 0.5.8 on
 2026-09-09, where both exit 1 with `unknown command`. If npx serves an older
-cached release, pin this one: `npx -y memory-pulse@0.16.1`; from a checkout,
+cached release, pin this one: `npx -y memory-pulse@0.17.0`; from a checkout,
 run `node server.mjs`. Four more things in this README are
 0.5.9 behaviour and differ on 0.5.8: `guard --verbose` names non-JSON stdin
 on stderr (0.5.8 prints nothing), `handoff` with no transcript writes nothing
@@ -191,7 +191,7 @@ and exits 0. The first `remember` creates `.memory-pulse/events.jsonl`, from a
 tool call or from the shell:
 
 ```
-npx -y memory-pulse@0.16.1 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
+npx -y memory-pulse@0.17.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 # before 0.6.0 is on npm, the same command from a checkout:
 git clone https://github.com/t-crew/memory-pulse.git && node memory-pulse/server.mjs remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 ```
@@ -287,7 +287,7 @@ npx memory-pulse prompt         # UserPromptSubmit hook: the corrections and dec
 npx memory-pulse brief --budget 2000   # the richest tier that fits 2000 tokens, corrections first and whole
 npx memory-pulse brief --offline  # the plain local list; an engine error falls back to the organized memory instead
 npx memory-pulse remember <cause> <effect> [--kind correction] [--withdrawn T]... [--replacement T]... [--supersedes N] [--note "..."] [--tags a] [--pinned] [--scope agent]
-npx memory-pulse before "<what you are about to do>"   # which corrections bear on the change; exact rung local, learned rung from the engine
+npx memory-pulse before "<what you are about to do>"   # which corrections bear on the change, and whether the ledger already closed it; exact and local rungs need no engine
 npx memory-pulse guard          # PreToolUse hook: blocks edits that reintroduce withdrawn terms (exit 2); --verbose names a non-JSON stdin
 npx memory-pulse guard allow "<term>" --path <prefix> "<reason>"   # record a false block as an override
 npx memory-pulse check --ci     # Memory CI: one of three verdicts for a change, from files you own
@@ -375,7 +375,8 @@ chosen, so brief needs 1,579 tokens, notes 5,264 and full 31,579; `--budget
 
 An `AT RISK` block appears after the guard has blocked the same correction
 twice; `before "<what you are about to do>"` names the corrections that bear
-on a change before you make it.
+on a change before you make it, and the rows that record the same idea as
+already tried, with the closed or failed ones marked.
 
 ## Lint: the rules a session loads, checked against the ledger
 

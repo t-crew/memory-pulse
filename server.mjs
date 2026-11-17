@@ -46,6 +46,7 @@ import { recordUsage, consentState, setConsent, hasConsentAnswer, resetInstall, 
 import { lessonBank as lessonBankWith, screenLesson, bankSummary, bankLabel, lessonHead, isLesson, lessonKey, PROBE_EFFECT } from "./lib/lessons.mjs";
 import { savedKey } from "./lib/login.mjs";
 import { hostOf, normalizeHook } from "./lib/hosts.mjs";
+import { drift as driftWith } from "./lib/drift.mjs";
 import { SOUL_WRITE, RESERVED, soulState, soulLines, soulGuard, cliSoul, cliUser, setSection, chainedOnly, heldFromMerge, taintOf, soulCapsule, verifySoulCapsule, continuityLine, soulScreen,
          isExternalTool, externalCmd, externalWhat, markTaint, taintMarked, soulTaintGuard } from "./lib/soul.mjs";
 
@@ -1700,6 +1701,7 @@ export function atRiskLines(allEvents, { now = Date.now(), minBlocks = 2, blocks
 
 // `memory-pulse before "<operation>" [--path p] [--text t]` — which corrections bear on what you are about to
 // do, in your own words. The exact rung is local (a withdrawn term in the operation — the guard's rule); the
+// local rung (0.17.0) is the drift check: rows whose own sentence names the operation, closed directions marked; the
 // associative rung is the engine's learned read over your events and your block records, and it answers `no
 // evidence` when nothing resonates above the floor. Nothing is stored engine-side.
 async function cliBefore() {
@@ -1714,6 +1716,16 @@ async function cliBefore() {
   const exact = inForce(events).filter((e) => e.kind === "correction" && !retired.has(e.t) && (e.withdrawn ?? []).some((w) => w && hay.includes(String(w).toLowerCase())));
   const line = (c, why) => `  ! (t${c.t}) ${c.cause} -> ${c.effect}${c.withdrawn?.length ? ` — withdrawn ${c.withdrawn.map((w) => `"${safeTerm(w)}"`).join(", ")}${c.replacement?.length ? ` → use ${c.replacement.map(safeTerm).join(", ")}` : ""}` : ""}${why ? ` · ${why}` : ""}`;
   if (exact.length) { console.log(`BEFORE "${operation || path}" · rung exact — the operation names a withdrawn term:`); for (const c of exact) console.log(line(c, "")); }
+  // the local rung (0.17.0, lib/drift.mjs): the rows that may bear on the operation, each shown by the sentence that matched,
+  // closed or failed directions marked. A row's text is data: one line, control characters out, so a row cannot print a line of its own.
+  const local = driftWith(inForce(events).filter((e) => !retired.has(e.t)), `${operation} ${text}`);
+  const flat = (x) => String(x ?? "").replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ").replace(/\s+/g, " ").trim();
+  const clip = (x, n = 220) => (x.length > n ? `${x.slice(0, n - 1)}…` : x);
+  const printLocal = (lead) => {
+    const closed = local.filter((h) => h.closed).length;
+    console.log(`${lead} · rung local — ${local.length} row(s) in the ledger may bear on this; ${closed} record a closed or failed direction${closed ? " (read them before you build)" : ""}:`);
+    for (const h of local) console.log(`  ${h.closed ? "✗" : "·"} (t${h.row.t}) ${clip(flat(h.passage))}${h.closed ? ` [${h.closed}]` : ""}`);
+  };
   try {
     const out = await callApi("/v1/before", { events, operation, path, text, blocks: readBlocks() });
     if (out.error) throw new Error(out.error);
@@ -1721,9 +1733,11 @@ async function cliBefore() {
       if (out.rung === "none") console.log(`BEFORE "${operation || path}" · no evidence — ${out.reason}`);
       else { console.log(`BEFORE "${operation || path}" · rung ${out.rung} (${out.learned.registers} registers over ${out.learned.vocab} words):`); for (const h of out.hits) console.log(line(h, `${h.why}${h.paths?.length ? ` · bit under ${h.paths.map(([p, n]) => `${p} ×${n}`).join(", ")}` : ""}`)); }
     }
+    if (local.length) printLocal("also");
     if (Array.isArray(out.atRisk) && out.atRisk.length) console.log(`AT RISK: ${out.atRisk.map((m) => `t${m.t} ${m.withdrawn.map((w) => `"${w}"`).join(", ")} bit ${m.blocks}×`).join("; ")}`);
   } catch (e) {
-    if (!exact.length) console.log(`BEFORE "${operation || path}" · exact rung only (engine unreachable: ${String(e?.message ?? e).split(".")[0]}) — no withdrawn term in the operation; the learned read needs the engine`);
+    if (local.length) { printLocal(exact.length ? "also" : `BEFORE "${operation || path}"`); console.log(`(learned read unavailable — engine unreachable: ${String(e?.message ?? e).split(".")[0]})`); }
+    else if (!exact.length) console.log(`BEFORE "${operation || path}" · exact rung only (engine unreachable: ${String(e?.message ?? e).split(".")[0]}) — no withdrawn term in the operation; the learned read needs the engine`);
     else console.log(`(learned read unavailable: ${String(e?.message ?? e).split(".")[0]})`);
   }
 }
@@ -2872,7 +2886,7 @@ Commands
   remember <cause> <effect> [--kind event|correction] [--note "..."] [--withdrawn T]... [--replacement T]... [--supersedes N]... [--tags a]... [--pinned] [--scope project|agent]
                                       record a finding or a correction from the shell; same rules as the remember tool; prints the stored row as JSON; exit 1 when refused
   before "<what you are about to do>" [--path <file>] [--text <edit>]
-                                      which corrections bear on the change you are about to make: the exact rung locally, the learned rung from the engine
+                                      which corrections bear on the change you are about to make, and which rows record that it was tried and closed: the exact and local rungs need no engine, the learned rung does
   check [--ci] [--receipt] [--json] [--kind edit|publish|command|custom] [--path p] (--text "..." | --file f | --diff [base] | stdin)
                                       one of three verdicts: BLOCKED (exit 2), VERIFIED (0), NO_EVIDENCE (1 under --ci, never a pass)
   verify [--json] [--strict] [--scope project|agent]
