@@ -2274,6 +2274,7 @@ export function localCheck(allEvents, action, invariants = [], opts = {}) {
         if (disavowed) { reasons.push(`"${term}" appears beside its replacement (comparison or disavowal) — allowed, per ledger t${c.t}`); continue; }
         const o = overridesFor.find((x) => x.override.term === term && (!x.override.path || (path && path.startsWith(x.override.path))));
         if (o) { overrides.push({ t: o.t, term }); reasons.push(`"${term}" is withdrawn at t${c.t} but overridden at t${o.t}${o.override.reason ? ` (${o.override.reason})` : ""}`); continue; }
+        if (advisoryTerm(c, term)) { reasons.push(`"${safeTerm(term)}" is advisory, not blocked: t${c.t} came from ambient capture and is one ordinary word. To enforce it, record it on purpose: memory-pulse remember <cause> <effect> --kind correction --withdrawn "${safeTerm(term)}"`); continue; }
         corrections.push({ t: c.t, term, replacement: c.replacement ?? [], cause: c.cause, effect: c.effect, note: c.note ?? "" });
       }
     }
@@ -2357,6 +2358,17 @@ export function containsTerm(text, term) {
   return false;
 }
 
+// An ambient single word is advisory (0.17.1). Ambient capture turns a prompt shaped like "no X" or "X not Y" into a
+// correction with X withdrawn. When X is one ordinary word, blocking every edit that contains it is a false block almost
+// by construction: on one real ledger (2026-11-16) all nine such terms were accidental and one had blocked 84 edits.
+// So the guard does not block on a term that is (a) one word of letters only and (b) written by ambient capture, never
+// by a person. A phrase, a value with a digit or a symbol, and any term recorded on purpose are enforced as before.
+// The guard's cached rows carry no tags, so there the cause ambient capture writes identifies the row.
+export function advisoryTerm(row, term) {
+  if (typeof term !== "string" || !/^\p{L}+$/u.test(term)) return false;
+  return Array.isArray(row?.tags) ? row.tags.includes("ambient") : /^user-correction-/.test(String(row?.cause ?? ""));
+}
+
 export function findViolations(allEvents, text, filePath = "") {
   const hits = [];
   if (!text) return hits;
@@ -2373,7 +2385,7 @@ export function findViolations(allEvents, text, filePath = "") {
     // a guard that fires on "the $49 figure is withdrawn" livelocks the agent.)
     const disavowed = Array.isArray(e.replacement) && e.replacement.some((r) => r && text.includes(r));
     if (disavowed) continue;
-    for (const term of e.withdrawn) if (containsTerm(text, term)) hits.push({ term, t: e.t, cause: e.cause, effect: e.effect, note: e.note ?? "", replacement: e.replacement ?? [] });
+    for (const term of e.withdrawn) if (!advisoryTerm(e, term) && containsTerm(text, term)) hits.push({ term, t: e.t, cause: e.cause, effect: e.effect, note: e.note ?? "", replacement: e.replacement ?? [] });
   }
   return hits;
 }

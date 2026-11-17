@@ -2,6 +2,27 @@
 
 This file starts at 0.16.0. Earlier releases are described in their tagged commits.
 
+## 0.17.1 (16 November 2026)
+
+**The guard no longer blocks on a single ordinary word it picked up by
+itself.** Ambient capture reads a prompt shaped like "no X" or "X not Y" and
+records X as withdrawn. The guard then blocks every edit that contains X. When
+X is a phrase or a value, that is the product working. When X is one ordinary
+word, it is a false block nearly every time. On one real ledger all nine such
+terms were accidents, among them "send", "merge", "just" and "only". "merge"
+had blocked 84 edits. "send" blocked every file that called an API method of
+that name, and each one needed its own `guard allow`.
+
+From this release a withdrawn term is advisory when both things are true: it
+is one word made only of letters, and ambient capture wrote the row. The guard
+lets the edit through and `check` says why, with the command that enforces the
+word if you do mean it. Nothing else changes. A phrase, a value with a digit
+or a symbol in it, and any term you recorded yourself with `remember` block as
+they did before. Rows already in your ledger are covered; nothing is rewritten.
+
+The session brief still lists such a row under corrections, with its old block
+count. It no longer blocks.
+
 ## 0.17.0 (16 November 2026)
 
 **`before` now tells you when the ledger already closed the idea.** Until this
