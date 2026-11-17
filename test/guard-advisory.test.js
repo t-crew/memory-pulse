@@ -67,3 +67,24 @@ test("the guard hook: exit 0 on an ambient single word, exit 2 on a deliberate o
   const no = hook("our users love it");
   assert.equal(no.status, 2, no.stderr + no.stdout); assert.match(no.stderr + no.stdout, /users/);
 });
+
+// ---- 0.17.2: an advisory word is not enforced, so it is not what the memory leads with. Measured on one real ledger
+// (2026-11-17): the session brief's first two correction lines were two of these words with their old block counts, and a
+// prompt that merely contained one of them had its row injected.
+import { promptSlice, editSlice, renderScaffold } from "../server.mjs";
+
+test("a prompt or an edit that merely contains an advisory word gets no line about it; an enforced term still does", () => {
+  const p = promptSlice(LEDGER, "please send the report and merge the branch"); assert.equal(p, "", p);
+  assert.match(promptSlice(LEDGER, "what do our users think of the price $49"), /"users" was withdrawn/);
+  assert.match(promptSlice(LEDGER, "scale it to ten qubits"), /"ten qubits" was withdrawn/, "a phrase from ambient capture is still enforced and still shown");
+  assert.equal(editSlice(LEDGER, [], { text: "await api.send(x); git merge", path: "src/a.js" }), "");
+  assert.match(editSlice(LEDGER, [], { text: "our users", path: "docs/a.md" }), /"users" was withdrawn/);
+});
+
+test("the brief lists enforced corrections first and marks an advisory word as not blocked, after them, without a block count", () => {
+  const { text } = renderScaffold(LEDGER, { section: "corrections", blocks: [{ hits: [{ t: 1, term: "send" }] }, { hits: [{ t: 1, term: "send" }] }, { hits: [{ t: 6, term: "users" }] }] });
+  const lines = text.split("\n").filter((l) => /was withdrawn|were withdrawn/.test(l));
+  assert.match(lines[0], /"users" was withdrawn; use customers \(t6; blocked 1 time\)/);
+  const send = lines.find((l) => l.includes('"send"')); assert.match(send, /advisory: not blocked/); assert.ok(!/blocked 2 times/.test(send));
+  assert.ok(lines.indexOf(send) > lines.findIndex((l) => l.includes("ten qubits")), "advisory words come after every enforced correction");
+});

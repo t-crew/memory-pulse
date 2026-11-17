@@ -47,6 +47,7 @@ import { lessonBank as lessonBankWith, screenLesson, bankSummary, bankLabel, les
 import { savedKey } from "./lib/login.mjs";
 import { hostOf, normalizeHook } from "./lib/hosts.mjs";
 import { drift as driftWith } from "./lib/drift.mjs";
+import { advisoryTerm } from "./lib/advisory.mjs";
 import { SOUL_WRITE, RESERVED, soulState, soulLines, soulGuard, cliSoul, cliUser, setSection, chainedOnly, heldFromMerge, taintOf, soulCapsule, verifySoulCapsule, continuityLine, soulScreen,
          isExternalTool, externalCmd, externalWhat, markTaint, taintMarked, soulTaintGuard } from "./lib/soul.mjs";
 
@@ -2358,16 +2359,8 @@ export function containsTerm(text, term) {
   return false;
 }
 
-// An ambient single word is advisory (0.17.1). Ambient capture turns a prompt shaped like "no X" or "X not Y" into a
-// correction with X withdrawn. When X is one ordinary word, blocking every edit that contains it is a false block almost
-// by construction: on one real ledger (2026-11-16) all nine such terms were accidental and one had blocked 84 edits.
-// So the guard does not block on a term that is (a) one word of letters only and (b) written by ambient capture, never
-// by a person. A phrase, a value with a digit or a symbol, and any term recorded on purpose are enforced as before.
-// The guard's cached rows carry no tags, so there the cause ambient capture writes identifies the row.
-export function advisoryTerm(row, term) {
-  if (typeof term !== "string" || !/^\p{L}+$/u.test(term)) return false;
-  return Array.isArray(row?.tags) ? row.tags.includes("ambient") : /^user-correction-/.test(String(row?.cause ?? ""));
-}
+// An ambient single word is advisory (0.17.1): lib/advisory.mjs.
+export { advisoryTerm };
 
 export function findViolations(allEvents, text, filePath = "") {
   const hits = [];

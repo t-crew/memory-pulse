@@ -2,6 +2,21 @@
 
 This file starts at 0.16.0. Earlier releases are described in their tagged commits.
 
+## 0.17.2 (17 November 2026)
+
+**An advisory word is no longer what your memory leads with.** 0.17.1 stopped
+the guard blocking on a single ordinary word that ambient capture had recorded
+by itself. The rest of the client still treated those rows as corrections: the
+session brief listed them first, with their old block counts, and any prompt or
+edit that merely contained the word had the row injected into the session. On
+one real ledger the brief's first two correction lines were two of these words.
+
+Now such a row is listed after every enforced correction, marked
+`advisory: not blocked`, without a block count. A prompt or an edit that
+contains only the word gets no line about it. Nothing is deleted, phrases and
+values are unaffected, and a word you record yourself is enforced and shown as
+before.
+
 ## 0.17.1 (16 November 2026)
 
 **The guard no longer blocks on a single ordinary word it picked up by
