@@ -287,7 +287,7 @@ npx memory-pulse prompt         # UserPromptSubmit hook: the corrections and dec
 npx memory-pulse brief --budget 2000   # the richest tier that fits 2000 tokens, corrections first and whole
 npx memory-pulse brief --offline  # the plain local list; an engine error falls back to the organized memory instead
 npx memory-pulse remember <cause> <effect> [--kind correction] [--withdrawn T]... [--replacement T]... [--supersedes N] [--note "..."] [--tags a] [--pinned] [--scope agent]
-npx memory-pulse before "<what you are about to do>"   # which corrections bear on the change; exact rung local, learned rung from the engine
+npx memory-pulse before "<what you are about to do>"   # which corrections bear on the change, and whether the ledger already closed it; exact and local rungs need no engine
 npx memory-pulse guard          # PreToolUse hook: blocks edits that reintroduce withdrawn terms (exit 2); --verbose names a non-JSON stdin
 npx memory-pulse guard allow "<term>" --path <prefix> "<reason>"   # record a false block as an override
 npx memory-pulse check --ci     # Memory CI: one of three verdicts for a change, from files you own
@@ -375,7 +375,8 @@ chosen, so brief needs 1,579 tokens, notes 5,264 and full 31,579; `--budget
 
 An `AT RISK` block appears after the guard has blocked the same correction
 twice; `before "<what you are about to do>"` names the corrections that bear
-on a change before you make it.
+on a change before you make it, and the rows that record the same idea as
+already tried, with the closed or failed ones marked.
 
 ## Lint: the rules a session loads, checked against the ledger
 

@@ -2,6 +2,31 @@
 
 This file starts at 0.16.0. Earlier releases are described in their tagged commits.
 
+## 0.17.0 (16 November 2026)
+
+**`before` now tells you when the ledger already closed the idea.** Until this
+release `before` had two rungs. The exact rung fired only when your words
+contained a withdrawn term. The learned rung needed the engine. So with the
+engine away, a plan to rebuild something the ledger had already tried and
+closed got the answer "no withdrawn term in the operation", and nothing else.
+We saw it on a 4,218-row ledger: four proposals to redo closed work, four
+silent passes, while the rows that closed them sat in the ledger.
+
+`before` has a third rung now, and it is local. It matches what you describe
+against single sentences of the rows in force, weighs each word by how rare it
+is in your ledger, and prints the sentences that match. A row whose matching
+sentence records an ending (kill, closed, rejected, shelved, withdrawn and the
+like) is marked with a cross and the word. It runs with or without the engine
+and prints under the exact rung when both fire.
+
+What we measured, on that one ledger, as a spot check and not a benchmark: of
+six proposals to redo closed work, five surfaced a row about that work, and
+three of those were marked closed. Of six unrelated controls, three printed
+nothing, two printed rows on the same subject, and one printed three weak
+rows. It reads words, not meaning. Treat a line as a row to go and read, and
+an empty answer as "the ledger does not name this", never as proof it is new.
+The check took under a second on 4,218 rows.
+
 ## 0.16.1 (23 October 2026)
 
 **Hooks no longer cost a second each.** A clean-machine test of 0.16.0 timed

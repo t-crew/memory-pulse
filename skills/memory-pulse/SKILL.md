@@ -101,7 +101,10 @@ never bypass. A comparison that names both the old and the new value passes.
 ## 5. Ask `before` a risky edit
 
 Run `npx memory-pulse before "<the change in your own words>"` before an edit
-that touches a number, a name or a claim. The exact rung is local; with the
+that touches a number, a name or a claim, and before proposing a direction as
+new. The exact rung is local. So is the local rung: it prints the ledger rows
+whose own sentence names what you described and marks the ones that record a
+closed or failed direction (`✗ ... [kill]`). Read those before you build. With the
 engine reachable the learned rung adds the corrections that bit in the same
 directories before. Read the `AT RISK` line it prints.
 
