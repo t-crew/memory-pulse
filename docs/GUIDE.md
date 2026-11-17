@@ -184,6 +184,8 @@ Always pass the terms yourself and read the echoed row. Section 4 fixes this one
 
 ## 4. Fixing a wrong correction: supersedes, and guard allow
 
+One kind of wrong correction no longer needs fixing. Ambient capture reads a prompt shaped like "no X" or "X not Y" and records X as withdrawn. When X is one ordinary word (letters only), blocking every edit that contains it is almost always a false block, so since 0.17.1 the guard treats such a term as advisory: the edit goes through and `check` says why, with the command that enforces the word if you do mean it. A phrase, a value with a digit or a symbol in it, and any term you recorded yourself with `remember` block as before.
+
 The ledger is append-only. A wrong correction is fixed by recording the right one with `--supersedes <t>`, which retires every term of the earlier row. Re-declare what you keep.
 
 ```sh run
@@ -304,6 +306,8 @@ npx -y memory-pulse@0.17.1 before 'update the pricing copy to say $49 again'
 rung exact
 withdrawn "$49"
 ```
+
+Since 0.17.0 there is a third rung, and it is local. `before` matches what you describe against single sentences of the rows in force, weighs each word by how rare it is in your ledger, and prints the sentences that match under `rung local`. A row whose matching sentence records an ending (kill, closed, rejected, shelved, withdrawn and the like) is marked with a cross and the word. It runs with or without the engine. It reads words, not meaning: treat a line as a row to go and read, and an empty answer as "the ledger does not name this", never as a sign the idea is new.
 
 With the engine reachable the learned rung adds corrections that bit in the same directories before, and `no evidence` means nothing resonated above the floor. The AT RISK block appears in the brief after the guard has blocked the same correction twice. `report` is the scoreboard; it counts one hit per correction that fired, and the edit below trips both t1 and t5 because both withdraw `$49`:
 
