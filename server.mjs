@@ -48,6 +48,7 @@ import { savedKey } from "./lib/login.mjs";
 import { hostOf, normalizeHook } from "./lib/hosts.mjs";
 import { drift as driftWith } from "./lib/drift.mjs";
 import { advisoryTerm } from "./lib/advisory.mjs";
+import { commandHits, invariantsFor, COMMAND_HINT } from "./lib/prereg.mjs";
 import { SOUL_WRITE, RESERVED, soulState, soulLines, soulGuard, cliSoul, cliUser, setSection, chainedOnly, heldFromMerge, taintOf, soulCapsule, verifySoulCapsule, continuityLine, soulScreen,
          isExternalTool, externalCmd, externalWhat, markTaint, taintMarked, soulTaintGuard } from "./lib/soul.mjs";
 
@@ -2283,6 +2284,7 @@ export function localCheck(allEvents, action, invariants = [], opts = {}) {
   for (const h of corrections) reasons.push(`"${safeTerm(h.term)}" was withdrawn at ledger t${h.t}: ${h.cause} -> ${h.effect}${h.replacement.length ? ` — use ${h.replacement.map(safeTerm).join(" / ")}` : ""}`);
   if (text) for (const inv of invariants) {
     if (!inv || typeof inv.id !== "string") continue;
+    if (inv.on === "command") continue;   // 0.18.0: a rule on shell commands is never matched against an edit (see below)
     // `paths`: prefixes the invariant applies to; absent = every path. A rule
     // about public wording must not fire on a proofs file or a test fixture.
     const scope = Array.isArray(inv.paths) ? inv.paths.filter((x) => typeof x === "string" && x) : [];
@@ -2298,6 +2300,9 @@ export function localCheck(allEvents, action, invariants = [], opts = {}) {
     invHits.push({ id: inv.id, severity, pattern: hit.src, cite, replacement });
     reasons.push(`${severity === "warn" ? "warning" : "invariant"} ${inv.id}${inv.statement ? `: ${inv.statement}` : ""} (matched ${hit.src})${cite.length ? ` — ledger ${cite.join(", ")}` : ""}${replacement ? ` — instead: ${replacement}` : ""}`);
   }
+  // 0.18.0: an invariant declared with "on": "command" is matched against a shell command and nothing else, and `paths` does not
+  // apply to it (lib/prereg.mjs). Here that is a check of kind command; the guard matches a tool call's command itself.
+  if (kind === "command") { const c = commandHits(text, invariants, compilePattern); reasons.push(...c.reasons); invHits.push(...c.hits.map(({ reason, ...h }) => h)); }
   const evidence = [];
   // The evidence walk touches every event and substring-searches the edit for
   // that event's cause, effect and replacements. It is the whole cost of this
@@ -2454,6 +2459,15 @@ async function cliGuard() {
     // does not touch this action is one line on stderr, and the action proceeds.
     if (v.verdict === "blocked") blocked.push({ file: a.path, v });
   }
+  // 0.18.0: a rule on shell commands ("on": "command" in invariants.jsonl, which is what a prereg's forbid pattern is) is matched
+  // against the command itself, once, whatever the command writes. An evaluator's command passes a prereg's rule, and the pass is
+  // said on stderr. The text a command writes is still judged as an edit above, as before.
+  if (command) {
+    const c = commandHits(command, invariants, compilePattern);
+    for (const line of c.allowed) warnings.add(`memory-pulse: ${line}`);
+    const hits = c.hits.filter((h) => h.severity === "block");
+    if (hits.length) blocked.push({ file: "", command: true, v: { verdict: "blocked", reasons: hits.map((h) => h.reason), corrections: [], invariants: hits } });
+  }
   recordUsage("guard_check");
   if (!blocked.length) {
     if (warnings.size) process.stderr.write([...warnings].join("\n") + "\n");
@@ -2474,9 +2488,11 @@ async function cliGuard() {
   }
   recordUsage("guard_block");
   const lines = [];
-  for (const { file, v } of blocked) {
-    try { appendFileSync(violationsPath(), JSON.stringify({ at: new Date().toISOString(), file, hits: v.corrections.map((h) => ({ term: h.term, t: h.t })), invariants: v.invariants.map((i) => i.id) }) + "\n"); } catch { /* reporting is best effort */ }
-    if (blocked.length > 1 || sections.length) lines.push(`  ${file || "(no path)"}:`);
+  // a blocked command is recorded with its text, secrets scrubbed and clipped as capture stores a command (lib/capture.mjs)
+  const commandKey = blocked.some((b) => b.command) ? (await import("./lib/capture.mjs")).commandKey : null;
+  for (const { file, v, command: isCommand } of blocked) {
+    try { appendFileSync(violationsPath(), JSON.stringify({ at: new Date().toISOString(), file, hits: v.corrections.map((h) => ({ term: h.term, t: h.t })), invariants: v.invariants.map((i) => i.id), ...(isCommand ? { command: commandKey(command) } : {}) }) + "\n"); } catch { /* reporting is best effort */ }
+    if (blocked.length > 1 || sections.length) lines.push(`  ${file || (isCommand ? "(the command)" : "(no path)")}:`);
     for (const r of v.reasons) {
       if (/^\d+ recorded event/.test(r)) continue;
       // Pick out the retired value and what to use instead. The rest of the
@@ -2504,6 +2520,7 @@ async function cliGuard() {
     ? "The ledger's own row chain is broken mid-file: a row was edited, removed or inserted and rows after it still verify, so writes to the ledger and its sidecars are blocked until it is restored from a copy you trust (`memory-pulse verify` names the first broken row and lists backups that verify). Other work is not blocked. Do not delete the ledger to clear this; the rows are the record. An override cannot repair a chain."
     : sealStale
       ? `Your rows verify (chain OK) but the engine's last seal no longer matches them: either something rewrote the ledger and re-chained it, or the engine sealed a different view. \`memory-pulse verify --json\` shows both sides. If you trust the file as it stands: \`${envPrefix}memory-pulse seal accept "<why>"\` records that decision as a ledger row and sets the old seal aside; the next engine call issues a fresh one.`
+      : blocked.every((b) => b.command) ? COMMAND_HINT
       : 'Use the corrected value (mentioning both old and new in a comparison is fine), record a new correction if the old one is wrong, or `memory-pulse guard allow "<term>" --path <prefix> "<reason>"` if this is a false block.';
   if (cursor) {
     const plain = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
@@ -2572,7 +2589,8 @@ async function cliCheck() {
   { const line = tr0 && !tr0.failure ? trustLine(ledgerPath(), tr0) : ""; if (line) v.reasons.push(line.replace(/^memory-pulse: /, "")); }
   let receipt = null, integrity = null;
   if (wantReceipt) {
-    const out = await callApi("/v1/check", { action: { kind, text, path }, events, invariants, ...(readMemoryKey() ? { verifyKey: true } : {}) });
+    // the engine does not know "on": it is sent the invariants that apply to this kind of action, so both verdicts judge by one rule (0.18.0)
+    const out = await callApi("/v1/check", { action: { kind, text, path }, events, invariants: invariantsFor(kind, text, invariants), ...(readMemoryKey() ? { verifyKey: true } : {}) });
     v = { ...out, local: v.verdict };
     receipt = out.receipt ?? null; integrity = out.integrity ?? null;
     if (out.receiptHint && !receipt) v.reasons.push(out.receiptHint);
