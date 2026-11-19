@@ -2964,7 +2964,7 @@ Commands
   adopt [--yes] [--json]              enforce the corrections you already keep: Claude Code feedback memories, CLAUDE.md, AGENTS.md, rules files (shows them; --yes records them)
   prereg seal <id> --spec <file> [--file <path>]... [--assert '<path>::<text>']... [--forbid '<regex>']... [--note "..."]
                                       pre-registered research: every --assert must be stated whole by a line of code in the file that defines the value, not as a prefix of it and not in a comment, before anything is written (exit 1 with the real line otherwise); then one row with the clock's stamp, each file's sha256, the assertions and the forbid patterns; the guard blocks a shell command that matches a --forbid until the seal is settled, unless its command line starts with MEMORY_PULSE_ROLE=evaluator: a tripwire against inattention, not a security boundary, which fires on Claude Code's Bash and Cursor's Shell and is not enforced on Codex; a --forbid that also matches an everyday command (ls, git status) or the seal's own prereg settle, or is too slow to run before every command, is refused (exit 1)
-         verify <id> [--json]         the evaluator's first step: re-hash every sealed file, unchanged or CHANGED with both hashes; exit 2 if any changed or is missing
+         verify <id> [--json]         the evaluator's first step: re-hash every sealed file, unchanged or CHANGED with both hashes; exit 2 if any changed or is missing, or if the seal row is not on the ledger's row chain (a seal is as trustworthy as that chain; memory-pulse verify checks it)
          settle <id> --verdict <WORD> --file <verdict-file> [--note "..."]
                                       one row with the verdict and the verdict file's sha256, citing the seal row; the seal's forbid patterns stop blocking; with no open seal for <id>, removes the rules that still name it (orphans) and writes no row
          list [--json]                open and settled seals: id, row, stamp, verdict; also a row that carries a prereg manifest but is NOT ON THE CHAIN, and a rule whose seal is not open (ORPHAN RULE)
@@ -3018,7 +3018,7 @@ Environment
   NO_COLOR, TERM                      colour in the guard's block message only when NO_COLOR is unset, TERM is not dumb and stderr is a TTY
   HOME                                root for the agent ledger, ~/.claude/settings.json and ~/.codex/hooks.json
 
-Exit codes: 0 done; 1 usage or refused (remember, append, repair without --yes, mode, lint --ci with nothing to check, check --ci with no evidence, prereg seal on a failed assertion or a refused forbid pattern); 2 blocked (guard, check, lint), verification failed (verify, anchor), a sealed file changed (prereg verify) or not a tail (repair --quarantine-tail).
+Exit codes: 0 done; 1 usage or refused (remember, append, repair without --yes, mode, lint --ci with nothing to check, check --ci with no evidence, prereg seal on a failed assertion or a refused forbid pattern); 2 blocked (guard, check, lint), verification failed (verify, anchor), a sealed file changed or the seal row is not on the row chain (prereg verify) or not a tail (repair --quarantine-tail).
 Guide: docs/GUIDE.md in the repository (https://github.com/t-crew/memory-pulse/blob/main/docs/GUIDE.md).`);
 }
 

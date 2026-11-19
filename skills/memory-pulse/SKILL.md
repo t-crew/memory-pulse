@@ -197,20 +197,23 @@ result), use `memory-pulse prereg` and `memory-pulse now`, not a record written 
   `--assert` against the file that defines it, never against a summary: a failed assertion writes nothing and
   prints the line with the real value. An assertion holds only when a line of code states the text whole: not
   as a prefix of a longer value (`LIMIT = 50` against `LIMIT = 500`) and not inside a `#` or `//` comment.
-  Never assert a secret: the text is scrubbed before it is kept. Give every run the spec reserves for the evaluator a `--forbid`,
-  written to match the run (the program and its flag). A forbid names the evaluator's command, not every
-  command: one that also matches an everyday command (`ls`, `git status`, `python3 --version`) or the seal's
-  own `prereg settle` is refused, and nothing is written.
+  Never assert a secret: the text is scrubbed before it is kept.
+- **A forbid names the evaluator's command, not every command.** Give every run the spec reserves for the
+  evaluator a `--forbid`, written to match the run (the program and its flag). One that also matches an
+  everyday command (`ls`, `git status`, `python3 --version`) or the seal's own `prereg settle`, or that is too
+  slow to run before every command, is refused, and nothing is written.
 - **A blocked command is the evaluator's.** The block starts `memory-pulse guard: blocked.` and says
   `sealed by prereg <id> at row N`. Do not reword the command and do not add the marker yourself: hand the
-  run to the evaluator, or settle the prereg. The way out is never blocked: `memory-pulse prereg settle`,
-  `prereg verify`, `prereg list`, `verify` and `now` always run when each is the only command on its line. `MEMORY_PULSE_ROLE=evaluator` at the start of a command line is
-  the evaluator's alone. The rule applies in the project the seal was made in (that directory and below, or a command that names
-  it), not in another project that shares the ledger. A rule whose seal is not open on this ledger is an
-  orphan: the guard does not enforce it and says so, and `memory-pulse prereg settle <id>` removes it.
-  The rule is a tripwire against inattention, not a security boundary. It fires on
-  Claude Code's `Bash` (and on Cursor's `Shell`, tested against its documented payload only); on Codex treat a
-  reserved run as unguarded and read the seal's forbid patterns yourself before you run anything.
+  run to the evaluator, or settle the prereg. `MEMORY_PULSE_ROLE=evaluator` at the start of a command line is
+  the evaluator's alone.
+- **The way out is never blocked.** `memory-pulse prereg settle`, `prereg verify`, `prereg list`, `verify` and
+  `now` always run when each is the only command on its line. A rule whose seal is not open on this ledger is
+  an orphan: the guard does not enforce it and says so, and `memory-pulse prereg settle <id>` removes it.
+- **Where the rule applies.** In the project the seal was made in (that directory and below, or a command
+  that names it), not in another project that shares the ledger.
+  The rule is a tripwire against inattention, not a security boundary. It fires on Claude Code's `Bash` (and
+  on Cursor's `Shell`, tested against its documented payload only); on Codex treat a reserved run as unguarded
+  and read the seal's forbid patterns yourself before you run anything.
 - **The evaluator runs `memory-pulse prereg verify <id>` first.** Exit 2 means a sealed file changed after
   the seal, or the row is `NOT ON THE CHAIN` (typed into the ledger file or edited, not written by this
   tool): stop and say which. A seal is as trustworthy as the ledger's row chain; when the ledger itself is in

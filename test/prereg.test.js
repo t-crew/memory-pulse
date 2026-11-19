@@ -338,6 +338,7 @@ test("what this release adds describes behaviour only: none of the words the pub
     "changelog 0.18.0": between(read("CHANGELOG.md"), "## 0.18.0 (unreleased)", "\n## "),
     "test/prereg.test.js": read("test", "prereg.test.js").split("// ---- the public surface")[0],
     "test/now.test.js": read("test", "now.test.js"), "test/ran.test.js": read("test", "ran.test.js"), "test/command-invariant.test.js": read("test", "command-invariant.test.js"),
+    "test/prereg-review.test.js": read("test", "prereg-review.test.js"),
   };
   const WORDS = new RegExp(String.raw`\b(${["hyper" + "vectors?", "hyper" + "dimensional", "H" + "MK", "bi" + "nd(?:s|ing)?", "bun" + "dl(?:e|es|ed|ing)", "reson" + "an(?:ce|t)", "holo" + "graphic"].join("|")})\b`, "i");
   for (const [name, text] of Object.entries(added)) { const hit = WORDS.exec(text); assert.equal(hit, null, `${name}: "${hit?.[0]}" near: ${text.slice(Math.max(0, (hit?.index ?? 0) - 60), (hit?.index ?? 0) + 60)}`); }
