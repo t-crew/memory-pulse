@@ -48,6 +48,7 @@ import { savedKey } from "./lib/login.mjs";
 import { hostOf, normalizeHook } from "./lib/hosts.mjs";
 import { drift as driftWith } from "./lib/drift.mjs";
 import { advisoryTerm } from "./lib/advisory.mjs";
+import { commandHits, invariantsFor, preregRows, COMMAND_HINT, INVARIANT_HINT, PREREG_WRITE, cliPrereg, cliNow, cliRan } from "./lib/prereg.mjs";
 import { SOUL_WRITE, RESERVED, soulState, soulLines, soulGuard, cliSoul, cliUser, setSection, chainedOnly, heldFromMerge, taintOf, soulCapsule, verifySoulCapsule, continuityLine, soulScreen,
          isExternalTool, externalCmd, externalWhat, markTaint, taintMarked, soulTaintGuard } from "./lib/soul.mjs";
 
@@ -308,6 +309,23 @@ export function inspectChain(input) {
   }
   return { ...res, firstBad: bad ? { t: rowT(bad.text), line: bad.line } : null,
     tail: { keepBytes: keep, rows: tailRows.length, allBad: tailRows.length > 0 && selfValid === 0, headT: maxT || null } };
+}
+
+/** 0.18.0: the ledger's rows as the row chain sees them, [{e, chained, line}], for a reader that must know which rows the writer
+ *  wrote (memory-pulse prereg). One pass of walkChain, the walk `verify` uses: a row is `chained` when it carries a hash and the
+ *  walk accepted it. A row with no hash is not, and neither is any row from the first break on: the walk stops there, and what
+ *  it has accepted ends at the row whose hash is its head. */
+export function chainRows(path = ledgerPath()) {
+  if (!existsSync(path)) return [];
+  const entries = lineEntries(readFileSync(path)).filter((x) => x.text.trim());
+  const res = walkChain(entries.map((x) => x.text.trim())).result;
+  const last = res.ok ? entries.length - 1 : res.head ? entries.findIndex((x) => { try { return JSON.parse(x.text).hash === res.head; } catch { return false; } }) : -1;
+  const out = [];
+  for (const [i, x] of entries.entries()) {
+    let e = null; try { e = JSON.parse(x.text); } catch { /* a torn line is no row */ }
+    if (e && typeof e === "object" && !Array.isArray(e)) out.push({ e, chained: i <= last && typeof e.hash === "string", line: x.line });
+  }
+  return out;
 }
 
 const lockPathFor = (ledger) => `${ledger}.lock`;
@@ -701,9 +719,9 @@ export function trustLine(path, tr) {
 
 // Fields a row may carry beyond the finding itself. `rollback_to` marks a rollback row (state rollback); `origin` names
 // the branch and row a merged row came from; `state` records which capsule an import or a merge came from.
-const ROW_FIELDS = ["rollback_to", "origin", "state", "where", "probe", "bank", "capture_key", "evidence", "credit", "resolves", "proposal", "decides", "journal", "export", "provenance", "anchor"];
+const ROW_FIELDS = ["rollback_to", "origin", "state", "where", "probe", "bank", "capture_key", "evidence", "credit", "resolves", "proposal", "decides", "journal", "export", "provenance", "anchor", "prereg"];
 
-export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn, replacement, supersedes, override, scope, fields, owner }) {
+export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn, replacement, supersedes, override, scope, fields, owner, unless }) {
   // soul mode (lib/soul.mjs): the soul, the user notes, decisions on held changes, the export record and the journal are written through
   // the soul commands and the session-end hook, which hold SOUL_WRITE (a Symbol: remember and the MCP tool pass JSON, which cannot carry
   // one), so every change is screened, checked for outside content in its session, and kept with where it came from; in soul mode the
@@ -719,6 +737,9 @@ export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn
   }
   if (Array.isArray(tags) && owner !== SOUL_WRITE && tags.some((t) => RESERVED.includes(t) || (t === "identity" && scope === "agent" && soulActive())))
     return { written: false, reason: "the soul, the user notes, the identity and the journal are written through memory-pulse soul, memory-pulse user and memory-pulse identity, so each change is screened and kept with where it came from", hint: 'memory-pulse soul "<text>" (or user / identity)' };
+  // 0.18.0: a prereg row's manifest (the stamp, the hashes, the patterns) is written by memory-pulse prereg, which reads the clock and
+  // hashes the files itself (lib/prereg.mjs holds PREREG_WRITE, a Symbol): no caller supplies a stamp
+  if (fields?.prereg !== undefined && owner !== PREREG_WRITE) return { written: false, reason: "a prereg manifest is written by memory-pulse prereg, which reads the clock and hashes the files itself", hint: "memory-pulse prereg seal <id> --spec <file>" };
   // Instruction-like notes are refused at the write. The engine quarantines
   // them at read time too (and reports it), but a note that would be rendered
   // into every future session as an instruction should never reach the ledger.
@@ -793,7 +814,10 @@ export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn
   // a captured row is checked again under the lock: a Stop and a SessionEnd consolidation running at once both read the ledger before
   // either wrote (final pass 2026-10-21)
   const ckLine = ck ? `"capture_key":${JSON.stringify(ck)}` : null;
-  try { const r = chainAppend(path, event, ckLine ? { unless: (p) => readFileSync(p, "utf8").includes(ckLine) } : {}); if (r && r.written === false) return { written: false, reason: "duplicate", ledger: path }; }
+  // `unless` (a function, so only memory-pulse's own commands can pass one): one more condition checked under the same lock, for a
+  // row that must not be written when the ledger already holds something (a second open seal of one prereg id, 0.18.0)
+  const refuse = typeof unless === "function" ? unless : null;
+  try { const r = chainAppend(path, event, ckLine || refuse ? { unless: (p) => (!!refuse && !!refuse(p)) || (!!ckLine && readFileSync(p, "utf8").includes(ckLine)) } : {}); if (r && r.written === false) return { written: false, reason: "duplicate", ledger: path }; }
   catch (e) { if (e.code === "ELEDGERLOCKED") return { written: false, reason: e.message, ledger: path, hint: "Another writer holds the ledger lock; nothing was written. Retry, or remove the lock file if its holder is gone." }; throw e; }
   // Echo the canonical stored event back. A shell-quoting accident once ate a
   // word from a note SILENTLY; the caller must be able to see what the ledger
@@ -2283,6 +2307,7 @@ export function localCheck(allEvents, action, invariants = [], opts = {}) {
   for (const h of corrections) reasons.push(`"${safeTerm(h.term)}" was withdrawn at ledger t${h.t}: ${h.cause} -> ${h.effect}${h.replacement.length ? ` — use ${h.replacement.map(safeTerm).join(" / ")}` : ""}`);
   if (text) for (const inv of invariants) {
     if (!inv || typeof inv.id !== "string") continue;
+    if (inv.on === "command") continue;   // 0.18.0: a rule on shell commands is never matched against an edit (see below)
     // `paths`: prefixes the invariant applies to; absent = every path. A rule
     // about public wording must not fire on a proofs file or a test fixture.
     const scope = Array.isArray(inv.paths) ? inv.paths.filter((x) => typeof x === "string" && x) : [];
@@ -2298,6 +2323,10 @@ export function localCheck(allEvents, action, invariants = [], opts = {}) {
     invHits.push({ id: inv.id, severity, pattern: hit.src, cite, replacement });
     reasons.push(`${severity === "warn" ? "warning" : "invariant"} ${inv.id}${inv.statement ? `: ${inv.statement}` : ""} (matched ${hit.src})${cite.length ? ` — ledger ${cite.join(", ")}` : ""}${replacement ? ` — instead: ${replacement}` : ""}`);
   }
+  // 0.18.0: an invariant declared with "on": "command" is matched against a shell command and nothing else, and `paths` does not
+  // apply to it (lib/prereg.mjs). Here that is a check of kind command; the guard matches a tool call's command itself.
+  // `opts.prereg` ({cwd, held}) says where the command would run and what the ledger holds, for a seal's rule (preregContext below).
+  if (kind === "command") { const c = commandHits(text, invariants, compilePattern, opts.prereg ?? {}); reasons.push(...c.reasons); invHits.push(...c.hits.map(({ reason, ...h }) => h)); }
   const evidence = [];
   // The evidence walk touches every event and substring-searches the edit for
   // that event's cause, effect and replacements. It is the whole cost of this
@@ -2309,6 +2338,7 @@ export function localCheck(allEvents, action, invariants = [], opts = {}) {
   // Measured with the walk skipped: 5.09 ms at 250,000 events, 37x faster.
   if (text && !opts.blockOnly) for (const e of events) {
     if (e.kind === "override") continue;
+    if (e.prereg !== undefined) continue;   // 0.18.0: a prereg row records a seal or a verdict; it is never evidence about a text
     const terms = [e.cause, e.effect].filter((x) => typeof x === "string" && x.length >= 4).concat(Array.isArray(e.replacement) ? e.replacement.filter((r) => typeof r === "string" && r.length >= 2) : []);
     const via = terms.find((t) => text.includes(t));
     if (via) evidence.push({ t: e.t, cause: e.cause, effect: e.effect, kind: e.kind ?? "event", via });
@@ -2328,6 +2358,8 @@ export function localCheck(allEvents, action, invariants = [], opts = {}) {
   const binding = events.filter((e) => e.kind === "correction" && Array.isArray(e.withdrawn) && e.withdrawn.length && !retiredT.has(e.t)).length;
   return { verdict, reasons, evidence: evidence.slice(0, 20), corrections, invariants: invHits, overrides, checked: { events: events.length, corrections: binding, invariants: invariants.length, action: kind, path: path || null } };
 }
+/** What a seal's rule is judged by (lib/prereg.mjs commandHits): the session's directory, and the ledger's seals, read when asked for. */
+const preregContext = (cwd) => ({ cwd: typeof cwd === "string" && cwd ? cwd : process.cwd(), held: () => preregRows(chainRows()) });
 export const exitCodeFor = (verdict, { ci = false } = {}) => (verdict === "blocked" ? 2 : verdict === "no_evidence" && ci ? 1 : 0);
 
 // A withdrawn term matches as a token, never inside another word or a longer number (2026-10-12). Substring
@@ -2454,6 +2486,15 @@ async function cliGuard() {
     // does not touch this action is one line on stderr, and the action proceeds.
     if (v.verdict === "blocked") blocked.push({ file: a.path, v });
   }
+  // 0.18.0: a rule on shell commands ("on": "command" in invariants.jsonl, which is what a prereg's forbid pattern is) is matched
+  // against the command itself, once, whatever the command writes. An evaluator's command passes a prereg's rule, and the pass is
+  // said on stderr. The text a command writes is still judged as an edit above, as before.
+  if (command) {
+    const c = commandHits(command, invariants, compilePattern, preregContext(payload.cwd));
+    for (const line of [...c.allowed, ...c.notes]) warnings.add(`memory-pulse: ${line}`);
+    const hits = c.hits.filter((h) => h.severity === "block");
+    if (hits.length) blocked.push({ file: "", command: true, v: { verdict: "blocked", reasons: hits.map((h) => h.reason), corrections: [], invariants: hits } });
+  }
   recordUsage("guard_check");
   if (!blocked.length) {
     if (warnings.size) process.stderr.write([...warnings].join("\n") + "\n");
@@ -2474,9 +2515,11 @@ async function cliGuard() {
   }
   recordUsage("guard_block");
   const lines = [];
-  for (const { file, v } of blocked) {
-    try { appendFileSync(violationsPath(), JSON.stringify({ at: new Date().toISOString(), file, hits: v.corrections.map((h) => ({ term: h.term, t: h.t })), invariants: v.invariants.map((i) => i.id) }) + "\n"); } catch { /* reporting is best effort */ }
-    if (blocked.length > 1 || sections.length) lines.push(`  ${file || "(no path)"}:`);
+  // a blocked command is recorded with its text, secrets scrubbed and clipped as capture stores a command (lib/capture.mjs)
+  const commandKey = blocked.some((b) => b.command) ? (await import("./lib/capture.mjs")).commandKey : null;
+  for (const { file, v, command: isCommand } of blocked) {
+    try { appendFileSync(violationsPath(), JSON.stringify({ at: new Date().toISOString(), file, hits: v.corrections.map((h) => ({ term: h.term, t: h.t })), invariants: v.invariants.map((i) => i.id), ...(isCommand ? { command: commandKey(command) } : {}) }) + "\n"); } catch { /* reporting is best effort */ }
+    if (blocked.length > 1 || sections.length) lines.push(`  ${file || (isCommand ? "(the command)" : "(no path)")}:`);
     for (const r of v.reasons) {
       if (/^\d+ recorded event/.test(r)) continue;
       // Pick out the retired value and what to use instead. The rest of the
@@ -2498,16 +2541,20 @@ async function cliGuard() {
   const inQuestion = !chainBroken && allReasons.some((r) => /^ledger in question/.test(r));
   const sealStale = !chainBroken && !inQuestion && allReasons.some((r) => /^sealed head mismatch/.test(r));
   const envPrefix = process.env.MEMORY_PULSE_LEDGER ? `MEMORY_PULSE_LEDGER=${process.env.MEMORY_PULSE_LEDGER} ` : "";
+  const withdrawnHit = allReasons.some((r) => /" was withdrawn at (?:agent )?ledger t\d+/.test(r));
   const hint = inQuestion
     ? `The rows verify as a chain, but not against what this machine last saw: an older copy of the ledger was put back, or rows this machine's writer marked were changed and re-chained. Writes to the ledger, its files and the trust store are blocked until the newer copy is restored, or \`${envPrefix}memory-pulse anchor accept "<why>"\` records that you trust the ledger as it stands. Other work is not blocked. \`memory-pulse verify\` names what differs.`
     : chainBroken
     ? "The ledger's own row chain is broken mid-file: a row was edited, removed or inserted and rows after it still verify, so writes to the ledger and its sidecars are blocked until it is restored from a copy you trust (`memory-pulse verify` names the first broken row and lists backups that verify). Other work is not blocked. Do not delete the ledger to clear this; the rows are the record. An override cannot repair a chain."
     : sealStale
       ? `Your rows verify (chain OK) but the engine's last seal no longer matches them: either something rewrote the ledger and re-chained it, or the engine sealed a different view. \`memory-pulse verify --json\` shows both sides. If you trust the file as it stands: \`${envPrefix}memory-pulse seal accept "<why>"\` records that decision as a ledger row and sets the old seal aside; the next engine call issues a fresh one.`
+      : blocked.every((b) => b.command) ? COMMAND_HINT
+      // 0.18.0 (review): an override answers a withdrawn value. A block with none (an invariant, a rule on commands) does not offer one
+      : !withdrawnHit ? (blocked.some((b) => b.command) ? `${INVARIANT_HINT}\n${COMMAND_HINT}` : INVARIANT_HINT)
       : 'Use the corrected value (mentioning both old and new in a comparison is fine), record a new correction if the old one is wrong, or `memory-pulse guard allow "<term>" --path <prefix> "<reason>"` if this is a false block.';
   if (cursor) {
     const plain = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
-    process.stdout.write(JSON.stringify({ permission: "deny", user_message: `memory-pulse guard: blocked.\n${plain}`, agent_message: `memory-pulse guard blocked this edit.\n${plain}\n${hint}` }));
+    process.stdout.write(JSON.stringify({ permission: "deny", user_message: `memory-pulse guard: blocked.\n${plain}`, agent_message: `memory-pulse guard blocked this ${command ? "command" : "edit"}.\n${plain}\n${hint}` }));
     process.exit(0);
   }
   process.stderr.write(`${C.red(C.bold("memory-pulse guard: blocked."))}\n${lines.join("\n")}\n${C.dim(hint)}\n`);
@@ -2568,11 +2615,13 @@ async function cliCheck() {
   const invariants = readInvariants();
   const chain0 = verifyChain();
   let tr0 = null; try { tr0 = chain0.ok && existsSync(ledgerPath()) ? ledgerTrustCached(ledgerPath()) : null; } catch { tr0 = null; }
-  let v = localCheck(events, { kind, text, path }, invariants, { chain: chain0.ok && tr0?.failure ? tr0.failure : chain0, seal: verifyLocalSeal(events, readSeal(), chain0) });
+  const prereg = preregContext();
+  let v = localCheck(events, { kind, text, path }, invariants, { chain: chain0.ok && tr0?.failure ? tr0.failure : chain0, seal: verifyLocalSeal(events, readSeal(), chain0), prereg });
   { const line = tr0 && !tr0.failure ? trustLine(ledgerPath(), tr0) : ""; if (line) v.reasons.push(line.replace(/^memory-pulse: /, "")); }
   let receipt = null, integrity = null;
   if (wantReceipt) {
-    const out = await callApi("/v1/check", { action: { kind, text, path }, events, invariants, ...(readMemoryKey() ? { verifyKey: true } : {}) });
+    // the engine does not know "on": it is sent the invariants that apply to this kind of action, so both verdicts judge by one rule (0.18.0)
+    const out = await callApi("/v1/check", { action: { kind, text, path }, events, invariants: invariantsFor(kind, text, invariants, prereg), ...(readMemoryKey() ? { verifyKey: true } : {}) });
     v = { ...out, local: v.verdict };
     receipt = out.receipt ?? null; integrity = out.integrity ?? null;
     if (out.receiptHint && !receipt) v.reasons.push(out.receiptHint);
@@ -2913,6 +2962,15 @@ Commands
   consolidate [--final]               Stop / SessionEnd hook: fail-then-pass becomes a fix, still-failing an open thread, each with its evidence; --final adds a session summary and the episode .rain capsule
   weights                             what each memory did: check outcomes when it was shown and when it sat out at random; retired ones marked
   adopt [--yes] [--json]              enforce the corrections you already keep: Claude Code feedback memories, CLAUDE.md, AGENTS.md, rules files (shows them; --yes records them)
+  prereg seal <id> --spec <file> [--file <path>]... [--assert '<path>::<text>']... [--forbid '<regex>']... [--note "..."]
+                                      pre-registered research: every --assert must be stated whole by a line of code in the file that defines the value, not as a prefix of it and not in a comment, before anything is written (exit 1 with the real line otherwise); then one row with the clock's stamp, each file's sha256, the assertions and the forbid patterns; the guard blocks a shell command that matches a --forbid until the seal is settled, unless its command line starts with MEMORY_PULSE_ROLE=evaluator: a tripwire against inattention, not a security boundary, which fires on Claude Code's Bash and Cursor's Shell and is not enforced on Codex; a --forbid that also matches an everyday command (ls, git status) or the seal's own prereg settle, or is too slow to run before every command, is refused (exit 1)
+         verify <id> [--json]         the evaluator's first step: re-hash every sealed file, unchanged or CHANGED with both hashes; exit 2 if any changed or is missing, or if the seal row is not on the ledger's row chain (a seal is as trustworthy as that chain; memory-pulse verify checks it)
+         settle <id> --verdict <WORD> --file <verdict-file> [--note "..."]
+                                      one row with the verdict and the verdict file's sha256, citing the seal row; the seal's forbid patterns stop blocking; with no open seal for <id>, removes the rules that still name it (orphans) and writes no row
+         list [--json]                open and settled seals: id, row, stamp, verdict; also a row that carries a prereg manifest but is NOT ON THE CHAIN, and a rule whose seal is not open (ORPHAN RULE)
+  ran '<regex>' [--since <row|ISO time>] [--json]
+                                      the recorded shell commands that match, with time and session, from the capture hook's episodes (a command's first 200 characters, secrets scrubbed): did a forbidden configuration run after a seal; --since takes a prereg row or a time
+  now [--json]                        the machine clock as the stamps a record uses (2026-11-19 02:15 UTC and 2026-11-19T02:15:07Z); a record's stamp is pasted from this, never typed
   lint [--ci] [--json] [--strict] [paths...]
                                       the guard's check over CLAUDE.md, AGENTS.md, .claude/rules, .cursorrules, Muse Code's .agents/memory and the other files a session loads; warns on a line planted for the agent (--strict blocks on it)
   guard [--verbose]                   PreToolUse hook: reads the tool call from stdin, exit 2 with the ledger line when an edit writes a withdrawn value back
@@ -2960,7 +3018,7 @@ Environment
   NO_COLOR, TERM                      colour in the guard's block message only when NO_COLOR is unset, TERM is not dumb and stderr is a TTY
   HOME                                root for the agent ledger, ~/.claude/settings.json and ~/.codex/hooks.json
 
-Exit codes: 0 done; 1 usage or refused (remember, append, repair without --yes, mode, lint --ci with nothing to check, check --ci with no evidence); 2 blocked (guard, check, lint), verification failed (verify, anchor) or not a tail (repair --quarantine-tail).
+Exit codes: 0 done; 1 usage or refused (remember, append, repair without --yes, mode, lint --ci with nothing to check, check --ci with no evidence, prereg seal on a failed assertion or a refused forbid pattern); 2 blocked (guard, check, lint), verification failed (verify, anchor), a sealed file changed or the seal row is not on the row chain (prereg verify) or not a tail (repair --quarantine-tail).
 Guide: docs/GUIDE.md in the repository (https://github.com/t-crew/memory-pulse/blob/main/docs/GUIDE.md).`);
 }
 
@@ -3566,6 +3624,9 @@ if (isMain) {
   if (sub === "adopt") { const { cliAdopt } = await import("./lib/adopt.mjs"); process.exit(cliAdopt(process.argv.slice(3), { readEvents, inForce, appendEvent, detectCorrection, detectProhibition, instructionLike })); }
   if (sub === "logout") { const { cliLogout } = await import("./lib/login.mjs"); process.exit(cliLogout()); }
   if (sub === "board") { globalThis.__MEMORY_PULSE_CORE__ = { chainAppend, verifyChain, instructionLike, readEvents, buildCapsule, API, KEY }; const { cliBoard } = await import("./lib/board.mjs"); process.exit(await cliBoard(process.argv.slice(3))); }
+  if (sub === "now") process.exit(cliNow(process.argv.slice(3)));
+  if (sub === "prereg") process.exit(cliPrereg(process.argv.slice(3), { ledgerPath, readEvents, appendEvent, chainRows }));
+  if (sub === "ran") process.exit(cliRan(process.argv.slice(3), { ledgerPath, readEvents, chainRows }));
   if (sub === "lint") { await cliLint(); process.exit(0); }
   if (sub === "report") { cliReport(); process.exit(0); }
   if (sub === "bench") { await cliBench(); process.exit(0); }

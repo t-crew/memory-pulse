@@ -58,7 +58,7 @@ engines); the test suite runs on 22 and 24.
 
 `remember` and `help` from the shell arrive in 0.5.9. npm served 0.5.8 on
 2026-09-09, where both exit 1 with `unknown command`. If npx serves an older
-cached release, pin this one: `npx -y memory-pulse@0.17.2`; from a checkout,
+cached release, pin this one: `npx -y memory-pulse@0.18.0`; from a checkout,
 run `node server.mjs`. Four more things in this README are
 0.5.9 behaviour and differ on 0.5.8: `guard --verbose` names non-JSON stdin
 on stderr (0.5.8 prints nothing), `handoff` with no transcript writes nothing
@@ -191,7 +191,7 @@ and exits 0. The first `remember` creates `.memory-pulse/events.jsonl`, from a
 tool call or from the shell:
 
 ```
-npx -y memory-pulse@0.17.2 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
+npx -y memory-pulse@0.18.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 # before 0.6.0 is on npm, the same command from a checkout:
 git clone https://github.com/t-crew/memory-pulse.git && node memory-pulse/server.mjs remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 ```
@@ -315,6 +315,12 @@ npx memory-pulse capture        # PostToolUse hook (installed by install-hook): 
 npx memory-pulse consolidate    # Stop / SessionEnd hook: fail-then-pass becomes a fix and still-failing an open thread, each pointing at its evidence
 npx memory-pulse weights        # what each memory did: check outcomes shown vs. sat out at random; retired ones marked
 npx memory-pulse adopt          # the corrections you already keep (Claude Code feedback memories, CLAUDE.md, AGENTS.md, rules files), shown; --yes enforces them
+npx memory-pulse prereg seal exp-7 --spec spec.md --file run.py --assert 'shipped/params.py::THRESHOLD = 0.25' --forbid 'train\.py .*--n (4096|8192)'   # pre-registered research: assertions checked against the file that defines the value, then one row with the clock's stamp and each sha256; the guard blocks the forbidden command until settle
+npx memory-pulse prereg verify exp-7   # the evaluator's first step: re-hash every sealed file; unchanged or CHANGED with both hashes; exit 2 if any changed
+npx memory-pulse prereg settle exp-7 --verdict KEEP --file verdict.md   # one row with the verdict file's sha256, citing the seal row; the forbid patterns stop blocking
+npx memory-pulse prereg list    # open and settled seals: id, row, stamp, verdict; --json
+npx memory-pulse ran 'train\.py .*--n (4096|8192)' --since 12   # the recorded shell commands that match, with time and session, since the seal at row 12 (from capture's episodes)
+npx memory-pulse now            # the machine clock as the two stamps a record uses; paste a record's stamp from it, never type one; --json
 npx memory-pulse lint [--ci]    # do CLAUDE.md / AGENTS.md / .claude/rules still state a value the ledger retired?
 npx memory-pulse report         # correction re-violation scoreboard, computed locally
 npx memory-pulse bench          # instant measured metrics on YOUR ledger
@@ -415,6 +421,160 @@ Muse Code loads a repository's `.agents/memory/` even in a workspace you have
 not trusted, so run `lint --strict` on a checkout you did not write before an
 agent opens it. On 282 memory and instruction files and 1,500 package READMEs
 (about 278,000 lines) it warned on nothing.
+
+## Pre-registered research: seal the spec, stamp the record, leave the confirmation run to the evaluator
+
+Pre-registered work has two roles. A builder writes a spec, seals it and
+builds. A separate evaluator judges the result. One night of such work went
+wrong in three ways, and since 0.18.0 each is a command instead of a habit.
+
+- A time stamp was typed from memory into a record: "00:3x UTC" when the clock
+  said 00:15. `memory-pulse now` prints the machine clock in the two forms a
+  record uses. Paste a stamp from it; never type one.
+- The builder ran its own experiment at sizes its own amendment had reserved
+  for confirmation. Nothing stopped the run or recorded it. A seal can name
+  those commands, and the guard blocks them until the seal is settled.
+- A constant about a deployed system was copied into the sealed spec from a
+  summary: 0.5, where the run logs and the shipped file said 0.25. A seal can
+  assert the value against the file that defines it, and it refuses to seal
+  when the file says otherwise.
+
+```
+$ npx memory-pulse prereg seal exp-7 --spec spec.md --assert 'shipped/params.py::THRESHOLD = 0.5'
+memory-pulse prereg seal exp-7: 1 of 1 assertion(s) failed; nothing was written
+  assert FAILED: shipped/params.py does not contain "THRESHOLD = 0.5" as a whole value outside a comment
+    shipped/params.py:2: THRESHOLD = 0.25
+
+$ npx memory-pulse prereg seal exp-7 --spec spec.md --assert 'shipped/params.py::THRESHOLD = 0.25' --forbid 'train\.py .*--n (4096|8192)'
+prereg exp-7: sealed at row 12
+stamp: 2026-11-19 02:41 UTC · 2026-11-19T02:41:10Z (paste this)
+  spec    spec.md  sha256 3b2484bb7732d5aedd6ea3191deb69adf355f0cce9d4c2b739b789599063e027
+  assert  shipped/params.py :: THRESHOLD = 0.25  (holds)  shipped/params.py:2: THRESHOLD = 0.25
+  forbid  /train\.py .*--n (4096|8192)/  blocked by the guard as a shell command while this seal is open
+The forbid patterns are a tripwire against inattention, not a security boundary: a command line that starts with MEMORY_PULSE_ROLE=evaluator passes.
+It fires where the guard sees shell commands: Claude Code's Bash, and Cursor's Shell (tested against its documented payload, not yet run inside Cursor). It is not enforced on Codex.
+next: the evaluator runs  memory-pulse prereg verify exp-7  first
+```
+
+What a seal does, in order:
+
+- **Every `--assert '<path>::<text>'` is checked first.** A line of the file
+  must state the text whole. A trailing comment is set aside first (`#` or `//`
+  to the end of the line, where it starts the line or follows a space), and the
+  text may not have a letter, a digit, an underscore or a dot directly before
+  or after it. So `LIMIT = 50` does not hold against `LIMIT = 500`, and
+  `RATE = 0.5` does not hold against `RATE = 0.25  # was RATE = 0.5`. When an
+  assertion does not hold, the seal prints the line that carries the name
+  before the first `=` or `:`, so the real value is on the screen, exits 1 and
+  writes nothing. When it holds, the seal prints the file, the line number and
+  the line, and the row keeps the line number. Text with no letter or digit,
+  or more than one line, is refused as written. The text and every line shown
+  pass the secret scrubber first: an assertion it changes is kept scrubbed and
+  marked, and `prereg verify` can compare it only while the file is as it was
+  sealed (after that it prints `NOT COMPARED`).
+- **Then it writes one ledger row**, through the same writer as every other
+  row: `prereg exp-7 -> sealed 3b2484bb7732` (the first 12 characters of the
+  spec's sha256), with the stamp read from the clock by the
+  code, the sha256 of the spec and of each `--file`, the assertions and the
+  forbid patterns. No option takes a stamp, and `append` and `remember` are
+  refused the field that holds it. A prereg row records a seal or a verdict:
+  `check` and `lint` never count it as evidence about a text.
+- **Each `--forbid '<regex>'` becomes a rule on shell commands**, a line in
+  `.memory-pulse/invariants.jsonl` owned by the seal. A forbid names the
+  evaluator's command, not every command, so before anything is written each
+  pattern is tried on twelve commands: the seal's own `prereg settle`,
+  `prereg verify` and `prereg list`, then `ls`, `pwd`, `cd /tmp`, `git status`,
+  `cat README.md`, `echo ok`, `node --version`, `python3 --version` and the
+  empty command. A pattern that matches one of them is refused with that
+  command named, exit 1, nothing written. The trial is timed, because the
+  guard runs a forbid before every shell command: a pattern still running
+  after 500 ms on those commands and three long ones (`(a+)+$` is one) is
+  refused as too slow. While the seal is open the guard
+  blocks a shell command that matches, and says whose command it is:
+
+```
+memory-pulse guard: blocked.
+  • sealed by prereg exp-7 at row 12: this command is the evaluator's (matched /train\.py .*--n (4096|8192)/). Hand it to an evaluator, whose command line starts with MEMORY_PULSE_ROLE=evaluator, or settle the prereg: memory-pulse prereg settle exp-7 --verdict <WORD> --file <verdict-file>
+```
+
+**The way out always works.** A seal's rule never blocks a command that is one
+invocation of `memory-pulse prereg settle`, `prereg verify`, `prereg list`,
+`verify` or `now`, also spelled `npx memory-pulse <command>` or
+`node <path>/server.mjs <command>`, after at most one `cd <dir> &&`. The guard says
+so on stderr. A line that carries anything more (`;`, `&&`, `|`, a redirect, a
+command substitution) gets no such pass, and neither does a rule you declared
+by hand.
+
+**A seal's rule applies in the seal's project.** The seal row records the
+directory the seal was made in. The rule is matched only against a command
+that would run in that directory or below it (the hook call's `cwd`, moved by
+a leading `cd <dir> &&`), or that names the directory, by its path or with `~`
+for home. Where one ledger serves several projects through
+`MEMORY_PULSE_LEDGER`, a seal in one of them blocks nothing in the others. A
+rule you declare by hand has no seal and applies wherever its ledger does.
+
+**A rule with no open seal is not enforced.** A seal's rule whose seal is not
+open on this ledger (it was settled, it was never sealed here, or its row is
+not on the chain) is an orphan rule. The guard does not enforce it and says so
+on stderr, once for the seal. `prereg list` shows it as `ORPHAN RULE`, and
+`memory-pulse prereg settle <id>` removes it and says so, writing no row.
+
+**The forbid rule is a tripwire against inattention, not a security
+boundary.** A command line that starts with `MEMORY_PULSE_ROLE=evaluator`
+(after any `cd <dir> &&`) passes, and the guard says so on stderr. Anyone can
+type that marker. A command inside a script file is not read. The pattern is
+matched against the whole command line, so write it to match the run (the
+program and its flag) and not every mention of the size; a file edit that
+mentions the command is never matched. What the rule does is stop the builder
+who forgot, and leave a record: a blocked command is written to
+`.memory-pulse/violations.jsonl` with the rule and the command, secrets
+scrubbed. It fires where the guard sees shell commands: Claude Code's `Bash`,
+and Cursor's `Shell` as tested against its documented payload (not yet run
+inside Cursor itself). The hook `install-hook --codex` writes does not match
+Codex's shell tool, and through the plugin that is unmeasured, so treat the
+rule as not enforced on Codex.
+
+The evaluator starts with `prereg verify`. It re-hashes every sealed file:
+
+```
+$ npx memory-pulse prereg verify exp-7
+prereg exp-7: sealed at row 12, 2026-11-19 02:41 UTC (open)
+  CHANGED    spec.md  sealed 3b2484bb7732d5aedd6ea3191deb69adf355f0cce9d4c2b739b789599063e027  now c69866e744ccb58b9194916b70b5eb5f99241188a42091e0323226d0500a546e
+  assert holds            shipped/params.py :: THRESHOLD = 0.25
+  blocked by the guard under this seal: 1 command(s), last 2026-11-19T02:41:11.033Z: python train.py --n 4096
+verify: 1 of 1 sealed file(s) changed or missing
+rests on: the ledger's row chain, which holds this seal row. memory-pulse verify checks the chain, the engine's seal and this machine's anchor.
+```
+
+Exit 2 unless every sealed file is unchanged; a file that is gone is MISSING,
+never unchanged. Three more things are named and do not change the exit code:
+an asserted value that no longer holds, files beside the spec that are newer
+than the seal, and the commands the guard blocked under the seal.
+
+**A seal is as trustworthy as the ledger's row chain, and no more.**
+`prereg list`, `prereg verify` and `prereg settle` count a row as a seal only
+when the ledger's row chain holds it, by the same walk `memory-pulse verify`
+makes. A row typed into the ledger file, or a seal row edited after it was
+written, is listed as `NOT ON THE CHAIN`. `prereg verify` exits 2 for it, names
+the row and says it was not written by this tool, and `prereg settle` refuses
+it. `prereg verify` ends with one line that says what its answer rests on.
+Someone who rewrites the ledger and chains every row again can still make a
+seal: `memory-pulse verify` is the check for that, against the engine's seal
+and this machine's anchor.
+
+`memory-pulse ran '<regex>' --since 12` lists the shell commands the capture
+hook recorded that match, with time and session, since the seal at row 12, and
+marks an evaluator's. It reads what capture keeps: the first 200 characters of
+each command, secrets scrubbed, on this machine. So no match is never reported
+as "nothing ran", and with no capture record at all it says exactly that.
+
+`memory-pulse prereg settle exp-7 --verdict KEEP --file verdict.md` writes one
+row, `prereg exp-7 -> settled KEEP 59425cb42511` (the verdict, then the first
+12 characters of the verdict file's sha256), with the whole sha256 and the
+seal row it answers. The seal's rules leave `invariants.jsonl` and every other
+line of that file stays byte for byte. `memory-pulse prereg list` shows open
+and settled seals with id, row, stamp and verdict. The guide's section 17 runs
+all of this end to end.
 
 ## Tamper evidence: the ledger cannot be edited quietly
 
@@ -839,12 +999,18 @@ npx memory-pulse check --receipt --text "…"        # engine-signed receipt, ke
 A pattern written `/…/flags` is a regular expression and anything else is a
 verbatim substring. `paths` scopes the rule to path prefixes, so a rule about
 public wording does not fire on a test fixture. `severity: "warn"` reports
-without blocking.
+without blocking. A line that carries `"on": "command"` is a rule on shell
+commands (0.18.0): the guard matches it against the command of a `Bash` tool
+call and `check --kind command` against its text, it is never matched against
+a file edit, and `paths` does not apply to it. A line without `on` behaves as
+it always has.
 
 **Overrides** are the false-block signal. `guard allow "$49" --path docs/history
 "historical table"` records an `override` event scoped to that path prefix.
 The hit passes there and nowhere else, and both `report` and the signed capsule
-count it. The guard never guesses, and only explicit withdrawn terms and
+count it. An override answers a withdrawn value, so a block caused only by an
+invariant or a rule on shell commands does not offer one (0.18.0): change the
+text, or the declaration. The guard never guesses, and only explicit withdrawn terms and
 declared invariants can block. Measured on our own 852-event ledger with the
 guard-eval bench in the engine repo on 2026-09-01: precision 1.0, zero false
 blocks over 871 negatives including 694 real notes, and p95 of 1.7 ms per

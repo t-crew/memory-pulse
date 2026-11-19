@@ -2,6 +2,101 @@
 
 This file starts at 0.16.0. Earlier releases are described in their tagged commits.
 
+## 0.18.0 (unreleased)
+
+**Pre-registered research gets a command for each of three slips.** An agent
+doing pre-registered work (a builder writes a spec, seals it and builds; a
+separate evaluator judges) made three mistakes in one night. It typed time
+stamps from memory into records: "00:3x UTC" when the clock said 00:15, and a
+seal time quoted wrongly. It ran its own experiment at sizes its own amendment
+had reserved for confirmation, and nothing stopped the run or recorded it. It
+copied a constant about a deployed system into a sealed spec from a summary:
+0.5, where the run logs and the shipped file said 0.25.
+
+`memory-pulse now` prints the machine clock as the two stamps a record uses.
+A stamp is pasted from it, never typed.
+
+`memory-pulse prereg seal <id> --spec <file>` seals a spec. Every
+`--assert '<path>::<text>'` is checked first, against the file that defines
+the value. A line of the file must state the text whole: a trailing `#` or
+`//` comment is set aside, and the text may not have a letter, a digit, an
+underscore or a dot directly before or after it, so a prefix of the real value
+and a value that only a comment mentions do not hold. If no line states it,
+the seal prints the line that does carry the name, exits 1 and writes nothing;
+if one does, the seal prints the file, the line number and the line. The text
+and the lines shown pass the secret scrubber before they are printed or kept. A seal that passes writes
+one ledger row: the stamp, read from the clock by the code, the sha256 of the
+spec and of each `--file`, the assertions and the forbid patterns. No option
+takes a stamp. The row reads `prereg <id> -> sealed <first 12 characters of
+the spec's sha256>`, and a settle row `settled <WORD> <first 12 characters of
+the verdict file's sha256>`: neither effect is a bare word, and `check` and
+`lint` never count a prereg row as evidence about a text. An id has one open
+seal at a time: the check is made under the ledger's lock together with the
+write, so of two seals of one id started at the same moment one is written and
+the other is refused.
+
+Each `--forbid '<regex>'` is blocked by the guard as a shell command while the
+seal is open. A forbid names the evaluator's command, not every command: at
+seal time each pattern is tried on the seal's own `prereg settle`, `prereg
+verify` and `prereg list`, on `ls`, `pwd`, `cd /tmp`, `git status`, `cat
+README.md`, `echo ok`, `node --version`, `python3 --version` and on the empty
+command, and one that matches is refused with that command named, exit 1,
+nothing written. The trial runs in a process of its own and is timed: a
+pattern still running after 500 ms on those commands and three long ones is
+refused as too slow to run before every command. The block names the prereg and its seal row, says the command is
+the evaluator's, and says how to proceed. The way out always works: a seal's
+rule never blocks a line that is one invocation of `memory-pulse prereg
+settle`, `prereg verify`, `prereg list`, `verify` or `now` and nothing more.
+A seal's rule applies in the seal's project: it is matched only against a
+command that would run in the directory the seal was made in or below it, or
+that names that directory, so one ledger shared by several projects carries a
+seal's rule into none of the others. A seal's rule with no open seal on the
+ledger is an orphan rule: the guard does not enforce it and says so, `prereg
+list` shows it, and `prereg settle <id>` removes it without writing a row. A command line that starts with
+`MEMORY_PULSE_ROLE=evaluator` passes. This is a tripwire against inattention,
+not a security boundary: anyone can type the marker, and a command inside a
+script file is not read. A blocked command is recorded in
+`.memory-pulse/violations.jsonl`. The rule fires where the guard sees shell
+commands: Claude Code's `Bash`, and Cursor's `Shell` as tested against its
+documented payload (not yet run inside Cursor itself). The hook `install-hook
+--codex` writes does not match Codex's shell tool, so the rule is not enforced
+on Codex.
+
+`memory-pulse prereg verify <id>` is the evaluator's first step. It re-hashes
+every sealed file and prints unchanged, or CHANGED with both hashes; exit 2
+unless every one is unchanged. A seal is as trustworthy as the ledger's row
+chain: `prereg list`, `verify` and `settle` count a row as a seal only when
+that chain holds it (the walk `memory-pulse verify` makes), a row typed into
+the ledger file or edited afterwards is listed as `NOT ON THE CHAIN` and
+refused, and `prereg verify` ends by saying what its answer rests on. `memory-pulse prereg settle <id> --verdict
+<WORD> --file <verdict-file>` writes one row with the verdict file's sha256,
+citing the seal row, and the forbid patterns stop blocking. `memory-pulse
+prereg list` shows open and settled seals.
+
+`memory-pulse ran '<regex>' --since <row>` lists the shell commands the
+capture hook recorded that match, with time and session, so an evaluator can
+check what ran after a seal. It reads what capture already keeps, the first
+200 characters of each command, and capture itself is unchanged. No match is
+never reported as "nothing ran".
+
+Underneath, a declared invariant can now apply to shell commands. A line of
+`.memory-pulse/invariants.jsonl` with `"on": "command"` is matched against the
+command of a `Bash` tool call and by `check --kind command`, never against a
+file edit, and `paths` does not apply to it. An invariant without `on` behaves
+exactly as before. `check --receipt` sends the engine only the invariants that
+apply to the kind of action it is asked about.
+
+Limits. A seal is as trustworthy as the ledger's row chain. `state merge` does
+not carry a seal's rules: a merged seal row is listed on the other ledger under
+its new row number, but `invariants.jsonl` does not travel, so nothing is
+blocked there, and a merged settle row's `seal` field still names the row
+number it had on its own branch. `repair --adopt-quarantine` does not carry
+the manifest: a seal row that was moved aside comes back as an ordinary row,
+not as a seal. A forbid pattern is matched against the command line the guard
+is shown, so a command inside a script file, or one built from variables, is
+not read. An assertion is compared line by line: a value that spans lines
+cannot be asserted, and one the secret scrubber changes is kept scrubbed.
+
 ## 0.17.2 (17 November 2026)
 
 **An advisory word is no longer what your memory leads with.** 0.17.1 stopped
