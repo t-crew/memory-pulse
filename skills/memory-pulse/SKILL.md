@@ -205,7 +205,9 @@ result), use `memory-pulse prereg` and `memory-pulse now`, not a record written 
   `sealed by prereg <id> at row N`. Do not reword the command and do not add the marker yourself: hand the
   run to the evaluator, or settle the prereg. The way out is never blocked: `memory-pulse prereg settle`,
   `prereg verify`, `prereg list`, `verify` and `now` always run when each is the only command on its line. `MEMORY_PULSE_ROLE=evaluator` at the start of a command line is
-  the evaluator's alone. The rule is a tripwire against inattention, not a security boundary. It fires on
+  the evaluator's alone. The rule applies in the project the seal was made in (that directory and below, or a command that names
+  it), not in another project that shares the ledger.
+  The rule is a tripwire against inattention, not a security boundary. It fires on
   Claude Code's `Bash` (and on Cursor's `Shell`, tested against its documented payload only); on Codex treat a
   reserved run as unguarded and read the seal's forbid patterns yourself before you run anything.
 - **The evaluator runs `memory-pulse prereg verify <id>` first.** Exit 2 means a sealed file changed after

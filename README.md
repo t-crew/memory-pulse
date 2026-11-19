@@ -502,6 +502,14 @@ so on stderr. A line that carries anything more (`;`, `&&`, `|`, a redirect, a
 command substitution) gets no such pass, and neither does a rule you declared
 by hand.
 
+**A seal's rule applies in the seal's project.** The seal row records the
+directory the seal was made in. The rule is matched only against a command
+that would run in that directory or below it (the hook call's `cwd`, moved by
+a leading `cd <dir> &&`), or that names the directory, by its path or with `~`
+for home. Where one ledger serves several projects through
+`MEMORY_PULSE_LEDGER`, a seal in one of them blocks nothing in the others. A
+rule you declare by hand has no seal and applies wherever its ledger does.
+
 **The forbid rule is a tripwire against inattention, not a security
 boundary.** A command line that starts with `MEMORY_PULSE_ROLE=evaluator`
 (after any `cd <dir> &&`) passes, and the guard says so on stderr. Anyone can

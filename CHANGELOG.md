@@ -43,7 +43,11 @@ pattern still running after 500 ms on those commands and three long ones is
 refused as too slow to run before every command. The block names the prereg and its seal row, says the command is
 the evaluator's, and says how to proceed. The way out always works: a seal's
 rule never blocks a line that is one invocation of `memory-pulse prereg
-settle`, `prereg verify`, `prereg list`, `verify` or `now` and nothing more. A command line that starts with
+settle`, `prereg verify`, `prereg list`, `verify` or `now` and nothing more.
+A seal's rule applies in the seal's project: it is matched only against a
+command that would run in the directory the seal was made in or below it, or
+that names that directory, so one ledger shared by several projects carries a
+seal's rule into none of the others. A command line that starts with
 `MEMORY_PULSE_ROLE=evaluator` passes. This is a tripwire against inattention,
 not a security boundary: anyone can type the marker, and a command inside a
 script file is not read. A blocked command is recorded in

@@ -48,7 +48,7 @@ import { savedKey } from "./lib/login.mjs";
 import { hostOf, normalizeHook } from "./lib/hosts.mjs";
 import { drift as driftWith } from "./lib/drift.mjs";
 import { advisoryTerm } from "./lib/advisory.mjs";
-import { commandHits, invariantsFor, COMMAND_HINT, PREREG_WRITE, cliPrereg, cliNow, cliRan } from "./lib/prereg.mjs";
+import { commandHits, invariantsFor, preregRows, COMMAND_HINT, PREREG_WRITE, cliPrereg, cliNow, cliRan } from "./lib/prereg.mjs";
 import { SOUL_WRITE, RESERVED, soulState, soulLines, soulGuard, cliSoul, cliUser, setSection, chainedOnly, heldFromMerge, taintOf, soulCapsule, verifySoulCapsule, continuityLine, soulScreen,
          isExternalTool, externalCmd, externalWhat, markTaint, taintMarked, soulTaintGuard } from "./lib/soul.mjs";
 
@@ -2322,7 +2322,8 @@ export function localCheck(allEvents, action, invariants = [], opts = {}) {
   }
   // 0.18.0: an invariant declared with "on": "command" is matched against a shell command and nothing else, and `paths` does not
   // apply to it (lib/prereg.mjs). Here that is a check of kind command; the guard matches a tool call's command itself.
-  if (kind === "command") { const c = commandHits(text, invariants, compilePattern); reasons.push(...c.reasons); invHits.push(...c.hits.map(({ reason, ...h }) => h)); }
+  // `opts.prereg` ({cwd, held}) says where the command would run and what the ledger holds, for a seal's rule (preregContext below).
+  if (kind === "command") { const c = commandHits(text, invariants, compilePattern, opts.prereg ?? {}); reasons.push(...c.reasons); invHits.push(...c.hits.map(({ reason, ...h }) => h)); }
   const evidence = [];
   // The evidence walk touches every event and substring-searches the edit for
   // that event's cause, effect and replacements. It is the whole cost of this
@@ -2354,6 +2355,8 @@ export function localCheck(allEvents, action, invariants = [], opts = {}) {
   const binding = events.filter((e) => e.kind === "correction" && Array.isArray(e.withdrawn) && e.withdrawn.length && !retiredT.has(e.t)).length;
   return { verdict, reasons, evidence: evidence.slice(0, 20), corrections, invariants: invHits, overrides, checked: { events: events.length, corrections: binding, invariants: invariants.length, action: kind, path: path || null } };
 }
+/** What a seal's rule is judged by (lib/prereg.mjs commandHits): the session's directory, and the ledger's seals, read when asked for. */
+const preregContext = (cwd) => ({ cwd: typeof cwd === "string" && cwd ? cwd : process.cwd(), held: () => preregRows(chainRows()) });
 export const exitCodeFor = (verdict, { ci = false } = {}) => (verdict === "blocked" ? 2 : verdict === "no_evidence" && ci ? 1 : 0);
 
 // A withdrawn term matches as a token, never inside another word or a longer number (2026-10-12). Substring
@@ -2484,7 +2487,7 @@ async function cliGuard() {
   // against the command itself, once, whatever the command writes. An evaluator's command passes a prereg's rule, and the pass is
   // said on stderr. The text a command writes is still judged as an edit above, as before.
   if (command) {
-    const c = commandHits(command, invariants, compilePattern);
+    const c = commandHits(command, invariants, compilePattern, preregContext(payload.cwd));
     for (const line of c.allowed) warnings.add(`memory-pulse: ${line}`);
     const hits = c.hits.filter((h) => h.severity === "block");
     if (hits.length) blocked.push({ file: "", command: true, v: { verdict: "blocked", reasons: hits.map((h) => h.reason), corrections: [], invariants: hits } });
@@ -2606,12 +2609,13 @@ async function cliCheck() {
   const invariants = readInvariants();
   const chain0 = verifyChain();
   let tr0 = null; try { tr0 = chain0.ok && existsSync(ledgerPath()) ? ledgerTrustCached(ledgerPath()) : null; } catch { tr0 = null; }
-  let v = localCheck(events, { kind, text, path }, invariants, { chain: chain0.ok && tr0?.failure ? tr0.failure : chain0, seal: verifyLocalSeal(events, readSeal(), chain0) });
+  const prereg = preregContext();
+  let v = localCheck(events, { kind, text, path }, invariants, { chain: chain0.ok && tr0?.failure ? tr0.failure : chain0, seal: verifyLocalSeal(events, readSeal(), chain0), prereg });
   { const line = tr0 && !tr0.failure ? trustLine(ledgerPath(), tr0) : ""; if (line) v.reasons.push(line.replace(/^memory-pulse: /, "")); }
   let receipt = null, integrity = null;
   if (wantReceipt) {
     // the engine does not know "on": it is sent the invariants that apply to this kind of action, so both verdicts judge by one rule (0.18.0)
-    const out = await callApi("/v1/check", { action: { kind, text, path }, events, invariants: invariantsFor(kind, text, invariants), ...(readMemoryKey() ? { verifyKey: true } : {}) });
+    const out = await callApi("/v1/check", { action: { kind, text, path }, events, invariants: invariantsFor(kind, text, invariants, prereg), ...(readMemoryKey() ? { verifyKey: true } : {}) });
     v = { ...out, local: v.verdict };
     receipt = out.receipt ?? null; integrity = out.integrity ?? null;
     if (out.receiptHint && !receipt) v.reasons.push(out.receiptHint);

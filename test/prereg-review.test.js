@@ -395,3 +395,44 @@ test("F1a: the way out always works: a seal's rule never blocks one invocation o
   const s = p.run(["prereg", "settle", "lock", "--verdict", "KEEP", "--file", "verdict.md"]);
   assert.equal(s.status, 0, out(s)); assert.equal(p.bash("ls").status, 0);
 });
+
+test("F1c: a seal's rule applies in the seal's project: where the command would run there or names it, and nowhere else", () => {
+  const p = project(); const other = join(p.base, "other"), near = join(p.base, "p2"); mkdirSync(other); mkdirSync(near); mkdirSync(join(p.dir, "sub"));
+  assert.equal(p.run(["prereg", "seal", "exp-7", "--spec", "spec.md", "--forbid", "train\\.py .*--n 4096"]).status, 0);
+  appendFileSync(p.invariants, JSON.stringify({ id: "no-prod", on: "command", statement: "prod deploys are by hand", patterns: ["/deploy --prod/"], severity: "block" }) + "\n");
+  assert.equal(p.rows()[0].prereg.dir, "~/p", "the row already records where the seal was made");
+  const RUN = "python train.py --n 4096";
+  const shared = { env: { MEMORY_PULSE_LEDGER: p.ledger } };                 // one ledger for every project, as some estates run it
+  const from = (cwd, command, payload = {}) => p.bash(command, { ...shared, cwd, payload }).status;
+  // in the project, and below it
+  assert.equal(from(p.dir, RUN), 2);
+  assert.equal(from(p.dir, `cd runs && ${RUN}`), 2, "a directory below the project, made or not");
+  assert.equal(from(join(p.dir, "sub"), RUN), 2);
+  assert.equal(from(p.dir, `cd ../p && ${RUN}`), 2);
+  assert.equal(from(p.dir, `cd "$SOMEWHERE" && ${RUN}`), 2, "a cd whose target the text does not give leaves the session's directory standing");
+  // another project that shares the ledger: the rule is not matched there
+  assert.equal(from(other, RUN), 0, "the review's case: a seal in one project blocked a command in another");
+  assert.equal(from(other, "ls"), 0);
+  assert.equal(from(p.dir, `cd ${other} && ${RUN}`), 0, "a leading cd out of the project");
+  assert.equal(from(p.dir, `cd .. && ${RUN}`), 0);
+  assert.equal(from(near, RUN), 0, "a directory whose name only begins like the project's");
+  // unless the command leads back into the project, or names it
+  assert.equal(from(other, `cd ${p.dir} && ${RUN}`), 2);
+  assert.equal(from(other, `cd ${p.dir}/sub && ${RUN}`), 2);
+  assert.equal(from(other, `cd ~/p && ${RUN}`), 2);
+  assert.equal(from(other, `cd $HOME/p && ${RUN}`), 2);
+  assert.equal(from(other, `cd ${join(tmpdir(), p.base.split("/").pop(), "p")} && ${RUN}`), 2, "the same directory by another name (a linked temp folder)");
+  assert.equal(from(other, `python ${p.dir}/train.py --n 4096`), 2, "the project's path in the command");
+  assert.equal(from(other, "python ~/p/train.py --n 4096"), 2, "its ~ spelling");
+  assert.equal(from(other, `python ${near}/train.py --n 4096`), 0, "p2 is not p");
+  assert.equal(from(other, "python ~/p2/train.py --n 4096"), 0);
+  // the hook's own cwd is what counts, before the directory the guard process happens to run in
+  assert.equal(from(p.dir, RUN, { cwd: other }), 0); assert.equal(from(other, RUN, { cwd: p.dir }), 2); assert.equal(from(other, `cd sub && ${RUN}`, { cwd: p.dir }), 2);
+  // a rule declared by hand is not scoped: it has no seal and no project
+  assert.equal(from(other, "./deploy --prod"), 2); assert.equal(from(p.dir, "./deploy --prod"), 2);
+  // check --kind command judges by the same rule, from the directory it is run in; Cursor names the workspace
+  assert.equal(p.run(["check", "--kind", "command", "--text", RUN], "", { ...shared, cwd: other }).status, 0);
+  assert.equal(p.run(["check", "--kind", "command", "--text", RUN], "", { ...shared, cwd: p.dir }).status, 2);
+  const cursor = (root) => JSON.parse(p.run(["guard", "--host", "cursor"], JSON.stringify({ hook_event_name: "preToolUse", tool_name: "Shell", tool_input: { command: RUN }, workspace_roots: [root] }), { ...shared, cwd: other }).stdout).permission;
+  assert.equal(cursor(other), "allow"); assert.equal(cursor(p.dir), "deny");
+});
