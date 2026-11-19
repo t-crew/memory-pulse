@@ -562,3 +562,28 @@ test("F8: a block caused only by an invariant or a rule on commands does not off
   const mixed = p.guard("Write", { file_path: "notes.md", content: "the price is $49, see example-old.com" });
   assert.equal(mixed.status, 2); assert.match(mixed.stderr, /memory-pulse guard allow "<term>"/);
 });
+
+// ---- F9: two small ones
+
+test("F9: settle rewrites invariants.jsonl with the mode the file had", { skip: process.platform === "win32" }, () => {
+  const USER = '{"id":"old-domain","statement":"the old domain was retired","patterns":["example-old.com"],"severity":"block"}';
+  const mode = (f) => (statSync(f).mode & 0o777).toString(8);
+  const p = project(); mkdirSync(dirname(p.invariants), { recursive: true }); writeFileSync(p.invariants, USER + "\n"); chmodSync(p.invariants, 0o600);
+  assert.equal(p.run(["prereg", "seal", "exp-7", "--spec", "spec.md", "--forbid", "train\\.py .*--n 4096"]).status, 0);
+  assert.equal(mode(p.invariants), "600", "the seal appends to the file as it is");
+  assert.equal(p.run(["prereg", "settle", "exp-7", "--verdict", "KEEP", "--file", "verdict.md"]).status, 0);
+  assert.equal(readFileSync(p.invariants, "utf8"), USER + "\n"); assert.equal(mode(p.invariants), "600", "private before the settle, private after it");
+  // the same when what settle removes is an orphan rule
+  appendFileSync(p.invariants, JSON.stringify({ id: "prereg:gone:forbid-1", on: "command", statement: "s", patterns: ["/zz/"], severity: "block", owner: { prereg: "gone", row: 9 } }) + "\n");
+  assert.equal(p.run(["prereg", "settle", "gone"]).status, 0);
+  assert.equal(readFileSync(p.invariants, "utf8"), USER + "\n"); assert.equal(mode(p.invariants), "600");
+});
+
+test("F9: ran --since refuses a negative number, and any number that is not a row", () => {
+  const p = project();
+  for (const args of [["--since", "-1"], ["--since=-1"], ["--since", "-20261119"], ["--since", "1.5"], ["--since", "+3"]]) {
+    const r = p.run(["ran", "train", ...args]);
+    assert.equal(r.status, 1, `${args.join(" ")}: ${out(r)}`); assert.match(r.stderr, /--since takes a row number or a time/, args.join(" "));
+  }
+  assert.equal(p.run(["ran", "train", "--since", "2026-11-19T02:15:07Z"]).status, 0, "a time is still a time");
+});
