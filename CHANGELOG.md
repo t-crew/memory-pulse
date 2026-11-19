@@ -42,7 +42,11 @@ script file is not read. A blocked command is recorded in
 
 `memory-pulse prereg verify <id>` is the evaluator's first step. It re-hashes
 every sealed file and prints unchanged, or CHANGED with both hashes; exit 2
-unless every one is unchanged. `memory-pulse prereg settle <id> --verdict
+unless every one is unchanged. A seal is as trustworthy as the ledger's row
+chain: `prereg list`, `verify` and `settle` count a row as a seal only when
+that chain holds it (the walk `memory-pulse verify` makes), a row typed into
+the ledger file or edited afterwards is listed as `NOT ON THE CHAIN` and
+refused, and `prereg verify` ends by saying what its answer rests on. `memory-pulse prereg settle <id> --verdict
 <WORD> --file <verdict-file>` writes one row with the verdict file's sha256,
 citing the seal row, and the forbid patterns stop blocking. `memory-pulse
 prereg list` shows open and settled seals.

@@ -206,7 +206,9 @@ result), use `memory-pulse prereg` and `memory-pulse now`, not a record written 
   Claude Code's `Bash` (and on Cursor's `Shell`, tested against its documented payload only); on Codex treat a
   reserved run as unguarded and read the seal's forbid patterns yourself before you run anything.
 - **The evaluator runs `memory-pulse prereg verify <id>` first.** Exit 2 means a sealed file changed after
-  the seal: stop and say which. `memory-pulse ran '<regex>' --since <seal row>` lists the recorded shell
+  the seal, or the row is `NOT ON THE CHAIN` (typed into the ledger file or edited, not written by this
+  tool): stop and say which. A seal is as trustworthy as the ledger's row chain; when the ledger itself is in
+  question, run `memory-pulse verify`. `memory-pulse ran '<regex>' --since <seal row>` lists the recorded shell
   commands that match since the seal; no match there is not evidence that nothing ran.
 - **Settle with the verdict file.** `memory-pulse prereg settle <id> --verdict <WORD> --file <verdict-file>`
   records the verdict file's hash against the seal row and ends the forbid rules. The verdict is the

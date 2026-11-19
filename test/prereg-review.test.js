@@ -184,3 +184,99 @@ test("F3: an assertion's text and a file's line pass the secret scrubber before 
   p.w("cfg.py", "LIMIT = 500\n");
   assert.match(p.run(["prereg", "verify", "sec"]).stdout, /assert NO LONGER HOLDS {2}cfg\.py :: API_KEY = \[secret\]/, "the name is gone: that much can be told");
 });
+
+// ---- F4: a seal is a row this tool wrote. The ledger's own row chain says which rows those are; a line typed into the file is not one.
+
+const byHand = (p, row) => appendFileSync(p.ledger, JSON.stringify(row) + "\n");
+
+test("F4: a seal row written into the ledger file by hand is not a seal: list shows it NOT ON THE CHAIN, verify exits 2 naming the row, settle refuses it", () => {
+  const p = project(); p.w("spec.md", "# rewritten after the run\n");
+  assert.equal(p.run(["remember", "base", "row one"]).status, 0);
+  byHand(p, { t: 2, cause: "prereg late", effect: "sealed", kind: "event", tags: ["prereg", "prereg:late", "prereg-seal"],
+    prereg: { id: "late", op: "seal", at: "2026-01-01T00:00:00Z", ms: 1767225600000, dir: p.dir, spec: { path: "spec.md", sha256: sha(join(p.dir, "spec.md")), bytes: 1 }, files: [], asserts: [], forbid: [] } });
+  const before = readFileSync(p.ledger, "utf8");
+  const l = p.run(["prereg", "list"]);
+  assert.equal(l.status, 0, out(l));
+  assert.match(l.stdout, /^ {2}late {2}NOT ON THE CHAIN {2}row 2 \(line 2\)/m, l.stdout); assert.match(l.stdout, /not written by this tool/);
+  assert.ok(!/late {2}open/.test(l.stdout), "it is not listed as an open seal");
+  assert.match(l.stdout, /^prereg: no seals on this ledger; 1 row\(s\) that carry a prereg field are not seals$/m);
+  assert.deepEqual(JSON.parse(p.run(["prereg", "list", "--json"]).stdout), [{ id: "late", row: 2, line: 2, at: null, status: "not-on-chain", verdict: null, settled_row: null, settled_at: null }]);
+  const v = p.run(["prereg", "verify", "late"]);
+  assert.equal(v.status, 2, out(v));
+  assert.match(v.stderr, /row 2 \(line 2\) carries a prereg manifest for "late" but is NOT ON THE CHAIN/); assert.match(v.stderr, /not written by this tool/);
+  assert.ok(!/unchanged|sealed at row/.test(out(v)), `nothing is vouched for: ${out(v)}`);
+  const vj = p.run(["prereg", "verify", "late", "--json"]);
+  assert.equal(vj.status, 2); assert.equal(JSON.parse(vj.stdout).ok, false); assert.equal(JSON.parse(vj.stdout).status, "not-on-chain"); assert.equal(JSON.parse(vj.stdout).row, 2);
+  const s = p.run(["prereg", "settle", "late", "--verdict", "KEEP", "--file", "verdict.md"]);
+  assert.equal(s.status, 1, out(s)); assert.match(s.stderr, /row 2 \(line 2\) carries a prereg manifest for "late" but is NOT ON THE CHAIN/); assert.match(s.stderr, /Nothing was written/);
+  assert.equal(readFileSync(p.ledger, "utf8"), before, "list, verify and a refused settle leave the ledger byte for byte");
+  // its stamp is not a time `ran --since` takes
+  const r = p.run(["ran", "x", "--since", "2"]);
+  assert.equal(r.status, 1, out(r)); assert.match(r.stderr, /row 2 carries a prereg field but is not a row this tool wrote/);
+  // a hand-written row that claims a hash is no better: the walk stops at it
+  const q = project(); assert.equal(q.run(["remember", "base", "row one"]).status, 0);
+  byHand(q, { t: 2, cause: "prereg late", effect: "sealed", kind: "event", prev: q.rows()[0].hash, hash: "0".repeat(64),
+    prereg: { id: "late", op: "seal", at: "2026-01-01T00:00:00Z", dir: q.dir, spec: { path: "spec.md", sha256: sha(join(q.dir, "spec.md")) }, files: [], asserts: [], forbid: [] } });
+  assert.equal(q.run(["prereg", "verify", "late"]).status, 2);
+  assert.match(q.run(["prereg", "list"]).stdout, /late {2}NOT ON THE CHAIN {2}row 2/);
+});
+
+test("F4: a real seal row edited in place (its stamp moved back) falls off the chain, and verify stops vouching for it", () => {
+  const p = project();
+  assert.equal(p.run(["prereg", "seal", "exp-7", "--spec", "spec.md"]).status, 0);
+  assert.equal(p.run(["prereg", "verify", "exp-7"]).status, 0);
+  const at = p.rows()[0].prereg.at;
+  writeFileSync(p.ledger, readFileSync(p.ledger, "utf8").replace(`"at":"${at}"`, '"at":"2026-01-01T00:00:00Z"'));
+  const v = p.run(["prereg", "verify", "exp-7"]);
+  assert.equal(v.status, 2, out(v)); assert.match(v.stderr, /row 1 \(line 1\) carries a prereg manifest for "exp-7" but is NOT ON THE CHAIN/);
+  assert.match(p.run(["prereg", "list"]).stdout, /exp-7 {2}NOT ON THE CHAIN {2}row 1/);
+});
+
+test("F4: a row with a prereg field but no usable manifest is reported as not a seal: never `undefined`, never a TypeError", async () => {
+  const p = project();
+  assert.equal(p.run(["remember", "base", "row one"]).status, 0);
+  byHand(p, { t: 2, cause: "prereg bare", effect: "sealed", kind: "event", prereg: { id: "bare", op: "seal" } });
+  byHand(p, { t: 3, cause: "prereg x", effect: "sealed", kind: "event", prereg: true });
+  byHand(p, { t: 4, cause: "prereg y", effect: "sealed", kind: "event", prereg: { op: "seal", at: "2026-01-01T00:00:00Z" } });
+  byHand(p, { cause: "prereg z", effect: "settled KEEP", kind: "event", prereg: { id: "bare", op: "settle" } });
+  const l = p.run(["prereg", "list"]);
+  assert.equal(l.status, 0, out(l)); assert.ok(!/undefined|TypeError/.test(out(l)), out(l));
+  assert.match(l.stdout, /^ {2}bare {2}NOT ON THE CHAIN {2}row 2 \(line 2\)/m); assert.match(l.stdout, /^ {2}\(no id\) {2}NOT ON THE CHAIN {2}row 3 \(line 3\)/m);
+  assert.match(l.stdout, /^ {2}\(no id\) {2}NOT ON THE CHAIN {2}row 4 \(line 4\)/m); assert.match(l.stdout, /^ {2}bare {2}NOT ON THE CHAIN {2}row \? \(line 5\)/m);
+  assert.match(l.stdout, /4 row\(s\) that carry a prereg field are not seals/);
+  for (const args of [["prereg", "verify", "bare"], ["prereg", "verify", "bare", "--json"]]) {
+    const v = p.run(args);
+    assert.equal(v.status, 2, out(v)); assert.ok(!/undefined|TypeError/.test(out(v)), out(v));
+  }
+  assert.match(p.run(["prereg", "verify", "bare"]).stderr, /row 2 \(line 2\) carries a prereg manifest for "bare" but is NOT ON THE CHAIN/);
+  const s = p.run(["prereg", "settle", "bare", "--verdict", "KEEP", "--file", "verdict.md"]);
+  assert.equal(s.status, 1, out(s)); assert.ok(!/TypeError/.test(out(s)));
+  // the same holds for a row that is on the chain but whose manifest is not one this tool writes (only the writer's own function can make one)
+  const { chainAppend } = await import("../server.mjs");
+  const q = project(); mkdirSync(dirname(q.ledger), { recursive: true });
+  chainAppend(q.ledger, { cause: "prereg bare", effect: "sealed", kind: "event", prereg: { id: "bare", op: "seal" } });
+  const ql = q.run(["prereg", "list"]);
+  assert.match(ql.stdout, /^ {2}bare {2}UNUSABLE MANIFEST {2}row 1 \(line 1\)/m, out(ql)); assert.ok(!/undefined|TypeError/.test(out(ql)));
+  const qv = q.run(["prereg", "verify", "bare"]);
+  assert.equal(qv.status, 2, out(qv)); assert.match(qv.stderr, /row 1 \(line 1\) carries a prereg field for "bare" that is not a manifest this tool writes/); assert.match(qv.stderr, /not written by this tool/);
+});
+
+test("F4: prereg verify ends with what its answer rests on, and README and SKILL state the limit", () => {
+  const p = project();
+  assert.equal(p.run(["remember", "base", "row one"]).status, 0);
+  assert.equal(p.run(["prereg", "seal", "exp-7", "--spec", "spec.md"]).status, 0);
+  const v = p.run(["prereg", "verify", "exp-7"]);
+  assert.equal(v.status, 0, out(v));
+  assert.equal(v.stdout.trimEnd().split("\n").at(-1), "rests on: the ledger's row chain (row 2 is on it). memory-pulse verify checks the chain, the engine's seal and this machine's anchor.");
+  assert.match(JSON.parse(p.run(["prereg", "verify", "exp-7", "--json"]).stdout).rests_on, /row chain/);
+  // a stray row for the same id beside the real seal is named, and the real seal still answers
+  byHand(p, { t: 3, cause: "prereg exp-7", effect: "settled KEEP", kind: "event", prereg: { id: "exp-7", op: "settle", at: "2026-01-01T00:00:00Z", verdict: "KEEP", file: { path: "verdict.md", sha256: sha(join(p.dir, "verdict.md")) }, seal: 2 } });
+  const w = p.run(["prereg", "verify", "exp-7"]);
+  assert.equal(w.status, 0, out(w)); assert.match(w.stdout, /\(open\)/, "a settle row typed by hand settles nothing");
+  assert.match(w.stdout, /row 3 \(line 3\) also carries a prereg field for this id and is NOT ON THE CHAIN/);
+  const read = (...parts) => readFileSync(join(ROOT, ...parts), "utf8").replace(/\s+/g, " ");
+  for (const [name, text] of [["README", read("README.md")], ["SKILL", read("skills", "memory-pulse", "SKILL.md")]]) {
+    assert.match(text, /a seal is as trustworthy as the ledger's row chain/i, `${name} states the limit`);
+    assert.ok(text.includes("NOT ON THE CHAIN"), `${name} names what list prints for a row this tool did not write`);
+  }
+});

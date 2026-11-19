@@ -311,6 +311,23 @@ export function inspectChain(input) {
     tail: { keepBytes: keep, rows: tailRows.length, allBad: tailRows.length > 0 && selfValid === 0, headT: maxT || null } };
 }
 
+/** 0.18.0: the ledger's rows as the row chain sees them, [{e, chained, line}], for a reader that must know which rows the writer
+ *  wrote (memory-pulse prereg). One pass of walkChain, the walk `verify` uses: a row is `chained` when it carries a hash and the
+ *  walk accepted it. A row with no hash is not, and neither is any row from the first break on: the walk stops there, and what
+ *  it has accepted ends at the row whose hash is its head. */
+export function chainRows(path = ledgerPath()) {
+  if (!existsSync(path)) return [];
+  const entries = lineEntries(readFileSync(path)).filter((x) => x.text.trim());
+  const res = walkChain(entries.map((x) => x.text.trim())).result;
+  const last = res.ok ? entries.length - 1 : res.head ? entries.findIndex((x) => { try { return JSON.parse(x.text).hash === res.head; } catch { return false; } }) : -1;
+  const out = [];
+  for (const [i, x] of entries.entries()) {
+    let e = null; try { e = JSON.parse(x.text); } catch { /* a torn line is no row */ }
+    if (e && typeof e === "object" && !Array.isArray(e)) out.push({ e, chained: i <= last && typeof e.hash === "string", line: x.line });
+  }
+  return out;
+}
+
 const lockPathFor = (ledger) => `${ledger}.lock`;
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 const pidAlive = (pid) => { if (!Number.isInteger(pid) || pid <= 0) return false; try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
@@ -3598,8 +3615,8 @@ if (isMain) {
   if (sub === "logout") { const { cliLogout } = await import("./lib/login.mjs"); process.exit(cliLogout()); }
   if (sub === "board") { globalThis.__MEMORY_PULSE_CORE__ = { chainAppend, verifyChain, instructionLike, readEvents, buildCapsule, API, KEY }; const { cliBoard } = await import("./lib/board.mjs"); process.exit(await cliBoard(process.argv.slice(3))); }
   if (sub === "now") process.exit(cliNow(process.argv.slice(3)));
-  if (sub === "prereg") process.exit(cliPrereg(process.argv.slice(3), { ledgerPath, readEvents, appendEvent }));
-  if (sub === "ran") process.exit(cliRan(process.argv.slice(3), { ledgerPath, readEvents }));
+  if (sub === "prereg") process.exit(cliPrereg(process.argv.slice(3), { ledgerPath, readEvents, appendEvent, chainRows }));
+  if (sub === "ran") process.exit(cliRan(process.argv.slice(3), { ledgerPath, readEvents, chainRows }));
   if (sub === "lint") { await cliLint(); process.exit(0); }
   if (sub === "report") { cliReport(); process.exit(0); }
   if (sub === "bench") { await cliBench(); process.exit(0); }

@@ -516,6 +516,17 @@ never unchanged. Three more things are named and do not change the exit code:
 an asserted value that no longer holds, files beside the spec that are newer
 than the seal, and the commands the guard blocked under the seal.
 
+**A seal is as trustworthy as the ledger's row chain, and no more.**
+`prereg list`, `prereg verify` and `prereg settle` count a row as a seal only
+when the ledger's row chain holds it, by the same walk `memory-pulse verify`
+makes. A row typed into the ledger file, or a seal row edited after it was
+written, is listed as `NOT ON THE CHAIN`. `prereg verify` exits 2 for it, names
+the row and says it was not written by this tool, and `prereg settle` refuses
+it. `prereg verify` ends with one line that says what its answer rests on.
+Someone who rewrites the ledger and chains every row again can still make a
+seal: `memory-pulse verify` is the check for that, against the engine's seal
+and this machine's anchor.
+
 `memory-pulse ran '<regex>' --since 12` lists the shell commands the capture
 hook recorded that match, with time and session, since the seal at row 12, and
 marks an evaluator's. It reads what capture keeps: the first 200 characters of
