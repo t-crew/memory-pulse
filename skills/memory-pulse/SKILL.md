@@ -195,7 +195,9 @@ result), use `memory-pulse prereg` and `memory-pulse now`, not a record written 
 - **Seal with assertions and forbid patterns.** `memory-pulse prereg seal <id> --spec <file> --file <path>
   --assert '<path>::<text>' --forbid '<regex>'`. Give every constant the spec states about a deployed system an
   `--assert` against the file that defines it, never against a summary: a failed assertion writes nothing and
-  prints the line with the real value. Give every run the spec reserves for the evaluator a `--forbid`,
+  prints the line with the real value. An assertion holds only when a line of code states the text whole: not
+  as a prefix of a longer value (`LIMIT = 50` against `LIMIT = 500`) and not inside a `#` or `//` comment.
+  Never assert a secret: the text is scrubbed before it is kept. Give every run the spec reserves for the evaluator a `--forbid`,
   written to match the run (the program and its flag).
 - **A blocked command is the evaluator's.** The block starts `memory-pulse guard: blocked.` and says
   `sealed by prereg <id> at row N`. Do not reword the command and do not add the marker yourself: hand the

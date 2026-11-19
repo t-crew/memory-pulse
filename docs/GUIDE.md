@@ -792,7 +792,7 @@ bank thawed at t
 
 Pre-registered work has two roles: a builder writes a spec, seals it and builds, and a separate evaluator judges the result. These commands arrive in 0.18.0, and each answers a slip from one night of such work. A time stamp was typed from memory into a record ("00:3x UTC" when the clock said 00:15). The builder ran its own experiment at sizes its own amendment had reserved for confirmation, and nothing stopped the run or recorded it. A constant about a deployed system was copied into the sealed spec from a summary: 0.5, where the run logs and the shipped file said 0.25.
 
-`now` prints the machine clock as the two stamps a record uses. Paste a stamp from it; never type one. `prereg seal` checks every `--assert '<path>::<text>'` first, against the file that defines the value: the file must contain the text as written. When it does not, the seal prints the line that carries the name before the first `=` or `:`, so the real value is on the screen, exits 1 and writes nothing:
+`now` prints the machine clock as the two stamps a record uses. Paste a stamp from it; never type one. `prereg seal` checks every `--assert '<path>::<text>'` first, against the file that defines the value: a line of the file must state the text whole. A trailing comment is set aside (`#` or `//` to the end of the line, where it starts the line or follows a space), and the text may not have a letter, a digit, an underscore or a dot directly before or after it, so `THRESHOLD = 0.2` does not hold against `THRESHOLD = 0.25`, and a value that only a comment mentions does not hold. When an assertion does not hold, the seal prints the line that carries the name before the first `=` or `:`, so the real value is on the screen, exits 1 and writes nothing:
 
 ```sh run
 mkdir -p shipped && printf 'WINDOW = 64\nTHRESHOLD = 0.25\n' > shipped/params.py
@@ -803,7 +803,7 @@ npx -y memory-pulse@0.17.2 prereg seal exp-7 --spec spec.md --assert 'shipped/pa
 ```text expect
 a record's stamp is pasted from these lines, never typed from memory
 memory-pulse prereg seal exp-7: 1 of 1 assertion(s) failed; nothing was written
-  assert FAILED: shipped/params.py does not contain "THRESHOLD = 0.5"
+  assert FAILED: shipped/params.py does not contain "THRESHOLD = 0.5" as a whole value outside a comment
     shipped/params.py:2: THRESHOLD = 0.25
 exit 1
 ```
@@ -818,7 +818,7 @@ printf '%s' '{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"
 ```
 ```text expect
   spec    spec.md  sha256 3b2484bb7732d5aedd6ea3191deb69adf355f0cce9d4c2b739b789599063e027
-  assert  shipped/params.py :: THRESHOLD = 0.25  (holds)
+  assert  shipped/params.py :: THRESHOLD = 0.25  (holds)  shipped/params.py:2: THRESHOLD = 0.25
   forbid  /train\.py .*--n (4096|8192)/  blocked by the guard as a shell command while this seal is open
 The forbid patterns are a tripwire against inattention, not a security boundary: a command line that starts with MEMORY_PULSE_ROLE=evaluator passes.
 exit 0
@@ -830,7 +830,7 @@ reserves this command for the evaluator (matched /train\.py .*--n (4096|8192)/);
 
 What the forbid rule is, stated plainly: a tripwire against inattention, not a security boundary. Anyone can type the marker. A command inside a script file is not read. The pattern is matched against the whole command line, so write it to match the run (the program and its flag), not every mention of the size; a file edit that mentions the command is never matched, as the last line above shows. What it does is stop the builder who forgot, and leave a record: a blocked command is written to `.memory-pulse/violations.jsonl` with the rule and the command, secrets scrubbed. It fires where the guard sees shell commands, which is Claude Code's `Bash`, and Cursor's `Shell` as tested against its documented payload (not yet run inside Cursor itself); the hook `install-hook --codex` writes does not match Codex's shell tool, and through the plugin that is unmeasured, so treat the rule as not enforced on Codex.
 
-The evaluator starts with `prereg verify`. It re-hashes every sealed file and prints `unchanged`, or `CHANGED` with both hashes, or `MISSING`; exit 2 unless every sealed file is unchanged. It also says when an asserted value no longer holds, names files beside the spec that are newer than the seal, and counts the commands the guard blocked under the seal; none of those three changes the exit code. `ran` lists the shell commands the capture hook recorded that match a pattern, with time and session, and marks an evaluator's; `--since` takes the seal's row number or a time as `now` prints it. It reads the first 200 characters of each command, which is what capture keeps, and a command run where the hook is not installed is not there, so no match is never reported as "nothing ran":
+The evaluator starts with `prereg verify`. It re-hashes every sealed file and prints `unchanged`, or `CHANGED` with both hashes, or `MISSING`; exit 2 unless every sealed file is unchanged. It also says when an asserted value no longer holds (checked by the rule the seal used), names files beside the spec that are newer than the seal, and counts the commands the guard blocked under the seal; none of those three changes the exit code. `ran` lists the shell commands the capture hook recorded that match a pattern, with time and session, and marks an evaluator's; `--since` takes the seal's row number or a time as `now` prints it. It reads the first 200 characters of each command, which is what capture keeps, and a command run where the hook is not installed is not there, so no match is never reported as "nothing ran":
 
 ```sh run
 npx -y memory-pulse@0.17.2 prereg verify exp-7; echo "exit $?"

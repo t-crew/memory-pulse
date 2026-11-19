@@ -91,3 +91,96 @@ test("F2b: the rows' effects are not bare words: sealed <12 hex of the spec's sh
   assert.equal(again.status, 1); assert.match(again.stderr, /it was settled KEEP at row 2\. Nothing was written/);
   assert.match(p.run(["prereg", "list"]).stdout, /^ {2}exp-7 {2}settled KEEP {2}row 1 /m);
 });
+
+// ---- F3: an assertion is a statement about a value. It holds when a line of code states it whole, not on a prefix of the real
+// value and not on a value that only a comment mentions.
+
+const CFG = ["LIMIT = 500", "RATE = 0.25  # was RATE = 0.5", "NAME = 'a::b'", 'color = "#fff"', 'URL = "http://example.com/a"  // the old host is gone', "// MAXN = 9", "# OLD = 1", '  "window": 64,', "threshold_ms=250"].join("\n") + "\n";
+
+test("F3: an assertion holds on a whole value in a line of code: a prefix of the value, a value in a comment and a part of a name do not hold", () => {
+  const p = project(); p.w("cfg.py", CFG);
+  const seal = (id, ...texts) => p.run(["prereg", "seal", id, "--spec", "spec.md", ...texts.flatMap((t) => ["--assert", `cfg.py::${t}`])]);
+  // the review's two, then the neighbours of each
+  for (const [text, shows] of [
+    ["LIMIT = 50", /cfg\.py:1: LIMIT = 500/],                    // a prefix of 500
+    ["RATE = 0.5", /cfg\.py:2: RATE = 0\.25 {2}# was RATE = 0\.5/],  // only the comment says 0.5
+    ["RATE = 0.2", /cfg\.py:2: RATE = 0\.25/],                    // a prefix of 0.25
+    ["RATE = 0", /cfg\.py:2: RATE = 0\.25/],                      // the value goes on after a dot
+    ["IMIT = 500", null],                                         // the name goes on before it
+    ["ATE = 0.25", null],
+    ["MAXN = 9", /cfg\.py:6: \/\/ MAXN = 9/],                     // a line that is a comment
+    ["OLD = 1", /cfg\.py:7: # OLD = 1/],
+    ["threshold_ms=25", /cfg\.py:9: threshold_ms=250/],
+  ]) {
+    const r = seal("a1", text);
+    assert.equal(r.status, 1, `${text}: ${out(r)}`);
+    assert.match(r.stderr, /1 of 1 assertion\(s\) failed; nothing was written/, text);
+    assert.ok(r.stderr.includes(`assert FAILED: cfg.py does not contain "${text}" as a whole value outside a comment`), `${text}: ${r.stderr}`);
+    if (shows) assert.match(r.stderr, shows, `${text}: the line with the real value is on the screen`);
+  }
+  assert.ok(!existsSync(p.ledger), "nothing was written by any of them");
+  // each of these is stated whole by a line of code
+  const holds = ["LIMIT = 500", "RATE = 0.25", "NAME = 'a::b'", 'color = "#fff"', 'URL = "http://example.com/a"', '"window": 64', "threshold_ms=250", "500"];
+  const ok = seal("a2", ...holds);
+  assert.equal(ok.status, 0, out(ok));
+  // the output shows where: path:line and the line as the file has it
+  assert.ok(ok.stdout.includes("  assert  cfg.py :: LIMIT = 500  (holds)  cfg.py:1: LIMIT = 500\n"), ok.stdout);
+  assert.ok(ok.stdout.includes("  assert  cfg.py :: RATE = 0.25  (holds)  cfg.py:2: RATE = 0.25  # was RATE = 0.5\n"), ok.stdout);
+  assert.ok(ok.stdout.includes('  assert  cfg.py :: "window": 64  (holds)  cfg.py:8:   "window": 64,\n'), ok.stdout);
+  // and the row keeps the line number
+  const m = p.rows()[0].prereg;
+  assert.deepEqual(m.asserts.map((a) => [a.text, a.line]), [["LIMIT = 500", 1], ["RATE = 0.25", 2], ["NAME = 'a::b'", 3], ['color = "#fff"', 4], ['URL = "http://example.com/a"', 5], ['"window": 64', 8], ["threshold_ms=250", 9], ["500", 1]]);
+  assert.deepEqual(m.asserts[0], { path: "cfg.py", text: "LIMIT = 500", sha256: sha(join(p.dir, "cfg.py")), line: 1 });
+});
+
+test("F3: text that is empty, blank, without a letter or digit, or more than one line is refused before anything is checked", () => {
+  const p = project(); p.w("cfg.py", CFG);
+  for (const text of ["", " ", "\t ", "=", "---", " = ", "A = 1\nB = 2"]) {
+    const r = p.run(["prereg", "seal", "a1", "--spec", "spec.md", "--assert", `cfg.py::${text}`]);
+    assert.equal(r.status, 1, `${JSON.stringify(text)}: ${out(r)}`);
+    assert.match(r.stderr, /--assert takes '<path>::<text>'/, JSON.stringify(text)); assert.match(r.stderr, /nothing was written/);
+    assert.ok(!/assertion\(s\) failed/.test(r.stderr), "refused as written, not checked against the file");
+  }
+  assert.match(p.run(["prereg", "seal", "a1", "--spec", "spec.md", "--assert", "cfg.py::="]).stderr, /the text needs a letter or a digit/);
+  assert.match(p.run(["prereg", "seal", "a1", "--spec", "spec.md", "--assert", "cfg.py::A = 1\nB = 2"]).stderr, /the text is one line/);
+  assert.ok(!existsSync(p.ledger));
+});
+
+test("F3: prereg verify re-checks an assertion by the same rule", () => {
+  const p = project(); p.w("cfg.py", CFG);
+  assert.equal(p.run(["prereg", "seal", "a1", "--spec", "spec.md", "--assert", "cfg.py::RATE = 0.25", "--assert", "cfg.py::LIMIT = 500"]).status, 0);
+  const before = p.run(["prereg", "verify", "a1"]);
+  assert.match(before.stdout, /assert holds {12}cfg\.py :: RATE = 0\.25/); assert.match(before.stdout, /assert holds {12}cfg\.py :: LIMIT = 500/);
+  // the value moves; the old one survives as a prefix and in a comment
+  p.w("cfg.py", CFG.replace("LIMIT = 500", "LIMIT = 5000").replace("RATE = 0.25  # was RATE = 0.5", "RATE = 0.3  # was RATE = 0.25"));
+  const after = p.run(["prereg", "verify", "a1"]);
+  assert.match(after.stdout, /assert NO LONGER HOLDS {2}cfg\.py :: RATE = 0\.25/, after.stdout); assert.match(after.stdout, /assert NO LONGER HOLDS {2}cfg\.py :: LIMIT = 500/, after.stdout);
+  assert.deepEqual(JSON.parse(p.run(["prereg", "verify", "a1", "--json"]).stdout).asserts.map((a) => a.holds), [false, false]);
+});
+
+test("F3: an assertion's text and a file's line pass the secret scrubber before they are printed or stored", () => {
+  const p = project(); const KEY = "sk-live-abcdefghijklmnop1234", WRONG = "sk-live-zzzzzzzzzzzzzzzz0000";
+  p.w("cfg.py", `API_KEY = "${KEY}"\nLIMIT = 500\n`);
+  const bad = p.run(["prereg", "seal", "sec", "--spec", "spec.md", "--assert", `cfg.py::API_KEY = "${WRONG}"`]);
+  assert.equal(bad.status, 1, out(bad));
+  assert.ok(!out(bad).includes("abcdefghijklmnop") && !out(bad).includes("zzzzzzzz"), `a refusal prints neither the file's secret nor the asserted one: ${out(bad)}`);
+  assert.match(bad.stderr, /cfg\.py:1: API_KEY = \[secret\]/);
+  const ok = p.run(["prereg", "seal", "sec", "--spec", "spec.md", "--assert", `cfg.py::API_KEY = "${KEY}"`, "--assert", "cfg.py::LIMIT = 500"]);
+  assert.equal(ok.status, 0, out(ok));
+  assert.ok(!out(ok).includes("abcdefghijklmnop"), out(ok));
+  assert.ok(!readFileSync(p.ledger, "utf8").includes("abcdefghijklmnop"), "the row does not hold the secret");
+  assert.match(ok.stdout, /assert {2}cfg\.py :: API_KEY = \[secret\] {2}\(holds\) {2}cfg\.py:1: API_KEY = \[secret\]/);
+  assert.match(ok.stdout, /kept scrubbed/, "the builder is told the row does not record the value");
+  const a = p.rows()[0].prereg.asserts;
+  assert.deepEqual(a[0], { path: "cfg.py", text: "API_KEY = [secret]", sha256: sha(join(p.dir, "cfg.py")), line: 1, scrubbed: true });
+  assert.equal(a[1].scrubbed, undefined, "an assertion the scrubber leaves alone is kept as written");
+  // verify: while the file is as it was sealed, the assertion holds; once it changed, a scrubbed value cannot be compared, and verify says so
+  const same = p.run(["prereg", "verify", "sec"]);
+  assert.match(same.stdout, /assert holds {12}cfg\.py :: API_KEY = \[secret\]/, same.stdout); assert.ok(!out(same).includes("abcdefghijklmnop"));
+  p.w("cfg.py", `API_KEY = "sk-live-another0000000000key"\nLIMIT = 500\n`);
+  const moved = p.run(["prereg", "verify", "sec"]);
+  assert.match(moved.stdout, /assert NOT COMPARED {5}cfg\.py :: API_KEY = \[secret\]/, moved.stdout); assert.match(moved.stdout, /assert holds {12}cfg\.py :: LIMIT = 500/);
+  assert.deepEqual(JSON.parse(p.run(["prereg", "verify", "sec", "--json"]).stdout).asserts.map((x) => x.holds), [null, true]);
+  p.w("cfg.py", "LIMIT = 500\n");
+  assert.match(p.run(["prereg", "verify", "sec"]).stdout, /assert NO LONGER HOLDS {2}cfg\.py :: API_KEY = \[secret\]/, "the name is gone: that much can be told");
+});

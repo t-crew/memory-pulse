@@ -18,8 +18,13 @@ A stamp is pasted from it, never typed.
 
 `memory-pulse prereg seal <id> --spec <file>` seals a spec. Every
 `--assert '<path>::<text>'` is checked first, against the file that defines
-the value. If the file does not contain the text, the seal prints the line
-that does carry the name, exits 1 and writes nothing. A seal that passes writes
+the value. A line of the file must state the text whole: a trailing `#` or
+`//` comment is set aside, and the text may not have a letter, a digit, an
+underscore or a dot directly before or after it, so a prefix of the real value
+and a value that only a comment mentions do not hold. If no line states it,
+the seal prints the line that does carry the name, exits 1 and writes nothing;
+if one does, the seal prints the file, the line number and the line. The text
+and the lines shown pass the secret scrubber before they are printed or kept. A seal that passes writes
 one ledger row: the stamp, read from the clock by the code, the sha256 of the
 spec and of each `--file`, the assertions and the forbid patterns. No option
 takes a stamp. The row reads `prereg <id> -> sealed <first 12 characters of

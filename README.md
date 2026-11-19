@@ -442,23 +442,33 @@ wrong in three ways, and since 0.18.0 each is a command instead of a habit.
 ```
 $ npx memory-pulse prereg seal exp-7 --spec spec.md --assert 'shipped/params.py::THRESHOLD = 0.5'
 memory-pulse prereg seal exp-7: 1 of 1 assertion(s) failed; nothing was written
-  assert FAILED: shipped/params.py does not contain "THRESHOLD = 0.5"
+  assert FAILED: shipped/params.py does not contain "THRESHOLD = 0.5" as a whole value outside a comment
     shipped/params.py:2: THRESHOLD = 0.25
 
 $ npx memory-pulse prereg seal exp-7 --spec spec.md --assert 'shipped/params.py::THRESHOLD = 0.25' --forbid 'train\.py .*--n (4096|8192)'
 prereg exp-7: sealed at row 12
 stamp: 2026-11-19 02:41 UTC · 2026-11-19T02:41:10Z (paste this)
   spec    spec.md  sha256 3b2484bb7732d5aedd6ea3191deb69adf355f0cce9d4c2b739b789599063e027
-  assert  shipped/params.py :: THRESHOLD = 0.25  (holds)
+  assert  shipped/params.py :: THRESHOLD = 0.25  (holds)  shipped/params.py:2: THRESHOLD = 0.25
   forbid  /train\.py .*--n (4096|8192)/  blocked by the guard as a shell command while this seal is open
 ```
 
 What a seal does, in order:
 
-- **Every `--assert '<path>::<text>'` is checked first.** The file must contain
-  the text as written. When it does not, the seal prints the line that carries
-  the name before the first `=` or `:`, so the real value is on the screen,
-  exits 1 and writes nothing.
+- **Every `--assert '<path>::<text>'` is checked first.** A line of the file
+  must state the text whole. A trailing comment is set aside first (`#` or `//`
+  to the end of the line, where it starts the line or follows a space), and the
+  text may not have a letter, a digit, an underscore or a dot directly before
+  or after it. So `LIMIT = 50` does not hold against `LIMIT = 500`, and
+  `RATE = 0.5` does not hold against `RATE = 0.25  # was RATE = 0.5`. When an
+  assertion does not hold, the seal prints the line that carries the name
+  before the first `=` or `:`, so the real value is on the screen, exits 1 and
+  writes nothing. When it holds, the seal prints the file, the line number and
+  the line, and the row keeps the line number. Text with no letter or digit,
+  or more than one line, is refused as written. The text and every line shown
+  pass the secret scrubber first: an assertion it changes is kept scrubbed and
+  marked, and `prereg verify` can compare it only while the file is as it was
+  sealed (after that it prints `NOT COMPARED`).
 - **Then it writes one ledger row**, through the same writer as every other
   row: `prereg exp-7 -> sealed 3b2484bb7732` (the first 12 characters of the
   spec's sha256), with the stamp read from the clock by the

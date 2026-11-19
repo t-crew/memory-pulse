@@ -76,7 +76,7 @@ test("a passing seal writes exactly one row through the writer, the chain still 
   assert.equal(m.id, "exp-7"); assert.equal(m.op, "seal");
   assert.deepEqual(m.spec, { path: "docs/spec.md", sha256: sha(join(p.dir, "docs", "spec.md")), bytes: readFileSync(join(p.dir, "docs", "spec.md")).length });
   assert.deepEqual(m.files, [{ path: "src/run.py", sha256: sha(join(p.dir, "src", "run.py")), bytes: readFileSync(join(p.dir, "src", "run.py")).length }]);
-  assert.deepEqual(m.asserts, [{ path: "shipped/params.py", text: "THRESHOLD = 0.25", sha256: sha(join(p.dir, "shipped", "params.py")) }]);
+  assert.deepEqual(m.asserts, [{ path: "shipped/params.py", text: "THRESHOLD = 0.25", sha256: sha(join(p.dir, "shipped", "params.py")), line: 3 }]);
   assert.deepEqual(m.forbid, [`/${FORBID}/`]);
   // the stamp is the machine clock at the write, to the second
   assert.match(m.at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
@@ -88,7 +88,7 @@ test("a passing seal writes exactly one row through the writer, the chain still 
   assert.ok(stamp, r.stdout); assert.equal(stamp[2], m.at); assert.equal(stamp[1], `${m.at.slice(0, 10)} ${m.at.slice(11, 16)} UTC`);
   assert.ok(r.stdout.includes(`spec    docs/spec.md  sha256 ${m.spec.sha256}`), r.stdout);
   assert.ok(r.stdout.includes(`file    src/run.py  sha256 ${m.files[0].sha256}`), r.stdout);
-  assert.match(r.stdout, /assert {2}shipped\/params\.py :: THRESHOLD = 0\.25 {2}\(holds\)/);
+  assert.match(r.stdout, /assert {2}shipped\/params\.py :: THRESHOLD = 0\.25 {2}\(holds\) {2}shipped\/params\.py:3: THRESHOLD = 0\.25$/m);
   assert.ok(r.stdout.includes(`forbid  /${FORBID}/`), r.stdout);
   assert.match(r.stdout, /tripwire against inattention, not a security boundary/);
   assert.match(r.stdout, /memory-pulse prereg verify exp-7/);
