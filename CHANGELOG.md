@@ -56,7 +56,11 @@ list` shows it, and `prereg settle <id>` removes it without writing a row. A com
 `MEMORY_PULSE_ROLE=evaluator` passes. This is a tripwire against inattention,
 not a security boundary: anyone can type the marker, and a command inside a
 script file is not read. A blocked command is recorded in
-`.memory-pulse/violations.jsonl`.
+`.memory-pulse/violations.jsonl`. The rule fires where the guard sees shell
+commands: Claude Code's `Bash`, and Cursor's `Shell` as tested against its
+documented payload (not yet run inside Cursor itself). The hook `install-hook
+--codex` writes does not match Codex's shell tool, so the rule is not enforced
+on Codex.
 
 `memory-pulse prereg verify <id>` is the evaluator's first step. It re-hashes
 every sealed file and prints unchanged, or CHANGED with both hashes; exit 2
@@ -81,6 +85,17 @@ command of a `Bash` tool call and by `check --kind command`, never against a
 file edit, and `paths` does not apply to it. An invariant without `on` behaves
 exactly as before. `check --receipt` sends the engine only the invariants that
 apply to the kind of action it is asked about.
+
+Limits. A seal is as trustworthy as the ledger's row chain. `state merge` does
+not carry a seal's rules: a merged seal row is listed on the other ledger under
+its new row number, but `invariants.jsonl` does not travel, so nothing is
+blocked there, and a merged settle row's `seal` field still names the row
+number it had on its own branch. `repair --adopt-quarantine` does not carry
+the manifest: a seal row that was moved aside comes back as an ordinary row,
+not as a seal. A forbid pattern is matched against the command line the guard
+is shown, so a command inside a script file, or one built from variables, is
+not read. An assertion is compared line by line: a value that spans lines
+cannot be asserted, and one the secret scrubber changes is kept scrubbed.
 
 ## 0.17.2 (17 November 2026)
 

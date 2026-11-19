@@ -48,7 +48,7 @@ import { savedKey } from "./lib/login.mjs";
 import { hostOf, normalizeHook } from "./lib/hosts.mjs";
 import { drift as driftWith } from "./lib/drift.mjs";
 import { advisoryTerm } from "./lib/advisory.mjs";
-import { commandHits, invariantsFor, preregRows, COMMAND_HINT, PREREG_WRITE, cliPrereg, cliNow, cliRan } from "./lib/prereg.mjs";
+import { commandHits, invariantsFor, preregRows, COMMAND_HINT, INVARIANT_HINT, PREREG_WRITE, cliPrereg, cliNow, cliRan } from "./lib/prereg.mjs";
 import { SOUL_WRITE, RESERVED, soulState, soulLines, soulGuard, cliSoul, cliUser, setSection, chainedOnly, heldFromMerge, taintOf, soulCapsule, verifySoulCapsule, continuityLine, soulScreen,
          isExternalTool, externalCmd, externalWhat, markTaint, taintMarked, soulTaintGuard } from "./lib/soul.mjs";
 
@@ -2541,6 +2541,7 @@ async function cliGuard() {
   const inQuestion = !chainBroken && allReasons.some((r) => /^ledger in question/.test(r));
   const sealStale = !chainBroken && !inQuestion && allReasons.some((r) => /^sealed head mismatch/.test(r));
   const envPrefix = process.env.MEMORY_PULSE_LEDGER ? `MEMORY_PULSE_LEDGER=${process.env.MEMORY_PULSE_LEDGER} ` : "";
+  const withdrawnHit = allReasons.some((r) => /" was withdrawn at (?:agent )?ledger t\d+/.test(r));
   const hint = inQuestion
     ? `The rows verify as a chain, but not against what this machine last saw: an older copy of the ledger was put back, or rows this machine's writer marked were changed and re-chained. Writes to the ledger, its files and the trust store are blocked until the newer copy is restored, or \`${envPrefix}memory-pulse anchor accept "<why>"\` records that you trust the ledger as it stands. Other work is not blocked. \`memory-pulse verify\` names what differs.`
     : chainBroken
@@ -2548,10 +2549,12 @@ async function cliGuard() {
     : sealStale
       ? `Your rows verify (chain OK) but the engine's last seal no longer matches them: either something rewrote the ledger and re-chained it, or the engine sealed a different view. \`memory-pulse verify --json\` shows both sides. If you trust the file as it stands: \`${envPrefix}memory-pulse seal accept "<why>"\` records that decision as a ledger row and sets the old seal aside; the next engine call issues a fresh one.`
       : blocked.every((b) => b.command) ? COMMAND_HINT
+      // 0.18.0 (review): an override answers a withdrawn value. A block with none (an invariant, a rule on commands) does not offer one
+      : !withdrawnHit ? (blocked.some((b) => b.command) ? `${INVARIANT_HINT}\n${COMMAND_HINT}` : INVARIANT_HINT)
       : 'Use the corrected value (mentioning both old and new in a comparison is fine), record a new correction if the old one is wrong, or `memory-pulse guard allow "<term>" --path <prefix> "<reason>"` if this is a false block.';
   if (cursor) {
     const plain = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
-    process.stdout.write(JSON.stringify({ permission: "deny", user_message: `memory-pulse guard: blocked.\n${plain}`, agent_message: `memory-pulse guard blocked this edit.\n${plain}\n${hint}` }));
+    process.stdout.write(JSON.stringify({ permission: "deny", user_message: `memory-pulse guard: blocked.\n${plain}`, agent_message: `memory-pulse guard blocked this ${command ? "command" : "edit"}.\n${plain}\n${hint}` }));
     process.exit(0);
   }
   process.stderr.write(`${C.red(C.bold("memory-pulse guard: blocked."))}\n${lines.join("\n")}\n${C.dim(hint)}\n`);
@@ -2960,7 +2963,7 @@ Commands
   weights                             what each memory did: check outcomes when it was shown and when it sat out at random; retired ones marked
   adopt [--yes] [--json]              enforce the corrections you already keep: Claude Code feedback memories, CLAUDE.md, AGENTS.md, rules files (shows them; --yes records them)
   prereg seal <id> --spec <file> [--file <path>]... [--assert '<path>::<text>']... [--forbid '<regex>']... [--note "..."]
-                                      pre-registered research: every --assert must be stated whole by a line of code in the file that defines the value, not as a prefix of it and not in a comment, before anything is written (exit 1 with the real line otherwise); then one row with the clock's stamp, each file's sha256, the assertions and the forbid patterns; the guard blocks a shell command that matches a --forbid until the seal is settled, unless its command line starts with MEMORY_PULSE_ROLE=evaluator: a tripwire against inattention, not a security boundary; a --forbid that also matches an everyday command (ls, git status) or the seal's own prereg settle is refused (exit 1)
+                                      pre-registered research: every --assert must be stated whole by a line of code in the file that defines the value, not as a prefix of it and not in a comment, before anything is written (exit 1 with the real line otherwise); then one row with the clock's stamp, each file's sha256, the assertions and the forbid patterns; the guard blocks a shell command that matches a --forbid until the seal is settled, unless its command line starts with MEMORY_PULSE_ROLE=evaluator: a tripwire against inattention, not a security boundary, which fires on Claude Code's Bash and Cursor's Shell and is not enforced on Codex; a --forbid that also matches an everyday command (ls, git status) or the seal's own prereg settle, or is too slow to run before every command, is refused (exit 1)
          verify <id> [--json]         the evaluator's first step: re-hash every sealed file, unchanged or CHANGED with both hashes; exit 2 if any changed or is missing
          settle <id> --verdict <WORD> --file <verdict-file> [--note "..."]
                                       one row with the verdict and the verdict file's sha256, citing the seal row; the seal's forbid patterns stop blocking; with no open seal for <id>, removes the rules that still name it (orphans) and writes no row

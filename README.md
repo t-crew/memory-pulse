@@ -451,6 +451,9 @@ stamp: 2026-11-19 02:41 UTC · 2026-11-19T02:41:10Z (paste this)
   spec    spec.md  sha256 3b2484bb7732d5aedd6ea3191deb69adf355f0cce9d4c2b739b789599063e027
   assert  shipped/params.py :: THRESHOLD = 0.25  (holds)  shipped/params.py:2: THRESHOLD = 0.25
   forbid  /train\.py .*--n (4096|8192)/  blocked by the guard as a shell command while this seal is open
+The forbid patterns are a tripwire against inattention, not a security boundary: a command line that starts with MEMORY_PULSE_ROLE=evaluator passes.
+It fires where the guard sees shell commands: Claude Code's Bash, and Cursor's Shell (tested against its documented payload, not yet run inside Cursor). It is not enforced on Codex.
+next: the evaluator runs  memory-pulse prereg verify exp-7  first
 ```
 
 What a seal does, in order:
@@ -540,6 +543,7 @@ prereg exp-7: sealed at row 12, 2026-11-19 02:41 UTC (open)
   assert holds            shipped/params.py :: THRESHOLD = 0.25
   blocked by the guard under this seal: 1 command(s), last 2026-11-19T02:41:11.033Z: python train.py --n 4096
 verify: 1 of 1 sealed file(s) changed or missing
+rests on: the ledger's row chain (row 12 is on it). memory-pulse verify checks the chain, the engine's seal and this machine's anchor.
 ```
 
 Exit 2 unless every sealed file is unchanged; a file that is gone is MISSING,
@@ -1004,7 +1008,9 @@ it always has.
 **Overrides** are the false-block signal. `guard allow "$49" --path docs/history
 "historical table"` records an `override` event scoped to that path prefix.
 The hit passes there and nowhere else, and both `report` and the signed capsule
-count it. The guard never guesses, and only explicit withdrawn terms and
+count it. An override answers a withdrawn value, so a block caused only by an
+invariant or a rule on shell commands does not offer one (0.18.0): change the
+text, or the declaration. The guard never guesses, and only explicit withdrawn terms and
 declared invariants can block. Measured on our own 852-event ledger with the
 guard-eval bench in the engine repo on 2026-09-01: precision 1.0, zero false
 blocks over 871 negatives including 694 real notes, and p95 of 1.7 ms per

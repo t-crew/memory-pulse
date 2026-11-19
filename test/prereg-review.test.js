@@ -504,3 +504,61 @@ test("F6: of several seals of one id started together, exactly one is written; t
     assert.equal(p.run(["verify"]).status, 0, "the chain holds");
   }
 });
+
+// ---- F8: what the documents and the messages say
+
+const changelog = () => { const t = readFileSync(join(ROOT, "CHANGELOG.md"), "utf8"); const i = t.indexOf("## 0.18.0 (unreleased)"); return t.slice(i, t.indexOf("\n## ", i + 5)).replace(/\s+/g, " "); };
+
+test("F8: the changelog, help and the seal's own output name the hosts the forbid rule fires on; the changelog names what does not carry a seal", () => {
+  const p = project();
+  const s = p.run(["prereg", "seal", "exp-7", "--spec", "spec.md", "--forbid", "train\\.py .*--n 4096"]);
+  assert.equal(s.status, 0, out(s));
+  const helpLine = p.run(["help"]).stdout.split("\n").find((l) => /pre-registered research:/.test(l)) ?? "";
+  for (const [name, text] of [["the seal's output", s.stdout], ["help", helpLine], ["the changelog", changelog()]]) {
+    assert.match(text, /Claude Code's `?Bash`?/, `${name} names Claude Code's Bash`);
+    assert.match(text, /Cursor's `?Shell`?/, `${name} names Cursor's Shell`);
+    assert.match(text, /not enforced on Codex/, `${name} says Codex is not covered`);
+  }
+  assert.ok(!/Claude Code|Cursor|Codex/.test(p.run(["prereg", "seal", "exp-8", "--spec", "spec.md"]).stdout), "a seal with no forbid has no rule to speak of");
+  // limits the changelog owes its reader
+  assert.match(changelog(), /`state merge` does not carry/); assert.match(changelog(), /`repair --adopt-quarantine` does not carry/);
+});
+
+const HAND = [
+  { id: "old-domain", statement: "the old domain was retired", patterns: ["example-old.com"], severity: "block" },
+  { id: "no-prod", on: "command", statement: "prod deploys are by hand", patterns: ["/deploy --prod/"], severity: "block" },
+];
+function handRules() {
+  const p = project(); mkdirSync(dirname(p.invariants), { recursive: true }); writeFileSync(p.invariants, HAND.map((r) => JSON.stringify(r)).join("\n") + "\n");
+  assert.equal(p.run(["remember", "price", "corrected to $29", "--kind", "correction", "--withdrawn", "$49", "--replacement", "$29"]).status, 0);
+  return p;
+}
+
+test("F8: Cursor's deny for a shell command says a command was blocked, and for a file edit an edit", () => {
+  const p = handRules();
+  const cursor = (tool_name, tool_input) => JSON.parse(p.run(["guard", "--host", "cursor"], JSON.stringify({ hook_event_name: "preToolUse", tool_name, tool_input })).stdout);
+  const cmd = cursor("Shell", { command: "./deploy --prod" });
+  assert.equal(cmd.permission, "deny"); assert.match(cmd.agent_message, /^memory-pulse guard blocked this command\.\n/); assert.ok(!/this edit/.test(cmd.agent_message));
+  const heredoc = cursor("Shell", { command: "cat > notes.md <<'EOF'\nsee example-old.com\nEOF" });
+  assert.equal(heredoc.permission, "deny"); assert.match(heredoc.agent_message, /^memory-pulse guard blocked this command\.\n/, "a shell call is a command, whatever it writes");
+  const edit = cursor("Write", { path: "notes.md", contents: "see example-old.com" });
+  assert.equal(edit.permission, "deny"); assert.match(edit.agent_message, /^memory-pulse guard blocked this edit\.\n/);
+});
+
+test("F8: a block caused only by an invariant or a rule on commands does not offer guard allow; a withdrawn value still does", () => {
+  const p = handRules();
+  const inv = p.guard("Write", { file_path: "notes.md", content: "see example-old.com" });
+  assert.equal(inv.status, 2, out(inv)); assert.match(inv.stderr, /invariant old-domain/);
+  assert.ok(!/guard allow/.test(inv.stderr), `an override is for a withdrawn value; this block has none: ${inv.stderr}`);
+  assert.match(inv.stderr, /a declared invariant \(\.memory-pulse\/invariants\.jsonl\), not a withdrawn value, so an override does not apply/);
+  const both = p.bash("./deploy --prod && cat > notes.md <<'EOF'\nsee example-old.com\nEOF");
+  assert.equal(both.status, 2); assert.match(both.stderr, /invariant old-domain/); assert.match(both.stderr, /invariant no-prod/);
+  assert.ok(!/guard allow/.test(both.stderr), both.stderr);
+  const cursor = JSON.parse(p.run(["guard", "--host", "cursor"], JSON.stringify({ hook_event_name: "preToolUse", tool_name: "Write", tool_input: { path: "notes.md", contents: "see example-old.com" } })).stdout);
+  assert.ok(!/guard allow/.test(cursor.agent_message), cursor.agent_message);
+  // a withdrawn value is what an override answers, alone or beside an invariant
+  const term = p.guard("Write", { file_path: "notes.md", content: "the price is $49" });
+  assert.equal(term.status, 2); assert.match(term.stderr, /memory-pulse guard allow "<term>"/);
+  const mixed = p.guard("Write", { file_path: "notes.md", content: "the price is $49, see example-old.com" });
+  assert.equal(mixed.status, 2); assert.match(mixed.stderr, /memory-pulse guard allow "<term>"/);
+});

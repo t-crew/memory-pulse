@@ -825,6 +825,7 @@ printf '%s' '{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"
   assert  shipped/params.py :: THRESHOLD = 0.25  (holds)  shipped/params.py:2: THRESHOLD = 0.25
   forbid  /train\.py .*--n (4096|8192)/  blocked by the guard as a shell command while this seal is open
 The forbid patterns are a tripwire against inattention, not a security boundary: a command line that starts with MEMORY_PULSE_ROLE=evaluator passes.
+It fires where the guard sees shell commands: Claude Code's Bash, and Cursor's Shell (tested against its documented payload, not yet run inside Cursor). It is not enforced on Codex.
 exit 0
 memory-pulse guard: blocked.
 this command is the evaluator's (matched /train\.py .*--n (4096|8192)/). Hand it to an evaluator, whose command line starts with MEMORY_PULSE_ROLE=evaluator, or settle the prereg: memory-pulse prereg settle exp-7 --verdict <WORD> --file <verdict-file>
@@ -851,6 +852,7 @@ npx -y memory-pulse@0.17.2 ran 'train\.py .*--n (4096|8192)'
   assert holds            shipped/params.py :: THRESHOLD = 0.25
   blocked by the guard under this seal: 1 command(s)
 verify: all 1 sealed file(s) unchanged
+rests on: the ledger's row chain (row 11 is on it). memory-pulse verify checks the chain, the engine's seal and this machine's anchor.
 exit 0
 session evaluator-1  ok  MEMORY_PULSE_ROLE=evaluator python train.py --n 4096  [evaluator]
 This is what the capture hook recorded on this machine: the first 200 characters of each command, secrets scrubbed, a leading cd dropped. A command run where the hook is not installed is not here.
