@@ -22,7 +22,10 @@ the value. If the file does not contain the text, the seal prints the line
 that does carry the name, exits 1 and writes nothing. A seal that passes writes
 one ledger row: the stamp, read from the clock by the code, the sha256 of the
 spec and of each `--file`, the assertions and the forbid patterns. No option
-takes a stamp.
+takes a stamp. The row reads `prereg <id> -> sealed <first 12 characters of
+the spec's sha256>`, and a settle row `settled <WORD> <first 12 characters of
+the verdict file's sha256>`: neither effect is a bare word, and `check` and
+`lint` never count a prereg row as evidence about a text.
 
 Each `--forbid '<regex>'` is blocked by the guard as a shell command while the
 seal is open. The block names the prereg and its seal row, says the command is

@@ -2317,6 +2317,7 @@ export function localCheck(allEvents, action, invariants = [], opts = {}) {
   // Measured with the walk skipped: 5.09 ms at 250,000 events, 37x faster.
   if (text && !opts.blockOnly) for (const e of events) {
     if (e.kind === "override") continue;
+    if (e.prereg !== undefined) continue;   // 0.18.0: a prereg row records a seal or a verdict; it is never evidence about a text
     const terms = [e.cause, e.effect].filter((x) => typeof x === "string" && x.length >= 4).concat(Array.isArray(e.replacement) ? e.replacement.filter((r) => typeof r === "string" && r.length >= 2) : []);
     const via = terms.find((t) => text.includes(t));
     if (via) evidence.push({ t: e.t, cause: e.cause, effect: e.effect, kind: e.kind ?? "event", via });

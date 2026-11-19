@@ -460,10 +460,12 @@ What a seal does, in order:
   the name before the first `=` or `:`, so the real value is on the screen,
   exits 1 and writes nothing.
 - **Then it writes one ledger row**, through the same writer as every other
-  row: `prereg exp-7 -> sealed`, with the stamp read from the clock by the
+  row: `prereg exp-7 -> sealed 3b2484bb7732` (the first 12 characters of the
+  spec's sha256), with the stamp read from the clock by the
   code, the sha256 of the spec and of each `--file`, the assertions and the
   forbid patterns. No option takes a stamp, and `append` and `remember` are
-  refused the field that holds it.
+  refused the field that holds it. A prereg row records a seal or a verdict:
+  `check` and `lint` never count it as evidence about a text.
 - **Each `--forbid '<regex>'` becomes a rule on shell commands**, a line in
   `.memory-pulse/invariants.jsonl` owned by the seal. While the seal is open
   the guard blocks a shell command that matches, and says whose command it is:
@@ -511,7 +513,8 @@ each command, secrets scrubbed, on this machine. So no match is never reported
 as "nothing ran", and with no capture record at all it says exactly that.
 
 `memory-pulse prereg settle exp-7 --verdict KEEP --file verdict.md` writes one
-row, `prereg exp-7 -> settled KEEP`, with the verdict file's sha256 and the
+row, `prereg exp-7 -> settled KEEP 59425cb42511` (the verdict, then the first
+12 characters of the verdict file's sha256), with the whole sha256 and the
 seal row it answers. The seal's rules leave `invariants.jsonl` and every other
 line of that file stays byte for byte. `memory-pulse prereg list` shows open
 and settled seals with id, row, stamp and verdict. The guide's section 17 runs

@@ -86,7 +86,7 @@ test("ran --since takes a prereg row: what ran after the seal, to the millisecon
   const sealAt = JSON.parse(readFileSync(p.ledger, "utf8").trim().split("\n")[1]).prereg.at;
   const r = p.run(["ran", PATTERN, "--since", "2"]);
   assert.equal(r.status, 0, out(r));
-  assert.match(r.stdout, new RegExp(`: 1 of 2 recorded command\\(s\\) match, in 1 of 2 session\\(s\\), since row 2 \\(prereg exp-7 sealed, ${sealAt}\\)`));
+  assert.match(r.stdout, new RegExp(`: 1 of 2 recorded command\\(s\\) match, in 1 of 2 session\\(s\\), since row 2 \\(prereg exp-7 sealed [0-9a-f]{12}, ${sealAt}\\)`));
   assert.match(r.stdout, /session sess-B {2}ok {2}MEMORY_PULSE_ROLE=evaluator python train\.py --n 4096 {2}\[evaluator\]/); assert.ok(!/sess-A/.test(r.stdout));
   // a row that records no clock reading cannot be a time
   const plain = p.run(["ran", PATTERN, "--since", "1"]);

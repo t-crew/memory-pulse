@@ -69,7 +69,7 @@ test("a passing seal writes exactly one row through the writer, the chain still 
   assert.equal(r.status, 0, out(r));
   const rows = p.rows(); assert.equal(rows.length, 2, "exactly one row was added");
   const row = rows[1];
-  assert.equal(row.t, 2); assert.equal(row.cause, "prereg exp-7"); assert.equal(row.effect, "sealed");
+  assert.equal(row.t, 2); assert.equal(row.cause, "prereg exp-7"); assert.equal(row.effect, `sealed ${sha(join(p.dir, "docs", "spec.md")).slice(0, 12)}`, "the effect carries the spec's hash, so it is not a bare word");
   for (const tag of ["prereg", "prereg:exp-7", "prereg-seal"]) assert.ok(row.tags.includes(tag), `tag ${tag}`);
   assert.equal(typeof row.hash, "string"); assert.equal(row.prev, rows[0].hash, "chained onto the row before it");
   const m = row.prereg;
@@ -198,7 +198,7 @@ test("prereg settle: one row with the verdict file's hash that cites the seal ro
   const before = Math.floor(Date.now() / 1000) * 1000; const r = p.run(["prereg", "settle", "exp-7", "--verdict", "KEEP", "--file", "verdict.md", "--note", "3 of 3 seeds"]); const after = Date.now();
   assert.equal(r.status, 0, out(r));
   const rows = p.rows(); assert.equal(rows.length, 2, "exactly one row was added"); const row = rows[1];
-  assert.equal(row.cause, "prereg exp-7"); assert.equal(row.effect, "settled KEEP");
+  assert.equal(row.cause, "prereg exp-7"); assert.equal(row.effect, `settled KEEP ${sha(join(p.dir, "verdict.md")).slice(0, 12)}`);
   for (const tag of ["prereg", "prereg:exp-7", "prereg-settle"]) assert.ok(row.tags.includes(tag), `tag ${tag}`);
   assert.equal(row.prereg.op, "settle"); assert.equal(row.prereg.id, "exp-7"); assert.equal(row.prereg.verdict, "KEEP"); assert.equal(row.prereg.seal, 1, "cites the seal row");
   assert.deepEqual(row.prereg.file, { path: "verdict.md", sha256: sha(join(p.dir, "verdict.md")), bytes: readFileSync(join(p.dir, "verdict.md")).length });

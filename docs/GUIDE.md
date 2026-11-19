@@ -808,7 +808,7 @@ memory-pulse prereg seal exp-7: 1 of 1 assertion(s) failed; nothing was written
 exit 1
 ```
 
-A seal that passes writes one ledger row through the same writer as every other row: `prereg exp-7 -> sealed`, with the stamp read from the clock by the code, the sha256 of the spec and of each `--file`, the assertions and the forbid patterns. No option takes a stamp, and `append` and `remember` are refused the field that holds it. Each `--forbid '<regex>'` is declared in `.memory-pulse/invariants.jsonl` as a rule on shell commands, owned by the seal. While the seal is open the guard blocks a shell command that matches and says whose command it is. A command line that starts with `MEMORY_PULSE_ROLE=evaluator` (after any `cd <dir> &&`) passes, and the guard says so:
+A seal that passes writes one ledger row through the same writer as every other row: `prereg exp-7 -> sealed 3b2484bb7732` (the first 12 characters of the spec's sha256), with the stamp read from the clock by the code, the sha256 of the spec and of each `--file`, the assertions and the forbid patterns. No option takes a stamp, and `append` and `remember` are refused the field that holds it. A prereg row records a seal or a verdict: `check` and `lint` never count it as evidence about a text. Each `--forbid '<regex>'` is declared in `.memory-pulse/invariants.jsonl` as a rule on shell commands, owned by the seal. While the seal is open the guard blocks a shell command that matches and says whose command it is. A command line that starts with `MEMORY_PULSE_ROLE=evaluator` (after any `cd <dir> &&`) passes, and the guard says so:
 
 ```sh run
 npx -y memory-pulse@0.17.2 prereg seal exp-7 --spec spec.md --assert 'shipped/params.py::THRESHOLD = 0.25' --forbid 'train\.py .*--n (4096|8192)'; echo "exit $?"
@@ -848,7 +848,7 @@ session evaluator-1  ok  MEMORY_PULSE_ROLE=evaluator python train.py --n 4096  [
 This is what the capture hook recorded on this machine: the first 200 characters of each command, secrets scrubbed, a leading cd dropped. A command run where the hook is not installed is not here.
 ```
 
-`prereg settle` writes one row, `prereg exp-7 -> settled KEEP`, with the verdict file's sha256 and the seal row it answers, and removes the seal's rules from `invariants.jsonl`; every other line of that file stays byte for byte. The command is no longer blocked. A settled seal still answers `prereg verify`, so an edit made after the verdict shows too. `prereg list` shows open and settled seals:
+`prereg settle` writes one row, `prereg exp-7 -> settled KEEP 59425cb42511` (the verdict, then the first 12 characters of the verdict file's sha256), with the whole sha256 and the seal row it answers, and removes the seal's rules from `invariants.jsonl`; every other line of that file stays byte for byte. The command is no longer blocked. A settled seal still answers `prereg verify`, so an edit made after the verdict shows too. `prereg list` shows open and settled seals:
 
 ```sh run
 printf 'KEEP: 3 of 3 confirmation seeds above the bar.\n' > verdict.md
