@@ -409,7 +409,7 @@ The ledger is read from the directory the agent started in. Start the agent at t
 
 Two branches that both append conflict on merge, because rows chain on `t` and `prev`. Never keep both sides: take one, re-record the losing rows with `remember`, and run `verify`.
 
-Invariants are declared, never inferred: one JSON object per line in `.memory-pulse/invariants.jsonl`. A `warn` rule reports; a `block` rule blocks. `lint` runs the same check over the governance files a session loads, Muse Code's `.agents/AGENTS.md` and `.agents/memory/` included. A line that reads like an instruction planted for the agent (an order to ignore previous instructions, to send keys or tokens to an address, to keep something from the user, or a `<system>` tag) is reported as a warning with its line number and pattern, never printed, and exit stays 0; `lint --strict` blocks on it. The warning cannot tell every API doc from a planted line, so it informs rather than fails a pull request:
+Invariants are declared, never inferred: one JSON object per line in `.memory-pulse/invariants.jsonl`. A `warn` rule reports; a `block` rule blocks. A line with `"on": "command"` is a rule on shell commands instead of edits (section 17). `lint` runs the same check over the governance files a session loads, Muse Code's `.agents/AGENTS.md` and `.agents/memory/` included. A line that reads like an instruction planted for the agent (an order to ignore previous instructions, to send keys or tokens to an address, to keep something from the user, or a `<system>` tag) is reported as a warning with its line number and pattern, never printed, and exit stays 0; `lint --strict` blocks on it. The warning cannot tell every API doc from a planted line, so it informs rather than fails a pull request:
 
 ```sh run
 printf '%s\n' '{"id":"old-domain","statement":"the old domain was retired","patterns":["example-old.com"],"paths":["docs/"],"severity":"block","replacement":"example.com"}' > .memory-pulse/invariants.jsonl
@@ -473,7 +473,7 @@ Environment variables, with defaults:
 
 Files under `.memory-pulse/`: `events.jsonl` (the ledger, commit it), `invariants.jsonl` (declared rules, commit it), `violations.jsonl` (the guard's block records, local), `telemetry.rain` (signed counters, cache), `seal.rain` (the engine's signed set-head seal, cache), `seal.resume.json` (fold resume point, cache), `memory.rain` (signed memory key, cache, written at 500 or more events), `verify.cache.json` (the guard's verification cache, keyed by inode, size, mtime and ctime, local), `events.jsonl.lock` (held while a row is written, local), `events.jsonl.quarantine/` (rows moved aside from a bad tail, byte-for-byte; keep it with the ledger). A `.rain` state capsule from `state export` is written only where you ask (`--out`, or stdout) and is yours to move.
 
-Exit codes: 0 done; 1 usage or refused (`remember`, `append`, `repair` without `--yes`, `mode`, `lint --ci` with nothing to check, `check --ci` with no evidence); 2 blocked (`guard`, `check`, `lint`), verification failed (`verify`) or not a tail (`repair --quarantine-tail`). Hooks (`brief`, `prompt`, `handoff`, `ambient`, `observe`) exit 0 on every path except a blocked guard.
+Exit codes: 0 done; 1 usage or refused (`remember`, `append`, `repair` without `--yes`, `mode`, `lint --ci` with nothing to check, `check --ci` with no evidence); 2 blocked (`guard`, `check`, `lint`), verification failed (`verify`), a sealed file changed (`prereg verify`) or not a tail (`repair --quarantine-tail`). `prereg seal` exits 1 on a failed assertion. Hooks (`brief`, `prompt`, `handoff`, `ambient`, `observe`) exit 0 on every path except a blocked guard.
 
 The guard's stdin payload is the Claude Code PreToolUse hook JSON: `{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"...","content":"..."}}`; Edit carries `new_string`, MultiEdit `edits[].new_string`, Bash `command`, and Codex's `apply_patch` carries the patch text, split per `*** Update File:` section.
 
@@ -787,3 +787,85 @@ bank thawed at t
 ```
 
 `lesson --held-out` lists every row left out and why. `--scope project` runs any of these against the project ledger, so a team can keep a shared bank in the ledger it commits. The method follows Self-Organizing Agent Teams (Pappu et al., Stanford, Together AI and Emory, [arXiv 2609.22682](https://arxiv.org/abs/2609.22682)): a team keeps a learned strategy only after it works on problems other than the one that produced it, and runs a frozen bank of at most ten chosen by coverage.
+
+## 17. Pre-registered research: seal, verify, settle
+
+Pre-registered work has two roles: a builder writes a spec, seals it and builds, and a separate evaluator judges the result. These commands arrive in 0.18.0, and each answers a slip from one night of such work. A time stamp was typed from memory into a record ("00:3x UTC" when the clock said 00:15). The builder ran its own experiment at sizes its own amendment had reserved for confirmation, and nothing stopped the run or recorded it. A constant about a deployed system was copied into the sealed spec from a summary: 0.5, where the run logs and the shipped file said 0.25.
+
+`now` prints the machine clock as the two stamps a record uses. Paste a stamp from it; never type one. `prereg seal` checks every `--assert '<path>::<text>'` first, against the file that defines the value: the file must contain the text as written. When it does not, the seal prints the line that carries the name before the first `=` or `:`, so the real value is on the screen, exits 1 and writes nothing:
+
+```sh run
+mkdir -p shipped && printf 'WINDOW = 64\nTHRESHOLD = 0.25\n' > shipped/params.py
+printf '# exp-7\nH1 holds at n=2048 with threshold 0.25. Sizes 4096 and 8192 are the evaluator'"'"'s.\n' > spec.md
+npx -y memory-pulse@0.17.2 now
+npx -y memory-pulse@0.17.2 prereg seal exp-7 --spec spec.md --assert 'shipped/params.py::THRESHOLD = 0.5'; echo "exit $?"
+```
+```text expect
+a record's stamp is pasted from these lines, never typed from memory
+memory-pulse prereg seal exp-7: 1 of 1 assertion(s) failed; nothing was written
+  assert FAILED: shipped/params.py does not contain "THRESHOLD = 0.5"
+    shipped/params.py:2: THRESHOLD = 0.25
+exit 1
+```
+
+A seal that passes writes one ledger row through the same writer as every other row: `prereg exp-7 -> sealed`, with the stamp read from the clock by the code, the sha256 of the spec and of each `--file`, the assertions and the forbid patterns. No option takes a stamp, and `append` and `remember` are refused the field that holds it. Each `--forbid '<regex>'` is declared in `.memory-pulse/invariants.jsonl` as a rule on shell commands, owned by the seal. While the seal is open the guard blocks a shell command that matches and says whose command it is. A command line that starts with `MEMORY_PULSE_ROLE=evaluator` (after any `cd <dir> &&`) passes, and the guard says so:
+
+```sh run
+npx -y memory-pulse@0.17.2 prereg seal exp-7 --spec spec.md --assert 'shipped/params.py::THRESHOLD = 0.25' --forbid 'train\.py .*--n (4096|8192)'; echo "exit $?"
+printf '%s' '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"python train.py --n 4096"}}' | npx -y memory-pulse@0.17.2 guard; echo "exit $?"
+printf '%s' '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"MEMORY_PULSE_ROLE=evaluator python train.py --n 4096"}}' | npx -y memory-pulse@0.17.2 guard; echo "exit $?"
+printf '%s' '{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"notes.md","content":"the evaluator runs python train.py --n 4096"}}' | npx -y memory-pulse@0.17.2 guard; echo "exit $?"
+```
+```text expect
+  spec    spec.md  sha256 3b2484bb7732d5aedd6ea3191deb69adf355f0cce9d4c2b739b789599063e027
+  assert  shipped/params.py :: THRESHOLD = 0.25  (holds)
+  forbid  /train\.py .*--n (4096|8192)/  blocked by the guard as a shell command while this seal is open
+The forbid patterns are a tripwire against inattention, not a security boundary: a command line that starts with MEMORY_PULSE_ROLE=evaluator passes.
+exit 0
+memory-pulse guard: blocked.
+this command is the evaluator's (matched /train\.py .*--n (4096|8192)/). Hand it to an evaluator, whose command line starts with MEMORY_PULSE_ROLE=evaluator, or settle the prereg: memory-pulse prereg settle exp-7 --verdict <WORD> --file <verdict-file>
+exit 2
+reserves this command for the evaluator (matched /train\.py .*--n (4096|8192)/); allowed, because the command line starts with MEMORY_PULSE_ROLE=evaluator
+```
+
+What the forbid rule is, stated plainly: a tripwire against inattention, not a security boundary. Anyone can type the marker. A command inside a script file is not read. The pattern is matched against the whole command line, so write it to match the run (the program and its flag), not every mention of the size; a file edit that mentions the command is never matched, as the last line above shows. What it does is stop the builder who forgot, and leave a record: a blocked command is written to `.memory-pulse/violations.jsonl` with the rule and the command, secrets scrubbed. It fires where the guard sees shell commands, which is Claude Code's `Bash`, and Cursor's `Shell` as tested against its documented payload (not yet run inside Cursor itself); the hook `install-hook --codex` writes does not match Codex's shell tool, and through the plugin that is unmeasured, so treat the rule as not enforced on Codex.
+
+The evaluator starts with `prereg verify`. It re-hashes every sealed file and prints `unchanged`, or `CHANGED` with both hashes, or `MISSING`; exit 2 unless every sealed file is unchanged. It also says when an asserted value no longer holds, names files beside the spec that are newer than the seal, and counts the commands the guard blocked under the seal; none of those three changes the exit code. `ran` lists the shell commands the capture hook recorded that match a pattern, with time and session, and marks an evaluator's; `--since` takes the seal's row number or a time as `now` prints it. It reads the first 200 characters of each command, which is what capture keeps, and a command run where the hook is not installed is not there, so no match is never reported as "nothing ran":
+
+```sh run
+npx -y memory-pulse@0.17.2 prereg verify exp-7; echo "exit $?"
+printf '%s' '{"hook_event_name":"PostToolUse","session_id":"evaluator-1","tool_use_id":"call-1","tool_name":"Bash","tool_input":{"command":"MEMORY_PULSE_ROLE=evaluator python train.py --n 4096"},"tool_response":{"stdout":"","stderr":"","exit_code":0}}' > call.json
+npx -y memory-pulse@0.17.2 capture < call.json
+npx -y memory-pulse@0.17.2 ran 'train\.py .*--n (4096|8192)'
+```
+```text expect
+  unchanged  spec.md  sha256 3b2484bb7732d5aedd6ea3191deb69adf355f0cce9d4c2b739b789599063e027
+  assert holds            shipped/params.py :: THRESHOLD = 0.25
+  blocked by the guard under this seal: 1 command(s)
+verify: all 1 sealed file(s) unchanged
+exit 0
+session evaluator-1  ok  MEMORY_PULSE_ROLE=evaluator python train.py --n 4096  [evaluator]
+This is what the capture hook recorded on this machine: the first 200 characters of each command, secrets scrubbed, a leading cd dropped. A command run where the hook is not installed is not here.
+```
+
+`prereg settle` writes one row, `prereg exp-7 -> settled KEEP`, with the verdict file's sha256 and the seal row it answers, and removes the seal's rules from `invariants.jsonl`; every other line of that file stays byte for byte. The command is no longer blocked. A settled seal still answers `prereg verify`, so an edit made after the verdict shows too. `prereg list` shows open and settled seals:
+
+```sh run
+printf 'KEEP: 3 of 3 confirmation seeds above the bar.\n' > verdict.md
+npx -y memory-pulse@0.17.2 prereg settle exp-7 --verdict KEEP --file verdict.md
+printf '%s' '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"python train.py --n 4096"}}' | npx -y memory-pulse@0.17.2 guard; echo "exit $?"
+printf 'Amended after the verdict.\n' >> spec.md
+npx -y memory-pulse@0.17.2 prereg verify exp-7; echo "exit $?"
+npx -y memory-pulse@0.17.2 prereg list
+```
+```text expect
+  verdict  verdict.md  sha256 59425cb42511b651952c7964cf0219b857b3e8e47b758e5e7ba79c677a4bc299
+  retired  /train\.py .*--n (4096|8192)/  no longer blocked
+exit 0
+  CHANGED    spec.md  sealed 3b2484bb7732d5aedd6ea3191deb69adf355f0cce9d4c2b739b789599063e027  now c69866e744ccb58b9194916b70b5eb5f99241188a42091e0323226d0500a546e
+verify: 1 of 1 sealed file(s) changed or missing
+exit 2
+prereg: 1 seal(s), 0 open
+```
+
+A rule on shell commands is not only for a prereg. Any line of `invariants.jsonl` can carry `"on": "command"`: `{"id":"no-force-push","on":"command","statement":"history on main is kept","patterns":["/git push .*--force/"],"severity":"block"}`. It is matched against the command of a shell tool call by the guard and by `check --kind command`, never against a file edit, and `paths` does not apply to it. A line without `on` behaves as it always has. Only a prereg's rule has the evaluator exemption.

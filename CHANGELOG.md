@@ -2,6 +2,56 @@
 
 This file starts at 0.16.0. Earlier releases are described in their tagged commits.
 
+## 0.18.0 (unreleased)
+
+**Pre-registered research gets a command for each of three slips.** An agent
+doing pre-registered work (a builder writes a spec, seals it and builds; a
+separate evaluator judges) made three mistakes in one night. It typed time
+stamps from memory into records: "00:3x UTC" when the clock said 00:15, and a
+seal time quoted wrongly. It ran its own experiment at sizes its own amendment
+had reserved for confirmation, and nothing stopped the run or recorded it. It
+copied a constant about a deployed system into a sealed spec from a summary:
+0.5, where the run logs and the shipped file said 0.25.
+
+`memory-pulse now` prints the machine clock as the two stamps a record uses.
+A stamp is pasted from it, never typed.
+
+`memory-pulse prereg seal <id> --spec <file>` seals a spec. Every
+`--assert '<path>::<text>'` is checked first, against the file that defines
+the value. If the file does not contain the text, the seal prints the line
+that does carry the name, exits 1 and writes nothing. A seal that passes writes
+one ledger row: the stamp, read from the clock by the code, the sha256 of the
+spec and of each `--file`, the assertions and the forbid patterns. No option
+takes a stamp.
+
+Each `--forbid '<regex>'` is blocked by the guard as a shell command while the
+seal is open. The block names the prereg and its seal row, says the command is
+the evaluator's, and says how to proceed. A command line that starts with
+`MEMORY_PULSE_ROLE=evaluator` passes. This is a tripwire against inattention,
+not a security boundary: anyone can type the marker, and a command inside a
+script file is not read. A blocked command is recorded in
+`.memory-pulse/violations.jsonl`.
+
+`memory-pulse prereg verify <id>` is the evaluator's first step. It re-hashes
+every sealed file and prints unchanged, or CHANGED with both hashes; exit 2
+unless every one is unchanged. `memory-pulse prereg settle <id> --verdict
+<WORD> --file <verdict-file>` writes one row with the verdict file's sha256,
+citing the seal row, and the forbid patterns stop blocking. `memory-pulse
+prereg list` shows open and settled seals.
+
+`memory-pulse ran '<regex>' --since <row>` lists the shell commands the
+capture hook recorded that match, with time and session, so an evaluator can
+check what ran after a seal. It reads what capture already keeps, the first
+200 characters of each command, and capture itself is unchanged. No match is
+never reported as "nothing ran".
+
+Underneath, a declared invariant can now apply to shell commands. A line of
+`.memory-pulse/invariants.jsonl` with `"on": "command"` is matched against the
+command of a `Bash` tool call and by `check --kind command`, never against a
+file edit, and `paths` does not apply to it. An invariant without `on` behaves
+exactly as before. `check --receipt` sends the engine only the invariants that
+apply to the kind of action it is asked about.
+
 ## 0.17.2 (17 November 2026)
 
 **An advisory word is no longer what your memory leads with.** 0.17.1 stopped

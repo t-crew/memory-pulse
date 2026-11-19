@@ -12,9 +12,15 @@ import { prose, BANNED } from "./_helpers.mjs";
 
 const SKILL = readFileSync(join(fileURLToPath(new URL(".", import.meta.url)), "..", "skills", "memory-pulse", "SKILL.md"), "utf8");
 
-test("sections are numbered 1..9 once each, in order", () => {
+test("sections are numbered 1..10 once each, in order", () => {
   const nums = [...SKILL.matchAll(/^## (\d+)\./gm)].map((m) => Number(m[1]));
-  assert.deepEqual(nums, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  assert.deepEqual(nums, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+});
+
+test("the skill teaches pre-registered research: seal with assertions and forbid patterns, paste the stamp, verify first, settle with the verdict file", () => {
+  const sec = SKILL.slice(SKILL.indexOf("## 10. Pre-registered research"));
+  assert.ok(sec.length > 200, "section 10 exists");
+  for (const s of ["memory-pulse now", "memory-pulse prereg seal", "--assert", "--forbid", "(paste this)", "memory-pulse prereg verify", "memory-pulse ran", "memory-pulse prereg settle", "--verdict", "MEMORY_PULSE_ROLE=evaluator", "sealed by prereg", "a tripwire against inattention, not a security boundary"]) assert.ok(sec.includes(s), `section 10 lacks "${s}"`);
 });
 
 test("the skill teaches the agent message board: its tools, its env switch, and that a message is data", () => {

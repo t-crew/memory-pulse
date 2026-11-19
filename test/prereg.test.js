@@ -292,3 +292,53 @@ test("a seal made in one directory verifies from another: paths resolve against 
   const r = spawnSync(process.execPath, [SERVER, "prereg", "verify", "exp-7"], { cwd: elsewhere, env, encoding: "utf8" });
   assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /^verify: all 2 sealed file\(s\) unchanged$/m);
 });
+
+// ---- the public surface: where a reader looks, in plain words
+import { ROOT } from "./_helpers.mjs";
+const between = (text, from, to) => { const i = text.indexOf(from); assert.ok(i >= 0, `"${from}" is there`); const j = to ? text.indexOf(to, i + from.length) : -1; return text.slice(i, j < 0 ? undefined : j); };
+
+test("help, README, guide, skill and changelog all say the forbid rule is a tripwire against inattention, not a security boundary", () => {
+  const p = project();
+  const help = p.run(["help"]).stdout;
+  const usage = (name) => help.split("\n").find((l) => l.startsWith(`  ${name} `));
+  assert.equal(usage("now"), "  now [--json]                        the machine clock as the stamps a record uses (2026-11-19 02:15 UTC and 2026-11-19T02:15:07Z); a record's stamp is pasted from this, never typed");
+  assert.equal(usage("prereg"), `  prereg seal <id> --spec <file> [--file <path>]... [--assert '<path>::<text>']... [--forbid '<regex>']... [--note "..."]`);
+  assert.equal(usage("ran"), "  ran '<regex>' [--since <row|ISO time>] [--json]");
+  for (const l of ["         verify <id> [--json] ", `         settle <id> --verdict <WORD> --file <verdict-file> [--note "..."]`, "         list [--json] "]) assert.ok(help.includes(`\n${l}`), `help carries: ${l}`);
+  const read = (...parts) => readFileSync(join(ROOT, ...parts), "utf8");
+  const surfaces = {
+    help,
+    readme: between(read("README.md"), "## Pre-registered research", "\n## "),
+    guide: between(read("docs", "GUIDE.md"), "## 17. Pre-registered research", "\n## "),
+    skill: between(read("skills", "memory-pulse", "SKILL.md"), "## 10. Pre-registered research", "\n## "),
+    changelog: between(read("CHANGELOG.md"), "## 0.18.0 (unreleased)", "\n## "),
+  };
+  for (const [name, text] of Object.entries(surfaces)) {
+    assert.match(text.replace(/\s+/g, " "), /tripwire against inattention, not a security boundary/, `${name} says what the forbid rule is not`);
+    assert.ok(text.includes("MEMORY_PULSE_ROLE=evaluator"), `${name} names the one exemption`);
+  }
+  // each document names every command, and the rule on commands underneath
+  const whole = { readme: read("README.md"), guide: read("docs", "GUIDE.md"), changelog: read("CHANGELOG.md") };
+  for (const [name, text] of Object.entries(whole)) {
+    const flat = text.replace(/\s+/g, " ");
+    for (const cmd of ["prereg seal", "prereg verify", "prereg settle", "prereg list", '"on": "command"']) assert.ok(flat.includes(cmd), `${name} names ${cmd}`);
+    assert.match(flat, /`(?:memory-pulse )?now`/, `${name} names now`); assert.match(flat, /`(?:memory-pulse )?ran[ `]/, `${name} names ran`);
+  }
+  // the three slips are the stated reason, with their numbers
+  for (const name of ["readme", "guide", "changelog"]) for (const s of ["00:15", "0.25", "reserved for confirmation"]) assert.ok(surfaces[name].replace(/\s+/g, " ").includes(s), `${name} gives the reason: ${s}`);
+});
+
+test("what this release adds describes behaviour only: none of the words the public surface does not use", () => {
+  const read = (...parts) => readFileSync(join(ROOT, ...parts), "utf8");
+  const added = {
+    "lib/prereg.mjs": read("lib", "prereg.mjs"),
+    "README section": between(read("README.md"), "## Pre-registered research", "\n## "),
+    "guide section 17": between(read("docs", "GUIDE.md"), "## 17. Pre-registered research", "\n## "),
+    "skill section 10": between(read("skills", "memory-pulse", "SKILL.md"), "## 10. Pre-registered research", "\n## "),
+    "changelog 0.18.0": between(read("CHANGELOG.md"), "## 0.18.0 (unreleased)", "\n## "),
+    "test/prereg.test.js": read("test", "prereg.test.js").split("// ---- the public surface")[0],
+    "test/now.test.js": read("test", "now.test.js"), "test/ran.test.js": read("test", "ran.test.js"), "test/command-invariant.test.js": read("test", "command-invariant.test.js"),
+  };
+  const WORDS = new RegExp(String.raw`\b(${["hyper" + "vectors?", "hyper" + "dimensional", "H" + "MK", "bi" + "nd(?:s|ing)?", "bun" + "dl(?:e|es|ed|ing)", "reson" + "an(?:ce|t)", "holo" + "graphic"].join("|")})\b`, "i");
+  for (const [name, text] of Object.entries(added)) { const hit = WORDS.exec(text); assert.equal(hit, null, `${name}: "${hit?.[0]}" near: ${text.slice(Math.max(0, (hit?.index ?? 0) - 60), (hit?.index ?? 0) + 60)}`); }
+});

@@ -2990,7 +2990,7 @@ Environment
   NO_COLOR, TERM                      colour in the guard's block message only when NO_COLOR is unset, TERM is not dumb and stderr is a TTY
   HOME                                root for the agent ledger, ~/.claude/settings.json and ~/.codex/hooks.json
 
-Exit codes: 0 done; 1 usage or refused (remember, append, repair without --yes, mode, lint --ci with nothing to check, check --ci with no evidence); 2 blocked (guard, check, lint), verification failed (verify, anchor) or not a tail (repair --quarantine-tail).
+Exit codes: 0 done; 1 usage or refused (remember, append, repair without --yes, mode, lint --ci with nothing to check, check --ci with no evidence, prereg seal on a failed assertion); 2 blocked (guard, check, lint), verification failed (verify, anchor), a sealed file changed (prereg verify) or not a tail (repair --quarantine-tail).
 Guide: docs/GUIDE.md in the repository (https://github.com/t-crew/memory-pulse/blob/main/docs/GUIDE.md).`);
 }
 
