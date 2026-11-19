@@ -41,7 +41,9 @@ command, and one that matches is refused with that command named, exit 1,
 nothing written. The trial runs in a process of its own and is timed: a
 pattern still running after 500 ms on those commands and three long ones is
 refused as too slow to run before every command. The block names the prereg and its seal row, says the command is
-the evaluator's, and says how to proceed. A command line that starts with
+the evaluator's, and says how to proceed. The way out always works: a seal's
+rule never blocks a line that is one invocation of `memory-pulse prereg
+settle`, `prereg verify`, `prereg list`, `verify` or `now` and nothing more. A command line that starts with
 `MEMORY_PULSE_ROLE=evaluator` passes. This is a tripwire against inattention,
 not a security boundary: anyone can type the marker, and a command inside a
 script file is not read. A blocked command is recorded in

@@ -203,7 +203,8 @@ result), use `memory-pulse prereg` and `memory-pulse now`, not a record written 
   own `prereg settle` is refused, and nothing is written.
 - **A blocked command is the evaluator's.** The block starts `memory-pulse guard: blocked.` and says
   `sealed by prereg <id> at row N`. Do not reword the command and do not add the marker yourself: hand the
-  run to the evaluator, or settle the prereg. `MEMORY_PULSE_ROLE=evaluator` at the start of a command line is
+  run to the evaluator, or settle the prereg. The way out is never blocked: `memory-pulse prereg settle`,
+  `prereg verify`, `prereg list`, `verify` and `now` always run when each is the only command on its line. `MEMORY_PULSE_ROLE=evaluator` at the start of a command line is
   the evaluator's alone. The rule is a tripwire against inattention, not a security boundary. It fires on
   Claude Code's `Bash` (and on Cursor's `Shell`, tested against its documented payload only); on Codex treat a
   reserved run as unguarded and read the seal's forbid patterns yourself before you run anything.

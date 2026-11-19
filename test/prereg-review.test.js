@@ -335,3 +335,63 @@ test("F5: a forbid pattern too slow to run before every command is refused at se
   const ok = p.run(["prereg", "seal", "fine", "--spec", "spec.md", "--forbid", "train\\.py .*--n (4096|8192)\\b", "--forbid", "--confirm\\b", "--forbid", "(?:bash|sh) run_[a-z]+\\.sh"]);
   assert.equal(ok.status, 0, out(ok)); assert.equal(p.rows()[0].prereg.forbid.length, 3);
 });
+
+// A seal's rule as an earlier build could have declared it (or as a hand could edit it): the pattern matches every command.
+// The seal is real and open; only the pattern is swapped, since `prereg seal` now refuses such a pattern itself.
+function sealedWith(pattern, id = "lock") {
+  const p = project();
+  const s = p.run(["prereg", "seal", id, "--spec", "spec.md", "--forbid", "train\\.py .*--n 4096"]); assert.equal(s.status, 0, out(s));
+  const rule = JSON.parse(readFileSync(p.invariants, "utf8").trim()); rule.patterns = [pattern];
+  writeFileSync(p.invariants, JSON.stringify(rule) + "\n");
+  return p;
+}
+
+test("F1a: the way out always works: a seal's rule never blocks one invocation of prereg settle, prereg verify, prereg list, verify or now", () => {
+  const p = sealedWith("/./"); mkdirSync(join(p.dir, "sub dir"));
+  assert.equal(p.bash("ls").status, 2, "the rule is live: it blocks an everyday command");
+  for (const cmd of [
+    "memory-pulse prereg settle lock --verdict KEEP --file verdict.md",
+    "npx memory-pulse prereg settle lock --verdict KEEP --file verdict.md",
+    "npx -y memory-pulse@0.18.0 prereg verify lock",
+    "npx --yes memory-pulse prereg verify lock --json",
+    "memory-pulse prereg list", "  memory-pulse prereg list --json  ",
+    "memory-pulse verify", "memory-pulse now", "memory-pulse now --json",
+    "node server.mjs prereg settle lock --verdict KEEP --file verdict.md",
+    `node ${SERVER} prereg list`, `node "${SERVER}" prereg verify lock`,
+    `cd ${p.dir} && memory-pulse prereg settle lock --verdict KEEP --file verdict.md`,
+    'cd "sub dir" && memory-pulse prereg list',
+  ]) {
+    const r = p.bash(cmd);
+    assert.equal(r.status, 0, `${cmd}: ${out(r)}`);
+    assert.match(r.stderr, /prereg lock .*allowed, because a seal's rule never blocks the way out/, `the pass is said: ${cmd}`);
+  }
+  // a compound line gets no such pass, and neither does any other command of this tool
+  for (const cmd of [
+    "memory-pulse prereg list; python train.py --n 4096",
+    "memory-pulse prereg list && ls",
+    "memory-pulse now || ls",
+    "memory-pulse prereg list | sh",
+    "memory-pulse prereg list & python train.py --n 4096",
+    "memory-pulse prereg verify `python train.py --n 4096`",
+    "memory-pulse prereg verify $(python train.py --n 4096)",
+    "memory-pulse prereg list\npython train.py --n 4096",
+    "memory-pulse prereg list > out.txt",
+    "cd sub && cd dir && memory-pulse now",
+    "ls && memory-pulse now",
+    "memory-pulse prereg seal other --spec spec.md",
+    "memory-pulse remember a b", 'memory-pulse guard allow "." "locked out"',
+    "memory-pulse-other prereg list", "node other.mjs prereg list", "node notserver.mjs now", "echo memory-pulse prereg list",
+    "memory-pulse prereg", "memory-pulse nowhere", "rm .memory-pulse/invariants.jsonl",
+  ]) assert.equal(p.bash(cmd).status, 2, `no pass for: ${cmd}`);
+  // check --kind command judges by the same rule, and Cursor's Shell gets the same answer
+  assert.equal(p.run(["check", "--kind", "command", "--text", "memory-pulse prereg settle lock --verdict KEEP --file verdict.md"]).status, 0);
+  assert.equal(p.run(["check", "--kind", "command", "--text", "memory-pulse prereg list; ls"]).status, 2);
+  const cursor = (command) => JSON.parse(p.run(["guard", "--host", "cursor"], JSON.stringify({ hook_event_name: "preToolUse", tool_name: "Shell", tool_input: { command } })).stdout).permission;
+  assert.equal(cursor("memory-pulse prereg settle lock --verdict KEEP --file verdict.md"), "allow"); assert.equal(cursor("ls"), "deny");
+  // a rule someone declared by hand has no such pass
+  appendFileSync(p.invariants, JSON.stringify({ id: "hand", on: "command", statement: "by hand", patterns: ["/prereg list/"], severity: "block" }) + "\n");
+  const h = p.bash("memory-pulse prereg list"); assert.equal(h.status, 2, out(h)); assert.match(h.stderr, /invariant hand/);
+  // and the way out, taken for real, ends the block
+  const s = p.run(["prereg", "settle", "lock", "--verdict", "KEEP", "--file", "verdict.md"]);
+  assert.equal(s.status, 0, out(s)); assert.equal(p.bash("ls").status, 0);
+});

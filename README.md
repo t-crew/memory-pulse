@@ -494,6 +494,14 @@ memory-pulse guard: blocked.
   • sealed by prereg exp-7 at row 12: this command is the evaluator's (matched /train\.py .*--n (4096|8192)/). Hand it to an evaluator, whose command line starts with MEMORY_PULSE_ROLE=evaluator, or settle the prereg: memory-pulse prereg settle exp-7 --verdict <WORD> --file <verdict-file>
 ```
 
+**The way out always works.** A seal's rule never blocks a command that is one
+invocation of `memory-pulse prereg settle`, `prereg verify`, `prereg list`,
+`verify` or `now`, also spelled `npx memory-pulse <command>` or
+`node <path>/server.mjs <command>`, after at most one `cd <dir> &&`. The guard says
+so on stderr. A line that carries anything more (`;`, `&&`, `|`, a redirect, a
+command substitution) gets no such pass, and neither does a rule you declared
+by hand.
+
 **The forbid rule is a tripwire against inattention, not a security
 boundary.** A command line that starts with `MEMORY_PULSE_ROLE=evaluator`
 (after any `cd <dir> &&`) passes, and the guard says so on stderr. Anyone can
