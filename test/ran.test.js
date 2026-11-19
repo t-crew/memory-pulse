@@ -45,6 +45,9 @@ test("ran lists the recorded commands that match, each with its time and session
     ["sess-A", "python train.py --seed 3 --n 4096", true, 0, false],
     ["sess-B", "MEMORY_PULSE_ROLE=evaluator python train.py --n 8192", false, 1, true],
   ]);
+  // the pattern comes first and is taken as written, dashes and all: a flag is what an evaluator searches for
+  assert.deepEqual(JSON.parse(p.run(["ran", "--seed", "--json"]).stdout).matches.map((m) => m.cmd), ["python train.py --seed 3 --n 4096"]);
+  assert.equal(JSON.parse(p.run(["ran", "--n=?\\s?8192", "--json"]).stdout).matches.length, 1);
   for (const m of j.matches) { assert.match(m.at, ISO_MS); assert.ok(Math.abs(Date.parse(m.at) - Date.now()) < 30_000); }
   assert.ok(j.matches[0].at <= j.matches[1].at, "oldest first");
   const r = p.run(["ran", PATTERN]);
