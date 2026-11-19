@@ -315,6 +315,10 @@ npx memory-pulse capture        # PostToolUse hook (installed by install-hook): 
 npx memory-pulse consolidate    # Stop / SessionEnd hook: fail-then-pass becomes a fix and still-failing an open thread, each pointing at its evidence
 npx memory-pulse weights        # what each memory did: check outcomes shown vs. sat out at random; retired ones marked
 npx memory-pulse adopt          # the corrections you already keep (Claude Code feedback memories, CLAUDE.md, AGENTS.md, rules files), shown; --yes enforces them
+npx memory-pulse prereg seal exp-7 --spec spec.md --file run.py --assert 'shipped/params.py::THRESHOLD = 0.25' --forbid 'train\.py .*--n (4096|8192)'   # pre-registered research: assertions checked against the file that defines the value, then one row with the clock's stamp and each sha256; the guard blocks the forbidden command until settle
+npx memory-pulse prereg verify exp-7   # the evaluator's first step: re-hash every sealed file; unchanged or CHANGED with both hashes; exit 2 if any changed
+npx memory-pulse prereg settle exp-7 --verdict KEEP --file verdict.md   # one row with the verdict file's sha256, citing the seal row; the forbid patterns stop blocking
+npx memory-pulse prereg list    # open and settled seals: id, row, stamp, verdict; --json
 npx memory-pulse now            # the machine clock as the two stamps a record uses; paste a record's stamp from it, never type one; --json
 npx memory-pulse lint [--ci]    # do CLAUDE.md / AGENTS.md / .claude/rules still state a value the ledger retired?
 npx memory-pulse report         # correction re-violation scoreboard, computed locally

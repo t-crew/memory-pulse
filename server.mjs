@@ -48,7 +48,7 @@ import { savedKey } from "./lib/login.mjs";
 import { hostOf, normalizeHook } from "./lib/hosts.mjs";
 import { drift as driftWith } from "./lib/drift.mjs";
 import { advisoryTerm } from "./lib/advisory.mjs";
-import { commandHits, invariantsFor, COMMAND_HINT } from "./lib/prereg.mjs";
+import { commandHits, invariantsFor, COMMAND_HINT, PREREG_WRITE, cliPrereg, cliNow } from "./lib/prereg.mjs";
 import { SOUL_WRITE, RESERVED, soulState, soulLines, soulGuard, cliSoul, cliUser, setSection, chainedOnly, heldFromMerge, taintOf, soulCapsule, verifySoulCapsule, continuityLine, soulScreen,
          isExternalTool, externalCmd, externalWhat, markTaint, taintMarked, soulTaintGuard } from "./lib/soul.mjs";
 
@@ -702,7 +702,7 @@ export function trustLine(path, tr) {
 
 // Fields a row may carry beyond the finding itself. `rollback_to` marks a rollback row (state rollback); `origin` names
 // the branch and row a merged row came from; `state` records which capsule an import or a merge came from.
-const ROW_FIELDS = ["rollback_to", "origin", "state", "where", "probe", "bank", "capture_key", "evidence", "credit", "resolves", "proposal", "decides", "journal", "export", "provenance", "anchor"];
+const ROW_FIELDS = ["rollback_to", "origin", "state", "where", "probe", "bank", "capture_key", "evidence", "credit", "resolves", "proposal", "decides", "journal", "export", "provenance", "anchor", "prereg"];
 
 export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn, replacement, supersedes, override, scope, fields, owner }) {
   // soul mode (lib/soul.mjs): the soul, the user notes, decisions on held changes, the export record and the journal are written through
@@ -720,6 +720,9 @@ export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn
   }
   if (Array.isArray(tags) && owner !== SOUL_WRITE && tags.some((t) => RESERVED.includes(t) || (t === "identity" && scope === "agent" && soulActive())))
     return { written: false, reason: "the soul, the user notes, the identity and the journal are written through memory-pulse soul, memory-pulse user and memory-pulse identity, so each change is screened and kept with where it came from", hint: 'memory-pulse soul "<text>" (or user / identity)' };
+  // 0.18.0: a prereg row's manifest (the stamp, the hashes, the patterns) is written by memory-pulse prereg, which reads the clock and
+  // hashes the files itself (lib/prereg.mjs holds PREREG_WRITE, a Symbol): no caller supplies a stamp
+  if (fields?.prereg !== undefined && owner !== PREREG_WRITE) return { written: false, reason: "a prereg manifest is written by memory-pulse prereg, which reads the clock and hashes the files itself", hint: "memory-pulse prereg seal <id> --spec <file>" };
   // Instruction-like notes are refused at the write. The engine quarantines
   // them at read time too (and reports it), but a note that would be rendered
   // into every future session as an instruction should never reach the ledger.
@@ -2931,6 +2934,12 @@ Commands
   consolidate [--final]               Stop / SessionEnd hook: fail-then-pass becomes a fix, still-failing an open thread, each with its evidence; --final adds a session summary and the episode .rain capsule
   weights                             what each memory did: check outcomes when it was shown and when it sat out at random; retired ones marked
   adopt [--yes] [--json]              enforce the corrections you already keep: Claude Code feedback memories, CLAUDE.md, AGENTS.md, rules files (shows them; --yes records them)
+  prereg seal <id> --spec <file> [--file <path>]... [--assert '<path>::<text>']... [--forbid '<regex>']... [--note "..."]
+                                      pre-registered research: every --assert must hold in the file that defines the value before anything is written (exit 1 with the real line otherwise); then one row with the clock's stamp, each file's sha256, the assertions and the forbid patterns; the guard blocks a shell command that matches a --forbid until the seal is settled, unless its command line starts with MEMORY_PULSE_ROLE=evaluator: a tripwire against inattention, not a security boundary
+         verify <id> [--json]         the evaluator's first step: re-hash every sealed file, unchanged or CHANGED with both hashes; exit 2 if any changed or is missing
+         settle <id> --verdict <WORD> --file <verdict-file> [--note "..."]
+                                      one row with the verdict and the verdict file's sha256, citing the seal row; the seal's forbid patterns stop blocking
+         list [--json]                open and settled seals: id, row, stamp, verdict
   now [--json]                        the machine clock as the stamps a record uses (2026-11-19 02:15 UTC and 2026-11-19T02:15:07Z); a record's stamp is pasted from this, never typed
   lint [--ci] [--json] [--strict] [paths...]
                                       the guard's check over CLAUDE.md, AGENTS.md, .claude/rules, .cursorrules, Muse Code's .agents/memory and the other files a session loads; warns on a line planted for the agent (--strict blocks on it)
@@ -3585,7 +3594,8 @@ if (isMain) {
   if (sub === "adopt") { const { cliAdopt } = await import("./lib/adopt.mjs"); process.exit(cliAdopt(process.argv.slice(3), { readEvents, inForce, appendEvent, detectCorrection, detectProhibition, instructionLike })); }
   if (sub === "logout") { const { cliLogout } = await import("./lib/login.mjs"); process.exit(cliLogout()); }
   if (sub === "board") { globalThis.__MEMORY_PULSE_CORE__ = { chainAppend, verifyChain, instructionLike, readEvents, buildCapsule, API, KEY }; const { cliBoard } = await import("./lib/board.mjs"); process.exit(await cliBoard(process.argv.slice(3))); }
-  if (sub === "now") { const { cliNow } = await import("./lib/prereg.mjs"); process.exit(cliNow(process.argv.slice(3))); }
+  if (sub === "now") process.exit(cliNow(process.argv.slice(3)));
+  if (sub === "prereg") process.exit(cliPrereg(process.argv.slice(3), { ledgerPath, readEvents, appendEvent }));
   if (sub === "lint") { await cliLint(); process.exit(0); }
   if (sub === "report") { cliReport(); process.exit(0); }
   if (sub === "bench") { await cliBench(); process.exit(0); }
