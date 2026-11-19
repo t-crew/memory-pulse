@@ -30,7 +30,10 @@ spec and of each `--file`, the assertions and the forbid patterns. No option
 takes a stamp. The row reads `prereg <id> -> sealed <first 12 characters of
 the spec's sha256>`, and a settle row `settled <WORD> <first 12 characters of
 the verdict file's sha256>`: neither effect is a bare word, and `check` and
-`lint` never count a prereg row as evidence about a text.
+`lint` never count a prereg row as evidence about a text. An id has one open
+seal at a time: the check is made under the ledger's lock together with the
+write, so of two seals of one id started at the same moment one is written and
+the other is refused.
 
 Each `--forbid '<regex>'` is blocked by the guard as a shell command while the
 seal is open. A forbid names the evaluator's command, not every command: at

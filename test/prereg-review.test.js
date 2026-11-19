@@ -482,3 +482,25 @@ test("F1d: a seal's rule with no open seal on this ledger is not enforced: the g
   assert.equal(rs.status, 0, out(rs)); assert.match(rs.stdout, /^prereg exp-7: no open seal on this ledger \(it was settled KEEP at row 2\); no row was written$/m);
   assert.ok(!existsSync(r.invariants), "the file held only that rule"); assert.equal(r.rows().length, 2);
 });
+
+// ---- F6: two seals of one id started at the same moment
+
+test("F6: of several seals of one id started together, exactly one is written; the rest are refused as already open", async () => {
+  const start = (p, pattern) => new Promise((done) => {
+    const c = spawn(process.execPath, [SERVER, "prereg", "seal", "race", "--spec", "spec.md", "--forbid", pattern], { cwd: p.dir, env: p.env });
+    let text = ""; c.stdout.on("data", (d) => { text += d; }); c.stderr.on("data", (d) => { text += d; }); c.on("close", (code) => done({ code, text, pattern }));
+  });
+  for (let round = 0; round < 6; round++) {
+    const p = project();
+    const all = await Promise.all(["run_one\\.sh", "run_two\\.sh", "run_three\\.sh", "run_four\\.sh"].map((pattern) => start(p, pattern)));
+    const won = all.filter((x) => x.code === 0), lost = all.filter((x) => x.code !== 0);
+    assert.equal(won.length, 1, `round ${round + 1}: ${all.map((x) => `${x.pattern} -> ${x.code}`).join(", ")}\n${all.map((x) => x.text).join("---\n")}`);
+    for (const x of lost) { assert.equal(x.code, 1); assert.match(x.text, /"race" already has an open seal \(row 1/, x.text); assert.match(x.text, /Nothing was written/); }
+    const seals = p.rows().filter((r) => r.prereg?.op === "seal");
+    assert.equal(seals.length, 1, "one seal row"); assert.deepEqual(seals[0].prereg.forbid, [`/${won[0].pattern}/`]);
+    const rules = readFileSync(p.invariants, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.deepEqual(rules.map((r) => [r.owner.prereg, r.owner.row, r.patterns[0]]), [["race", 1, `/${won[0].pattern}/`]], "and only its rule");
+    assert.match(p.run(["prereg", "list"]).stdout, /^prereg: 1 seal\(s\), 1 open$/m);
+    assert.equal(p.run(["verify"]).status, 0, "the chain holds");
+  }
+});

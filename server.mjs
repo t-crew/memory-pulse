@@ -721,7 +721,7 @@ export function trustLine(path, tr) {
 // the branch and row a merged row came from; `state` records which capsule an import or a merge came from.
 const ROW_FIELDS = ["rollback_to", "origin", "state", "where", "probe", "bank", "capture_key", "evidence", "credit", "resolves", "proposal", "decides", "journal", "export", "provenance", "anchor", "prereg"];
 
-export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn, replacement, supersedes, override, scope, fields, owner }) {
+export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn, replacement, supersedes, override, scope, fields, owner, unless }) {
   // soul mode (lib/soul.mjs): the soul, the user notes, decisions on held changes, the export record and the journal are written through
   // the soul commands and the session-end hook, which hold SOUL_WRITE (a Symbol: remember and the MCP tool pass JSON, which cannot carry
   // one), so every change is screened, checked for outside content in its session, and kept with where it came from; in soul mode the
@@ -814,7 +814,10 @@ export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn
   // a captured row is checked again under the lock: a Stop and a SessionEnd consolidation running at once both read the ledger before
   // either wrote (final pass 2026-10-21)
   const ckLine = ck ? `"capture_key":${JSON.stringify(ck)}` : null;
-  try { const r = chainAppend(path, event, ckLine ? { unless: (p) => readFileSync(p, "utf8").includes(ckLine) } : {}); if (r && r.written === false) return { written: false, reason: "duplicate", ledger: path }; }
+  // `unless` (a function, so only memory-pulse's own commands can pass one): one more condition checked under the same lock, for a
+  // row that must not be written when the ledger already holds something (a second open seal of one prereg id, 0.18.0)
+  const refuse = typeof unless === "function" ? unless : null;
+  try { const r = chainAppend(path, event, ckLine || refuse ? { unless: (p) => (!!refuse && !!refuse(p)) || (!!ckLine && readFileSync(p, "utf8").includes(ckLine)) } : {}); if (r && r.written === false) return { written: false, reason: "duplicate", ledger: path }; }
   catch (e) { if (e.code === "ELEDGERLOCKED") return { written: false, reason: e.message, ledger: path, hint: "Another writer holds the ledger lock; nothing was written. Retry, or remove the lock file if its holder is gone." }; throw e; }
   // Echo the canonical stored event back. A shell-quoting accident once ate a
   // word from a note SILENTLY; the caller must be able to see what the ledger
