@@ -38,7 +38,9 @@ seal time each pattern is tried on the seal's own `prereg settle`, `prereg
 verify` and `prereg list`, on `ls`, `pwd`, `cd /tmp`, `git status`, `cat
 README.md`, `echo ok`, `node --version`, `python3 --version` and on the empty
 command, and one that matches is refused with that command named, exit 1,
-nothing written. The block names the prereg and its seal row, says the command is
+nothing written. The trial runs in a process of its own and is timed: a
+pattern still running after 500 ms on those commands and three long ones is
+refused as too slow to run before every command. The block names the prereg and its seal row, says the command is
 the evaluator's, and says how to proceed. A command line that starts with
 `MEMORY_PULSE_ROLE=evaluator` passes. This is a tripwire against inattention,
 not a security boundary: anyone can type the marker, and a command inside a

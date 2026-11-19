@@ -315,3 +315,23 @@ test("F1b: a forbid that matches an everyday command, the seal's own way out or 
   assert.equal(q.run(["prereg", "seal", "lock", "--spec", "spec.md", "--forbid", "."]).status, 1);
   for (const c of ["ls", SETTLE("lock"), "memory-pulse prereg list", "memory-pulse prereg verify lock"]) assert.equal(q.bash(c).status, 0, c);
 });
+
+// ---- F5: the guard runs a forbid pattern before every shell command, so a pattern that cannot finish on a short command is refused
+
+test("F5: a forbid pattern too slow to run before every command is refused at seal time, and nothing is written", () => {
+  const p = project();
+  for (const pattern of ["(a+)+$", "(x| |x )+!"]) {
+    const t0 = Date.now();
+    const r = p.run(["prereg", "seal", "slow", "--spec", "spec.md", "--forbid", pattern], "", { timeout: 30000 });
+    const took = Date.now() - t0;
+    assert.equal(r.status, 1, `--forbid '${pattern}' (${took} ms): ${out(r)}`);
+    assert.ok(r.stderr.includes(`--forbid '${pattern}' is too slow to run before every command`), r.stderr); assert.match(r.stderr, /Nothing was written/);
+    assert.ok(took < 5000, `the refusal itself is quick: ${took} ms`);
+  }
+  assert.ok(!existsSync(p.ledger), "no row"); assert.ok(!existsSync(p.invariants), "no rule");
+  // so the review's command never meets the pattern: 28 characters, which took the guard 44 s
+  const g0 = Date.now(); assert.equal(p.bash("a".repeat(27) + "!").status, 0); assert.ok(Date.now() - g0 < 5000);
+  // patterns that name a run are not slow, flags and all (a pattern may begin with dashes)
+  const ok = p.run(["prereg", "seal", "fine", "--spec", "spec.md", "--forbid", "train\\.py .*--n (4096|8192)\\b", "--forbid", "--confirm\\b", "--forbid", "(?:bash|sh) run_[a-z]+\\.sh"]);
+  assert.equal(ok.status, 0, out(ok)); assert.equal(p.rows()[0].prereg.forbid.length, 3);
+});

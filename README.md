@@ -483,7 +483,10 @@ What a seal does, in order:
   `prereg verify` and `prereg list`, then `ls`, `pwd`, `cd /tmp`, `git status`,
   `cat README.md`, `echo ok`, `node --version`, `python3 --version` and the
   empty command. A pattern that matches one of them is refused with that
-  command named, exit 1, nothing written. While the seal is open the guard
+  command named, exit 1, nothing written. The trial is timed, because the
+  guard runs a forbid before every shell command: a pattern still running
+  after 500 ms on those commands and three long ones (`(a+)+$` is one) is
+  refused as too slow. While the seal is open the guard
   blocks a shell command that matches, and says whose command it is:
 
 ```
