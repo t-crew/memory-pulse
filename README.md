@@ -543,7 +543,7 @@ prereg exp-7: sealed at row 12, 2026-11-19 02:41 UTC (open)
   assert holds            shipped/params.py :: THRESHOLD = 0.25
   blocked by the guard under this seal: 1 command(s), last 2026-11-19T02:41:11.033Z: python train.py --n 4096
 verify: 1 of 1 sealed file(s) changed or missing
-rests on: the ledger's row chain (row 12 is on it). memory-pulse verify checks the chain, the engine's seal and this machine's anchor.
+rests on: the ledger's row chain, which holds this seal row. memory-pulse verify checks the chain, the engine's seal and this machine's anchor.
 ```
 
 Exit 2 unless every sealed file is unchanged; a file that is gone is MISSING,

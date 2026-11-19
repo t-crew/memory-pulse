@@ -267,7 +267,8 @@ test("F4: prereg verify ends with what its answer rests on, and README and SKILL
   assert.equal(p.run(["prereg", "seal", "exp-7", "--spec", "spec.md"]).status, 0);
   const v = p.run(["prereg", "verify", "exp-7"]);
   assert.equal(v.status, 0, out(v));
-  assert.equal(v.stdout.trimEnd().split("\n").at(-1), "rests on: the ledger's row chain (row 2 is on it). memory-pulse verify checks the chain, the engine's seal and this machine's anchor.");
+  // the line is the same wherever the seal's row falls, so the guide's section 17 reads true run alone (row 1) and in the guide's own run (row 11)
+  assert.equal(v.stdout.trimEnd().split("\n").at(-1), "rests on: the ledger's row chain, which holds this seal row. memory-pulse verify checks the chain, the engine's seal and this machine's anchor.");
   assert.match(JSON.parse(p.run(["prereg", "verify", "exp-7", "--json"]).stdout).rests_on, /row chain/);
   // a stray row for the same id beside the real seal is named, and the real seal still answers
   byHand(p, { t: 3, cause: "prereg exp-7", effect: "settled KEEP", kind: "event", prereg: { id: "exp-7", op: "settle", at: "2026-01-01T00:00:00Z", verdict: "KEEP", file: { path: "verdict.md", sha256: sha(join(p.dir, "verdict.md")) }, seal: 2 } });

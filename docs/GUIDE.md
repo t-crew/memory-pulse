@@ -852,7 +852,7 @@ npx -y memory-pulse@0.17.2 ran 'train\.py .*--n (4096|8192)'
   assert holds            shipped/params.py :: THRESHOLD = 0.25
   blocked by the guard under this seal: 1 command(s)
 verify: all 1 sealed file(s) unchanged
-rests on: the ledger's row chain (row 11 is on it). memory-pulse verify checks the chain, the engine's seal and this machine's anchor.
+rests on: the ledger's row chain, which holds this seal row. memory-pulse verify checks the chain, the engine's seal and this machine's anchor.
 exit 0
 session evaluator-1  ok  MEMORY_PULSE_ROLE=evaluator python train.py --n 4096  [evaluator]
 This is what the capture hook recorded on this machine: the first 200 characters of each command, secrets scrubbed, a leading cd dropped. A command run where the hook is not installed is not here.
