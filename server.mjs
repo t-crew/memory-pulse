@@ -48,7 +48,7 @@ import { savedKey } from "./lib/login.mjs";
 import { hostOf, normalizeHook } from "./lib/hosts.mjs";
 import { drift as driftWith } from "./lib/drift.mjs";
 import { advisoryTerm } from "./lib/advisory.mjs";
-import { commandHits, invariantsFor, COMMAND_HINT, PREREG_WRITE, cliPrereg, cliNow } from "./lib/prereg.mjs";
+import { commandHits, invariantsFor, COMMAND_HINT, PREREG_WRITE, cliPrereg, cliNow, cliRan } from "./lib/prereg.mjs";
 import { SOUL_WRITE, RESERVED, soulState, soulLines, soulGuard, cliSoul, cliUser, setSection, chainedOnly, heldFromMerge, taintOf, soulCapsule, verifySoulCapsule, continuityLine, soulScreen,
          isExternalTool, externalCmd, externalWhat, markTaint, taintMarked, soulTaintGuard } from "./lib/soul.mjs";
 
@@ -2940,6 +2940,8 @@ Commands
          settle <id> --verdict <WORD> --file <verdict-file> [--note "..."]
                                       one row with the verdict and the verdict file's sha256, citing the seal row; the seal's forbid patterns stop blocking
          list [--json]                open and settled seals: id, row, stamp, verdict
+  ran '<regex>' [--since <row|ISO time>] [--json]
+                                      the recorded shell commands that match, with time and session, from the capture hook's episodes (a command's first 200 characters, secrets scrubbed): did a forbidden configuration run after a seal; --since takes a prereg row or a time
   now [--json]                        the machine clock as the stamps a record uses (2026-11-19 02:15 UTC and 2026-11-19T02:15:07Z); a record's stamp is pasted from this, never typed
   lint [--ci] [--json] [--strict] [paths...]
                                       the guard's check over CLAUDE.md, AGENTS.md, .claude/rules, .cursorrules, Muse Code's .agents/memory and the other files a session loads; warns on a line planted for the agent (--strict blocks on it)
@@ -3596,6 +3598,7 @@ if (isMain) {
   if (sub === "board") { globalThis.__MEMORY_PULSE_CORE__ = { chainAppend, verifyChain, instructionLike, readEvents, buildCapsule, API, KEY }; const { cliBoard } = await import("./lib/board.mjs"); process.exit(await cliBoard(process.argv.slice(3))); }
   if (sub === "now") process.exit(cliNow(process.argv.slice(3)));
   if (sub === "prereg") process.exit(cliPrereg(process.argv.slice(3), { ledgerPath, readEvents, appendEvent }));
+  if (sub === "ran") process.exit(cliRan(process.argv.slice(3), { ledgerPath, readEvents }));
   if (sub === "lint") { await cliLint(); process.exit(0); }
   if (sub === "report") { cliReport(); process.exit(0); }
   if (sub === "bench") { await cliBench(); process.exit(0); }

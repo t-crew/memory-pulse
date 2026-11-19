@@ -319,6 +319,7 @@ npx memory-pulse prereg seal exp-7 --spec spec.md --file run.py --assert 'shippe
 npx memory-pulse prereg verify exp-7   # the evaluator's first step: re-hash every sealed file; unchanged or CHANGED with both hashes; exit 2 if any changed
 npx memory-pulse prereg settle exp-7 --verdict KEEP --file verdict.md   # one row with the verdict file's sha256, citing the seal row; the forbid patterns stop blocking
 npx memory-pulse prereg list    # open and settled seals: id, row, stamp, verdict; --json
+npx memory-pulse ran 'train\.py .*--n (4096|8192)' --since 12   # the recorded shell commands that match, with time and session, since the seal at row 12 (from capture's episodes)
 npx memory-pulse now            # the machine clock as the two stamps a record uses; paste a record's stamp from it, never type one; --json
 npx memory-pulse lint [--ci]    # do CLAUDE.md / AGENTS.md / .claude/rules still state a value the ledger retired?
 npx memory-pulse report         # correction re-violation scoreboard, computed locally
