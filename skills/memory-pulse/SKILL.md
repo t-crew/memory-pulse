@@ -198,7 +198,9 @@ result), use `memory-pulse prereg` and `memory-pulse now`, not a record written 
   prints the line with the real value. An assertion holds only when a line of code states the text whole: not
   as a prefix of a longer value (`LIMIT = 50` against `LIMIT = 500`) and not inside a `#` or `//` comment.
   Never assert a secret: the text is scrubbed before it is kept. Give every run the spec reserves for the evaluator a `--forbid`,
-  written to match the run (the program and its flag).
+  written to match the run (the program and its flag). A forbid names the evaluator's command, not every
+  command: one that also matches an everyday command (`ls`, `git status`, `python3 --version`) or the seal's
+  own `prereg settle` is refused, and nothing is written.
 - **A blocked command is the evaluator's.** The block starts `memory-pulse guard: blocked.` and says
   `sealed by prereg <id> at row N`. Do not reword the command and do not add the marker yourself: hand the
   run to the evaluator, or settle the prereg. `MEMORY_PULSE_ROLE=evaluator` at the start of a command line is

@@ -280,3 +280,38 @@ test("F4: prereg verify ends with what its answer rests on, and README and SKILL
     assert.ok(text.includes("NOT ON THE CHAIN"), `${name} names what list prints for a row this tool did not write`);
   }
 });
+
+// ---- F1: a forbid pattern must never lock a session out of its own shell.
+
+const SETTLE = (id) => `memory-pulse prereg settle ${id} --verdict KEEP --file VERDICT.md`;
+
+test("F1b: a forbid that matches an everyday command, the seal's own way out or the empty command is refused at seal time: exit 1, the command named, nothing written", () => {
+  const p = project();
+  const seal = (id, ...forbid) => p.run(["prereg", "seal", id, "--spec", "spec.md", ...forbid.flatMap((f) => ["--forbid", f])]);
+  for (const [id, pattern, named] of [
+    ["lock", ".", `"${SETTLE("lock")}"`],                 // every command, the way out first among them
+    ["exp-7", "exp-7", `"${SETTLE("exp-7")}"`],           // the seal's own id
+    ["lock", "memory-pulse", `"${SETTLE("lock")}"`],      // this tool
+    ["lock", "prereg (verify|list)", '"memory-pulse prereg verify lock"'],
+    ["lock", "prereg list$", '"memory-pulse prereg list"'],
+    ["lock", "^ls", '"ls"'], ["lock", "^pwd$", '"pwd"'], ["lock", "^cd ", '"cd /tmp"'], ["lock", "git", '"git status"'], ["lock", "README", '"cat README.md"'],
+    ["lock", "^echo", '"echo ok"'], ["lock", "^node\\b", '"node --version"'], ["lock", "python3?", '"python3 --version"'],
+    ["lock", "^$", "the empty command"], ["lock", "(train)?", `"${SETTLE("lock")}"`],
+  ]) {
+    const r = seal(id, pattern);
+    assert.equal(r.status, 1, `--forbid '${pattern}': ${out(r)}`);
+    assert.ok(r.stderr.includes(`--forbid '${pattern}' matches ${named}`), `--forbid '${pattern}' names ${named}: ${r.stderr}`);
+    assert.match(r.stderr, /A forbid names the evaluator's command, not every command/); assert.match(r.stderr, /[Nn]othing was written/);
+    assert.equal(r.stdout, "");
+  }
+  // one pattern that is fine does not carry one that is not
+  assert.equal(seal("lock", "train\\.py .*--n 4096", ".").status, 1);
+  assert.ok(!existsSync(p.ledger), "no row"); assert.ok(!existsSync(p.invariants), "no rule");
+  // a pattern that names a run is taken as before
+  const ok = seal("lock", "train\\.py .*--n (4096|8192)\\b", "--confirm\\b", "run_eval\\.sh");
+  assert.equal(ok.status, 0, out(ok)); assert.equal(readFileSync(p.invariants, "utf8").trim().split("\n").length, 3);
+  // the review's lockout, start to finish: the seal that caused it no longer exists, so the shell is never taken
+  const q = project();
+  assert.equal(q.run(["prereg", "seal", "lock", "--spec", "spec.md", "--forbid", "."]).status, 1);
+  for (const c of ["ls", SETTLE("lock"), "memory-pulse prereg list", "memory-pulse prereg verify lock"]) assert.equal(q.bash(c).status, 0, c);
+});

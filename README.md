@@ -477,8 +477,14 @@ What a seal does, in order:
   refused the field that holds it. A prereg row records a seal or a verdict:
   `check` and `lint` never count it as evidence about a text.
 - **Each `--forbid '<regex>'` becomes a rule on shell commands**, a line in
-  `.memory-pulse/invariants.jsonl` owned by the seal. While the seal is open
-  the guard blocks a shell command that matches, and says whose command it is:
+  `.memory-pulse/invariants.jsonl` owned by the seal. A forbid names the
+  evaluator's command, not every command, so before anything is written each
+  pattern is tried on twelve commands: the seal's own `prereg settle`,
+  `prereg verify` and `prereg list`, then `ls`, `pwd`, `cd /tmp`, `git status`,
+  `cat README.md`, `echo ok`, `node --version`, `python3 --version` and the
+  empty command. A pattern that matches one of them is refused with that
+  command named, exit 1, nothing written. While the seal is open the guard
+  blocks a shell command that matches, and says whose command it is:
 
 ```
 memory-pulse guard: blocked.

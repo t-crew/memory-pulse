@@ -799,6 +799,7 @@ mkdir -p shipped && printf 'WINDOW = 64\nTHRESHOLD = 0.25\n' > shipped/params.py
 printf '# exp-7\nH1 holds at n=2048 with threshold 0.25. Sizes 4096 and 8192 are the evaluator'"'"'s.\n' > spec.md
 npx -y memory-pulse@0.17.2 now
 npx -y memory-pulse@0.17.2 prereg seal exp-7 --spec spec.md --assert 'shipped/params.py::THRESHOLD = 0.5'; echo "exit $?"
+npx -y memory-pulse@0.17.2 prereg seal exp-7 --spec spec.md --forbid 'python3?'; echo "exit $?"
 ```
 ```text expect
 a record's stamp is pasted from these lines, never typed from memory
@@ -806,7 +807,10 @@ memory-pulse prereg seal exp-7: 1 of 1 assertion(s) failed; nothing was written
   assert FAILED: shipped/params.py does not contain "THRESHOLD = 0.5" as a whole value outside a comment
     shipped/params.py:2: THRESHOLD = 0.25
 exit 1
+memory-pulse prereg seal: --forbid 'python3?' matches "python3 --version". A forbid names the evaluator's command, not every command: write it to match the run (the program and its flag). Nothing was written
 ```
+
+The last refusal is the seal looking after the session's own shell. A forbid names the evaluator's command, not every command, so each pattern is tried on twelve commands before anything is written: the seal's own `prereg settle`, `prereg verify` and `prereg list`, then `ls`, `pwd`, `cd /tmp`, `git status`, `cat README.md`, `echo ok`, `node --version`, `python3 --version` and the empty command. A pattern that matches one of them is refused with that command named, exit 1, and nothing is written.
 
 A seal that passes writes one ledger row through the same writer as every other row: `prereg exp-7 -> sealed 3b2484bb7732` (the first 12 characters of the spec's sha256), with the stamp read from the clock by the code, the sha256 of the spec and of each `--file`, the assertions and the forbid patterns. No option takes a stamp, and `append` and `remember` are refused the field that holds it. A prereg row records a seal or a verdict: `check` and `lint` never count it as evidence about a text. Each `--forbid '<regex>'` is declared in `.memory-pulse/invariants.jsonl` as a rule on shell commands, owned by the seal. While the seal is open the guard blocks a shell command that matches and says whose command it is. A command line that starts with `MEMORY_PULSE_ROLE=evaluator` (after any `cd <dir> &&`) passes, and the guard says so:
 

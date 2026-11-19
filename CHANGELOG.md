@@ -33,7 +33,12 @@ the verdict file's sha256>`: neither effect is a bare word, and `check` and
 `lint` never count a prereg row as evidence about a text.
 
 Each `--forbid '<regex>'` is blocked by the guard as a shell command while the
-seal is open. The block names the prereg and its seal row, says the command is
+seal is open. A forbid names the evaluator's command, not every command: at
+seal time each pattern is tried on the seal's own `prereg settle`, `prereg
+verify` and `prereg list`, on `ls`, `pwd`, `cd /tmp`, `git status`, `cat
+README.md`, `echo ok`, `node --version`, `python3 --version` and on the empty
+command, and one that matches is refused with that command named, exit 1,
+nothing written. The block names the prereg and its seal row, says the command is
 the evaluator's, and says how to proceed. A command line that starts with
 `MEMORY_PULSE_ROLE=evaluator` passes. This is a tripwire against inattention,
 not a security boundary: anyone can type the marker, and a command inside a
