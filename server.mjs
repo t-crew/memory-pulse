@@ -2913,6 +2913,7 @@ Commands
   consolidate [--final]               Stop / SessionEnd hook: fail-then-pass becomes a fix, still-failing an open thread, each with its evidence; --final adds a session summary and the episode .rain capsule
   weights                             what each memory did: check outcomes when it was shown and when it sat out at random; retired ones marked
   adopt [--yes] [--json]              enforce the corrections you already keep: Claude Code feedback memories, CLAUDE.md, AGENTS.md, rules files (shows them; --yes records them)
+  now [--json]                        the machine clock as the stamps a record uses (2026-11-19 02:15 UTC and 2026-11-19T02:15:07Z); a record's stamp is pasted from this, never typed
   lint [--ci] [--json] [--strict] [paths...]
                                       the guard's check over CLAUDE.md, AGENTS.md, .claude/rules, .cursorrules, Muse Code's .agents/memory and the other files a session loads; warns on a line planted for the agent (--strict blocks on it)
   guard [--verbose]                   PreToolUse hook: reads the tool call from stdin, exit 2 with the ledger line when an edit writes a withdrawn value back
@@ -3566,6 +3567,7 @@ if (isMain) {
   if (sub === "adopt") { const { cliAdopt } = await import("./lib/adopt.mjs"); process.exit(cliAdopt(process.argv.slice(3), { readEvents, inForce, appendEvent, detectCorrection, detectProhibition, instructionLike })); }
   if (sub === "logout") { const { cliLogout } = await import("./lib/login.mjs"); process.exit(cliLogout()); }
   if (sub === "board") { globalThis.__MEMORY_PULSE_CORE__ = { chainAppend, verifyChain, instructionLike, readEvents, buildCapsule, API, KEY }; const { cliBoard } = await import("./lib/board.mjs"); process.exit(await cliBoard(process.argv.slice(3))); }
+  if (sub === "now") { const { cliNow } = await import("./lib/prereg.mjs"); process.exit(cliNow(process.argv.slice(3))); }
   if (sub === "lint") { await cliLint(); process.exit(0); }
   if (sub === "report") { cliReport(); process.exit(0); }
   if (sub === "bench") { await cliBench(); process.exit(0); }
