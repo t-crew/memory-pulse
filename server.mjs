@@ -2488,7 +2488,7 @@ async function cliGuard() {
   // said on stderr. The text a command writes is still judged as an edit above, as before.
   if (command) {
     const c = commandHits(command, invariants, compilePattern, preregContext(payload.cwd));
-    for (const line of c.allowed) warnings.add(`memory-pulse: ${line}`);
+    for (const line of [...c.allowed, ...c.notes]) warnings.add(`memory-pulse: ${line}`);
     const hits = c.hits.filter((h) => h.severity === "block");
     if (hits.length) blocked.push({ file: "", command: true, v: { verdict: "blocked", reasons: hits.map((h) => h.reason), corrections: [], invariants: hits } });
   }
@@ -2960,8 +2960,8 @@ Commands
                                       pre-registered research: every --assert must be stated whole by a line of code in the file that defines the value, not as a prefix of it and not in a comment, before anything is written (exit 1 with the real line otherwise); then one row with the clock's stamp, each file's sha256, the assertions and the forbid patterns; the guard blocks a shell command that matches a --forbid until the seal is settled, unless its command line starts with MEMORY_PULSE_ROLE=evaluator: a tripwire against inattention, not a security boundary; a --forbid that also matches an everyday command (ls, git status) or the seal's own prereg settle is refused (exit 1)
          verify <id> [--json]         the evaluator's first step: re-hash every sealed file, unchanged or CHANGED with both hashes; exit 2 if any changed or is missing
          settle <id> --verdict <WORD> --file <verdict-file> [--note "..."]
-                                      one row with the verdict and the verdict file's sha256, citing the seal row; the seal's forbid patterns stop blocking
-         list [--json]                open and settled seals: id, row, stamp, verdict
+                                      one row with the verdict and the verdict file's sha256, citing the seal row; the seal's forbid patterns stop blocking; with no open seal for <id>, removes the rules that still name it (orphans) and writes no row
+         list [--json]                open and settled seals: id, row, stamp, verdict; also a row that carries a prereg manifest but is NOT ON THE CHAIN, and a rule whose seal is not open (ORPHAN RULE)
   ran '<regex>' [--since <row|ISO time>] [--json]
                                       the recorded shell commands that match, with time and session, from the capture hook's episodes (a command's first 200 characters, secrets scrubbed): did a forbidden configuration run after a seal; --since takes a prereg row or a time
   now [--json]                        the machine clock as the stamps a record uses (2026-11-19 02:15 UTC and 2026-11-19T02:15:07Z); a record's stamp is pasted from this, never typed

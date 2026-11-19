@@ -206,7 +206,8 @@ result), use `memory-pulse prereg` and `memory-pulse now`, not a record written 
   run to the evaluator, or settle the prereg. The way out is never blocked: `memory-pulse prereg settle`,
   `prereg verify`, `prereg list`, `verify` and `now` always run when each is the only command on its line. `MEMORY_PULSE_ROLE=evaluator` at the start of a command line is
   the evaluator's alone. The rule applies in the project the seal was made in (that directory and below, or a command that names
-  it), not in another project that shares the ledger.
+  it), not in another project that shares the ledger. A rule whose seal is not open on this ledger is an
+  orphan: the guard does not enforce it and says so, and `memory-pulse prereg settle <id>` removes it.
   The rule is a tripwire against inattention, not a security boundary. It fires on
   Claude Code's `Bash` (and on Cursor's `Shell`, tested against its documented payload only); on Codex treat a
   reserved run as unguarded and read the seal's forbid patterns yourself before you run anything.

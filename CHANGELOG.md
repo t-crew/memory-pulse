@@ -47,7 +47,9 @@ settle`, `prereg verify`, `prereg list`, `verify` or `now` and nothing more.
 A seal's rule applies in the seal's project: it is matched only against a
 command that would run in the directory the seal was made in or below it, or
 that names that directory, so one ledger shared by several projects carries a
-seal's rule into none of the others. A command line that starts with
+seal's rule into none of the others. A seal's rule with no open seal on the
+ledger is an orphan rule: the guard does not enforce it and says so, `prereg
+list` shows it, and `prereg settle <id>` removes it without writing a row. A command line that starts with
 `MEMORY_PULSE_ROLE=evaluator` passes. This is a tripwire against inattention,
 not a security boundary: anyone can type the marker, and a command inside a
 script file is not read. A blocked command is recorded in

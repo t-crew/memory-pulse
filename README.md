@@ -510,6 +510,12 @@ for home. Where one ledger serves several projects through
 `MEMORY_PULSE_LEDGER`, a seal in one of them blocks nothing in the others. A
 rule you declare by hand has no seal and applies wherever its ledger does.
 
+**A rule with no open seal is not enforced.** A seal's rule whose seal is not
+open on this ledger (it was settled, it was never sealed here, or its row is
+not on the chain) is an orphan rule. The guard does not enforce it and says so
+on stderr, once for the seal. `prereg list` shows it as `ORPHAN RULE`, and
+`memory-pulse prereg settle <id>` removes it and says so, writing no row.
+
 **The forbid rule is a tripwire against inattention, not a security
 boundary.** A command line that starts with `MEMORY_PULSE_ROLE=evaluator`
 (after any `cd <dir> &&`) passes, and the guard says so on stderr. Anyone can

@@ -436,3 +436,49 @@ test("F1c: a seal's rule applies in the seal's project: where the command would 
   const cursor = (root) => JSON.parse(p.run(["guard", "--host", "cursor"], JSON.stringify({ hook_event_name: "preToolUse", tool_name: "Shell", tool_input: { command: RUN }, workspace_roots: [root] }), { ...shared, cwd: other }).stdout).permission;
   assert.equal(cursor(other), "allow"); assert.equal(cursor(p.dir), "deny");
 });
+
+test("F1d: a seal's rule with no open seal on this ledger is not enforced: the guard says so once, list shows it as an orphan rule, settle removes it", () => {
+  const USER = '{"id":"old-domain","statement":"the old domain was retired","patterns":["example-old.com"],"severity":"block"}';
+  const orphan = (n, pattern) => JSON.stringify({ id: `prereg:orphan:forbid-${n}`, on: "command", statement: "s", patterns: [pattern], severity: "block", owner: { prereg: "orphan", row: 9 }, cite: [9] });
+  const setup = () => { const p = project(); mkdirSync(dirname(p.invariants), { recursive: true }); writeFileSync(p.invariants, [USER, orphan(1, "/./"), orphan(2, "/^ls/")].join("\n") + "\n"); return p; };
+  const p = setup();
+  // the guard: not enforced, said once however many of the seal's rules match
+  const g = p.bash("ls");
+  assert.equal(g.status, 0, out(g));
+  assert.equal((g.stderr.match(/not enforced/g) ?? []).length, 1, g.stderr);
+  assert.match(g.stderr, /no open seal for "orphan" on this ledger/); assert.match(g.stderr, /orphan rule/); assert.match(g.stderr, /memory-pulse prereg settle orphan removes/);
+  assert.ok(!existsSync(join(p.dir, ".memory-pulse", "violations.jsonl")), "nothing was blocked, so nothing is recorded as blocked");
+  const c = p.run(["check", "--kind", "command", "--text", "ls"]);
+  assert.equal(c.status, 0, out(c)); assert.match(c.stdout, /not enforced: no open seal for "orphan"/);
+  // list shows it
+  const l = p.run(["prereg", "list"]);
+  assert.match(l.stdout, /^prereg: no seals on this ledger; 2 orphan rule\(s\)$/m, l.stdout);
+  assert.match(l.stdout, /^ {2}orphan {2}ORPHAN RULE {2}prereg:orphan:forbid-1 {2}\/\.\/ {2}no open seal for this id on this ledger, so the guard does not enforce it; memory-pulse prereg settle orphan removes it$/m, l.stdout);
+  assert.match(l.stdout, /^ {2}orphan {2}ORPHAN RULE {2}prereg:orphan:forbid-2 {2}\/\^ls\/ /m);
+  assert.deepEqual(JSON.parse(p.run(["prereg", "list", "--json"]).stdout).map((x) => [x.id, x.status, x.rule, x.patterns]), [["orphan", "orphan-rule", "prereg:orphan:forbid-1", ["/./"]], ["orphan", "orphan-rule", "prereg:orphan:forbid-2", ["/^ls/"]]]);
+  // settle removes it and says so; no row is written, and every other line of the file stays byte for byte
+  const s = p.run(["prereg", "settle", "orphan"]);
+  assert.equal(s.status, 0, out(s));
+  assert.match(s.stdout, /^prereg orphan: no open seal on this ledger; no row was written$/m); assert.match(s.stdout, /^ {2}removed {2}\/\.\/ {2}orphan rule/m); assert.match(s.stdout, /^ {2}removed {2}\/\^ls\/ {2}orphan rule/m);
+  assert.ok(!existsSync(p.ledger), "no row"); assert.equal(readFileSync(p.invariants, "utf8"), USER + "\n");
+  const after = p.bash("ls"); assert.equal(after.status, 0); assert.equal(after.stderr, "", "nothing left to say");
+  // with nothing to remove it is the refusal it was
+  const again = p.run(["prereg", "settle", "orphan", "--verdict", "KEEP", "--file", "verdict.md"]);
+  assert.equal(again.status, 1); assert.match(again.stderr, /no open seal for "orphan"/);
+  assert.equal(p.run(["prereg", "settle", "orphan"]).status, 1);
+  // the spelling the old block named works the same
+  const q = setup(); const sq = q.run(["prereg", "settle", "orphan", "--verdict", "KEEP", "--file", "verdict.md"]);
+  assert.equal(sq.status, 0, out(sq)); assert.match(sq.stdout, /no row was written/); assert.ok(!existsSync(q.ledger)); assert.equal(q.bash("ls").stderr, "");
+  // a rule left behind by a seal that was settled is an orphan too, and so is the rule of a seal row that is not on the chain
+  const r = project();
+  assert.equal(r.run(["prereg", "seal", "exp-7", "--spec", "spec.md", "--forbid", "train\\.py .*--n 4096"]).status, 0);
+  const line = readFileSync(r.invariants, "utf8");
+  assert.equal(r.bash("python train.py --n 4096").status, 2, "enforced while the seal is open");
+  assert.equal(r.run(["prereg", "settle", "exp-7", "--verdict", "KEEP", "--file", "verdict.md"]).status, 0);
+  writeFileSync(r.invariants, line);
+  const left = r.bash("python train.py --n 4096");
+  assert.equal(left.status, 0, out(left)); assert.match(left.stderr, /not enforced: no open seal for "exp-7"/);
+  const rs = r.run(["prereg", "settle", "exp-7"]);
+  assert.equal(rs.status, 0, out(rs)); assert.match(rs.stdout, /^prereg exp-7: no open seal on this ledger \(it was settled KEEP at row 2\); no row was written$/m);
+  assert.ok(!existsSync(r.invariants), "the file held only that rule"); assert.equal(r.rows().length, 2);
+});

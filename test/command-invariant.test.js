@@ -4,7 +4,8 @@
 // without "on" behaves exactly as it did, and the first five tests pin that (they pass on 0.17.2 unchanged).
 // The reason: an agent ran its own experiment at sizes its own amendment had reserved for confirmation, and nothing stopped it.
 // A prereg's forbid invariant (owner: {prereg, row}) names the prereg in its block and has one exemption, a command line that
-// starts with MEMORY_PULSE_ROLE=evaluator. It is a tripwire against inattention, not a security boundary.
+// starts with MEMORY_PULSE_ROLE=evaluator. It is a tripwire against inattention, not a security boundary. It is enforced while
+// its seal is open on the ledger (review of 0.18.0, test/prereg-review.test.js F1d), so the tests of it seal for real.
 // tests never write this machine's trust store (0.16.0): a temp one unless the run names one
 process.env.MEMORY_PULSE_TRUST_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-trust-"));
 process.env.MEMORY_PULSE_DATA_DIR ??= (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "mp-data-"));
@@ -28,17 +29,23 @@ const INVARIANTS = [
   { id: "cmd-with-paths", on: "command", statement: "the build folder is kept", patterns: ["rm -rf build"], paths: ["docs/"] },
   { id: "cmd-warn", on: "command", statement: "slow on this machine", patterns: ["--all-shards"], severity: "warn" },
   // a prereg's forbid invariant, as `prereg seal --forbid` declares it
-  { id: "prereg:exp-7:forbid-1", on: "command", statement: "sealed by prereg exp-7 at row 12: this command is the evaluator's", patterns: ["/train\\.py .*--confirm\\b/"], severity: "block", owner: { prereg: "exp-7", row: 12 }, cite: [12] },
+  { id: "prereg:exp-7:forbid-1", on: "command", statement: "sealed by prereg exp-7 at row 1: this command is the evaluator's; hand it to an evaluator, or settle the prereg", patterns: ["/train\\.py .*--confirm\\b/"], severity: "block", owner: { prereg: "exp-7", row: 1 }, cite: [1] },
 ];
 
-// a scratch project and an explicit environment: no MEMORY_PULSE_LEDGER, so nothing here can reach a real ledger
-function project() {
+// a scratch project and an explicit environment: no MEMORY_PULSE_LEDGER, so nothing here can reach a real ledger. `sealed`: the
+// prereg's rule is declared by a real `prereg seal`, so its seal is open on the ledger; otherwise every line is written as it stands
+function project({ sealed = false } = {}) {
   const base = mkdtempSync(join(tmpdir(), "mp-cmdinv-")); const dir = join(base, "p"); mkdirSync(join(dir, ".memory-pulse"), { recursive: true });
-  writeFileSync(join(dir, ".memory-pulse", "invariants.jsonl"), INVARIANTS.map((i) => JSON.stringify(i)).join("\n") + "\n");
+  writeFileSync(join(dir, ".memory-pulse", "invariants.jsonl"), (sealed ? INVARIANTS.slice(0, 5) : INVARIANTS).map((i) => JSON.stringify(i)).join("\n") + "\n");
   const env = { PATH: process.env.PATH, HOME: base, TMPDIR: base, NO_COLOR: "1", MEMORY_PULSE_API: "http://127.0.0.1:9", MEMORY_PULSE_AGENT: join(base, "agent.jsonl"), MEMORY_PULSE_MODE: "deliberate",
     MEMORY_PULSE_TRUST_DIR: join(base, "trust"), MEMORY_PULSE_DATA_DIR: join(base, "data") };
   const run = (args, input = "") => spawnSync(process.execPath, [SERVER, ...args], { cwd: dir, env, input, encoding: "utf8" });
   const guard = (tool_name, tool_input, extra = []) => run(["guard", ...extra], JSON.stringify({ hook_event_name: "PreToolUse", tool_name, tool_input }));
+  if (sealed) {
+    writeFileSync(join(dir, "spec.md"), "# exp-7\nthe confirmation run is the evaluator's\n");
+    const s = run(["prereg", "seal", "exp-7", "--spec", "spec.md", "--forbid", "train\\.py .*--confirm\\b"]); assert.equal(s.status, 0, `${s.stdout}${s.stderr}`);
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, ".memory-pulse", "invariants.jsonl"), "utf8").trim().split("\n").at(-1)), INVARIANTS[5], "the rule in INVARIANTS is the rule a seal declares");
+  }
   return { dir, run, guard, bash: (command) => guard("Bash", { command }) };
 }
 const out = (r) => `${r.stdout}${r.stderr}`;
@@ -151,22 +158,22 @@ test("lint never matches an `on: command` invariant, not even against the file t
 // ---- a prereg's forbid invariant
 
 test("a prereg's forbid invariant: the block names the prereg and its seal row, says the command is the evaluator's, and how to proceed", () => {
-  const p = project();
+  const p = project({ sealed: true });
   const r = p.bash("python train.py --seed 1 --confirm");
   assert.equal(r.status, 2, out(r));
   assert.match(r.stderr, /memory-pulse guard: blocked\./);
-  assert.match(r.stderr, /sealed by prereg exp-7 at row 12/);
+  assert.match(r.stderr, /sealed by prereg exp-7 at row 1/);
   assert.match(r.stderr, /this command is the evaluator's/);
   assert.match(r.stderr, /hand it to an evaluator/i);
   assert.match(r.stderr, /MEMORY_PULSE_ROLE=evaluator/);
   assert.match(r.stderr, /memory-pulse prereg settle exp-7/);
   assert.match(r.stderr, /tripwire against inattention, not a security boundary/);
   const c = p.run(["check", "--kind", "command", "--text", "python train.py --confirm"]);
-  assert.equal(c.status, 2, out(c)); assert.match(c.stdout, /sealed by prereg exp-7 at row 12/); assert.match(c.stdout, /memory-pulse prereg settle exp-7/);
+  assert.equal(c.status, 2, out(c)); assert.match(c.stdout, /sealed by prereg exp-7 at row 1/); assert.match(c.stdout, /memory-pulse prereg settle exp-7/);
 });
 
 test("the one exemption: a command line that starts with MEMORY_PULSE_ROLE=evaluator is not blocked by a prereg's forbid invariant", () => {
-  const p = project();
+  const p = project({ sealed: true });
   for (const cmd of [
     "MEMORY_PULSE_ROLE=evaluator python train.py --confirm",
     "SEED=3 MEMORY_PULSE_ROLE=evaluator OUT=runs/c python train.py --confirm",
@@ -189,7 +196,7 @@ test("the one exemption: a command line that starts with MEMORY_PULSE_ROLE=evalu
 });
 
 test("a blocked command is recorded beside the ledger: when, which rule, and the command with secrets scrubbed", () => {
-  const p = project();
+  const p = project({ sealed: true });
   assert.equal(p.bash("API_TOKEN=abc123def456 python train.py --confirm").status, 2);
   const rec = readFileSync(join(p.dir, ".memory-pulse", "violations.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
   assert.equal(rec.length, 1);
@@ -242,7 +249,7 @@ before(async () => { await new Promise((ok, no) => { fake.once("error", no); fak
 after(() => fake.close());
 
 test("check --receipt sends the engine only the invariants that apply: none on commands for an edit, and not a prereg's for an evaluator's command", async () => {
-  const p = project();
+  const p = project({ sealed: true });
   const env = { PATH: process.env.PATH, HOME: join(p.dir, ".."), TMPDIR: join(p.dir, ".."), NO_COLOR: "1", MEMORY_PULSE_API: `http://127.0.0.1:${fake.address().port}`, MEMORY_PULSE_AGENT: join(p.dir, "..", "agent.jsonl"),
     MEMORY_PULSE_MODE: "deliberate", MEMORY_PULSE_TRUST_DIR: join(p.dir, "..", "trust"), MEMORY_PULSE_DATA_DIR: join(p.dir, "..", "data") };
   const check = (args) => new Promise((resolve, reject) => execFile(process.execPath, [SERVER, "check", "--receipt", ...args], { cwd: p.dir, env, encoding: "utf8", timeout: 20000 }, (err, stdout, stderr) => (err && err.killed ? reject(new Error(`timeout: ${stderr}`)) : resolve(stdout + stderr))));
