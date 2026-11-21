@@ -38,6 +38,15 @@ scheduled task firing, or whose own entry is marked as not typed, records
 nothing. A prompt scheduled in another session and not yet written to this
 transcript when the hook runs is still read as typed.
 
+**`report` and the brief name a noisy rule.** A correction the guard blocked 5
+times or more, in 3 distinct directories or more, whose term is one ordinary
+word, gets one line in `report` and under its row in the brief's AT RISK
+block. The line says the rule is noisy and gives the two ways out: retire the
+row with `remember ... --supersedes <t>`, or scope the term with
+`guard allow "<term>" --path <prefix> "<reason>"`. The thresholds are
+`NOISY_MIN_BLOCKS` and `NOISY_MIN_DIRS` in `lib/specific.mjs`. A value or a
+phrase is never labelled.
+
 ## 0.18.0 (unreleased)
 
 **Pre-registered research gets a command for each of three slips.** An agent

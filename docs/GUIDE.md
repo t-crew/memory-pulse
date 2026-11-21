@@ -332,6 +332,14 @@ AT RISK (1)
 
 Read AT RISK before editing the paths it names.
 
+A rule can also be too wide. When the guard has blocked one correction 5 times or more, in 3 distinct directories or more, and its term is one ordinary word, `report` and the AT RISK block add one line under it:
+
+```text
+noisy: "users" (t1) is one ordinary word, blocked 6 times in 3 directories. Retire it: memory-pulse remember <cause> <effect> --kind correction --supersedes 1. Or scope it: memory-pulse guard allow "users" --path <prefix> "<reason>"
+```
+
+Both thresholds are constants in `lib/specific.mjs` (`NOISY_MIN_BLOCKS`, `NOISY_MIN_DIRS`). A value or a phrase is never labelled, however often it is blocked.
+
 ## 8. Session end and compaction
 
 Nothing is recorded automatically when a session ends in deliberate mode. Before you stop: one `remember` per finding, decision and dead end, and a correction for anything retracted.

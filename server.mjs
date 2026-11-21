@@ -48,7 +48,7 @@ import { savedKey } from "./lib/login.mjs";
 import { hostOf, normalizeHook } from "./lib/hosts.mjs";
 import { drift as driftWith } from "./lib/drift.mjs";
 import { advisoryTerm } from "./lib/advisory.mjs";
-import { heardOnly, heardLine, broadCaution } from "./lib/specific.mjs";
+import { heardOnly, heardLine, broadCaution, blockStats, noisyLine } from "./lib/specific.mjs";
 import { scheduledPrompt, tailText } from "./lib/typed.mjs";
 import { commandHits, invariantsFor, preregRows, COMMAND_HINT, INVARIANT_HINT, PREREG_WRITE, cliPrereg, cliNow, cliRan } from "./lib/prereg.mjs";
 import { SOUL_WRITE, RESERVED, soulState, soulLines, soulGuard, cliSoul, cliUser, setSection, chainedOnly, heldFromMerge, taintOf, soulCapsule, verifySoulCapsule, continuityLine, soulScreen,
@@ -1725,6 +1725,8 @@ export function atRiskLines(allEvents, { now = Date.now(), minBlocks = 2, blocks
     const c = corr.get(m.t); const ov = overrides.get(String(m.term).toLowerCase()) ?? 0;
     const where = [...m.dirs].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([d, n]) => `${d} ×${n}`).join(", ");
     lines.push(`  ! t${m.t} "${safeTerm(m.term)}" blocked ${m.n}× (${where})${c?.replacement?.length ? ` → use ${c.replacement.map(safeTerm).join(", ")}` : ""}${ov ? ` · ${ov} override(s)` : ""}${m.last ? ` · last ${ago(now - m.last)}` : ""}`);
+    // one ordinary word blocked often and widely is a rule that is too wide: say so, with the two ways out (lib/specific.mjs)
+    const noisy = noisyLine({ t: m.t, term: safeTerm(m.term), blocks: m.n, dirs: m.dirs.size, advisory: advisoryTerm(c, m.term) }); if (noisy) lines.push(`    ${noisy}`);
   }
   return lines.join("\n");
 }
@@ -2662,6 +2664,8 @@ function cliReport() {
   console.log(`  edits blocked by the guard: ${blocks.reduce((n, b) => n + b.hits.length, 0)}${blocks.length ? ` (last: ${blocks[blocks.length - 1].at.slice(0, 10)})` : ""}`);
   const top = [...byT.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
   for (const [t, n] of top) { const c = corrections.find((x) => x.t === t); console.log(`  ${n}× t${t} ${c ? `${c.cause} -> ${c.effect}` : ""} — withdrawn: ${c?.withdrawn?.join(", ")}`); }
+  // a noisy rule is named wherever it ranks, with the two ways out on one line (lib/specific.mjs)
+  for (const m of blockStats(blocks).values()) { const c = corrections.find((x) => x.t === m.t); const line = c && !retired.has(m.t) ? noisyLine({ ...m, term: safeTerm(m.term), advisory: advisoryTerm(c, m.term) }) : ""; if (line) console.log(`  ${line}`); }
   const unenforced = corrections.filter((c) => !c.withdrawn?.length && !retired.has(c.t));
   if (unenforced.length) console.log(`  ${unenforced.length} correction(s) have no withdrawn terms and cannot be enforced — add them with remember(withdrawn: [...])`);
 }

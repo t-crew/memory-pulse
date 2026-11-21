@@ -384,6 +384,13 @@ twice; `before "<what you are about to do>"` names the corrections that bear
 on a change before you make it, and the rows that record the same idea as
 already tried, with the closed or failed ones marked.
 
+`report` and the `AT RISK` block label a rule as noisy when the guard blocked
+it 5 times or more, in 3 directories or more, and its term is one ordinary
+word. The label gives the two ways out on one line: retire the row with
+`remember ... --supersedes <t>`, or scope the term with `guard allow`. A value
+or a phrase blocked that often is a correction doing its work and gets no
+label.
+
 ## Lint: the rules a session loads, checked against the ledger
 
 Governance files drift. A `CLAUDE.md` written in June still says the price is
