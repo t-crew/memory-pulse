@@ -11,7 +11,9 @@
 #   3. tag + push — v<version>, `git push --follow-tags`; release.yml then publishes to npm AND the
 #                   MCP registry with no tokens (OIDC trusted publishing — needs the npm Trusted
 #                   Publisher registered once: package memory-pulse, workflow release.yml)
-#   4. worker     — `wrangler deploy` in the engine repo so the seal / provenance path is live
+#   3b. major tag — v<major> (v0) is re-pointed at the release, because the Action is documented as @v0
+#   4. worker     — `wrangler deploy` in the engine repo so the seal / provenance path is live;
+#                   RELEASE_SKIP_WORKER=1 releases the client without deploying the engine
 #
 # Until the Trusted Publisher exists, step 3 falls back to a local `npm publish` (browser one-time
 # authorisation). Proxy vars are stripped for wrangler and git (a SOCKS proxy crashes wrangler).
@@ -67,12 +69,21 @@ noproxy gh pr merge "$BR" --merge --delete-branch > /dev/null
 noproxy git fetch -q origin && git merge -q --ff-only origin/main || { echo "local main did not fast-forward to origin/main — resolve before tagging"; exit 1; }
 git tag -f "v$VERSION" -m "memory-pulse $VERSION" > /dev/null
 noproxy git push -f origin "v$VERSION"
+# The docs tell teams to write `uses: t-crew/memory-pulse@v0`. Until 2026-11-21 nothing moved that tag, and it served 0.2.2
+# for eleven weeks. The major tag follows every release.
+MAJOR="${VERSION%%.*}"
+git tag -f "v$MAJOR" -m "memory-pulse $VERSION" > /dev/null
+noproxy git push -f origin "v$MAJOR"
 if [ "${MP_LOCAL_PUBLISH:-}" = "1" ] && ! noproxy npm view "memory-pulse@$VERSION" version > /dev/null 2>&1; then
   echo "   local npm publish (approve npm's browser prompt once)"
   noproxy npm publish --access public
 fi
 
-echo "4/4 worker deploy"
-( cd "$ENGINE" && noproxy npx wrangler deploy 2>&1 | grep -E "Deployed|Current Version|error" )
-
-echo "released memory-pulse@$VERSION — tag pushed, worker deployed"
+if [ "${RELEASE_SKIP_WORKER:-}" = "1" ]; then
+  echo "4/4 worker deploy skipped (RELEASE_SKIP_WORKER=1): the engine was not deployed"
+  echo "released memory-pulse@$VERSION — tags v$VERSION and v$MAJOR pushed, worker not deployed"
+else
+  echo "4/4 worker deploy"
+  ( cd "$ENGINE" && noproxy npx wrangler deploy 2>&1 | grep -E "Deployed|Current Version|error" )
+  echo "released memory-pulse@$VERSION — tags v$VERSION and v$MAJOR pushed, worker deployed"
+fi

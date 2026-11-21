@@ -42,8 +42,11 @@ export function titleFor(result) {
   return `memory-pulse found no evidence. ${c.events ?? 0} memories checked, none bear on this change (not a pass)`;
 }
 
+/** A receipt is asked for only when the workflow passed a key (the api-key input). */
+export function wantsReceipt(env = process.env) { return Boolean(String(env.MEMORY_PULSE_KEY ?? "").trim()); }
+
 /** The sticky comment body. Idempotent by MARKER; re-rendered, never appended. */
-export function renderComment(result, { receiptId = null, sha = null } = {}) {
+export function renderComment(result, { receiptId = null, sha = null, receiptNote = null } = {}) {
   const lines = [MARKER, `### ${titleFor(result)}`, ""];
   if (result.verdict === "blocked") {
     lines.push("This change writes back a value the ledger retired, or trips a declared invariant. The verdict cites the line that binds.");
@@ -58,6 +61,7 @@ export function renderComment(result, { receiptId = null, sha = null } = {}) {
   const foot = [];
   if (sha) foot.push(`commit \`${String(sha).slice(0, 12)}\``);
   if (receiptId) foot.push(`receipt \`${receiptId}\` (verify keyless at /v1/verify)`);
+  if (receiptNote) foot.push(receiptNote);
   if (result.lint) {
     const L = result.lint;
     lines.push("", `**Governance files** (lint): ${L.summary.files} checked — ${L.summary.blocked} blocked, ${L.summary.verified} verified, ${L.summary.noEvidence} no evidence`);
@@ -106,6 +110,18 @@ export async function main() {
     // check exits non-zero on blocked / no_evidence; the JSON is still on stdout.
     try { result = JSON.parse(String(e.stdout)); } catch { console.error(String(e.stderr || e.message)); process.exit(1); }
   }
+  // Signed receipt (the api-key input). The verdict above was computed on the runner from files in the repository and it
+  // stands: the engine is asked only to sign what it sees. With no key nothing is sent. An engine that is down, or that
+  // answers differently, is reported in the comment and never changes the verdict.
+  let receiptNote = null;
+  if (wantsReceipt()) {
+    let signed = null, why = null;
+    try { signed = JSON.parse(execFileSync(process.execPath, [cli, "check", "--ci", "--json", "--receipt", "--kind", "edit", "--path", "pull-request"], { input: text, encoding: "utf8", env: { ...process.env }, stdio: ["pipe", "pipe", "pipe"] })); }
+    catch (e) { try { signed = JSON.parse(String(e.stdout)); } catch { why = String(e.stderr || e.message).split("\n").find((l) => l.trim()) ?? "the engine did not answer"; } }
+    if (signed?.receipt?.head) result.receipt = signed.receipt;
+    else receiptNote = `no receipt was issued (${(why ?? signed?.receiptHint ?? "the engine returned none").slice(0, 160)})`;
+    if (signed?.verdict && signed.verdict !== result.verdict) receiptNote = [receiptNote, `the engine answered ${signed.verdict}; this check reports the verdict computed on the runner`].filter(Boolean).join("; ");
+  }
   // Lint: the governance files a session will load, checked the same way.
   // A rule that still states a retired value is loaded into every session
   // with full confidence — that is worse than a stale line in the diff.
@@ -122,7 +138,7 @@ export async function main() {
   const conclusion = conclusionFor(result.verdict);
   const title = titleFor(result);
   const receiptId = result.receipt?.head ? `${result.receipt.kind}:${result.receipt.head.slice(0, 12)}` : null;
-  const body = renderComment(result, { receiptId, sha });
+  const body = renderComment(result, { receiptId, sha, receiptNote });
   console.log(title);
   for (const r of result.reasons ?? []) console.log(`  • ${r}`);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, body.replace(MARKER, "") + "\n");

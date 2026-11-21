@@ -17,7 +17,7 @@ description: Memory CI — block a pull request that writes back a value your le
 author: Travis Crew
 branding:
   icon: shield
-  color: purple
+  color: blue
 inputs:
   ledger:
     description: Path to the ledger file (JSONL) relative to the repository root.
@@ -28,7 +28,7 @@ inputs:
     required: false
     default: ""
   api-key:
-    description: MEMORY_PULSE_KEY for signed, keyless-verifiable check receipts (Pro/Enterprise). Optional.
+    description: MEMORY_PULSE_KEY (Pro or Enterprise). With it the check asks the engine for a signed receipt and the comment names it. Without it nothing leaves the runner. The verdict is computed on the runner either way. Optional.
     required: false
     default: ""
   lint:

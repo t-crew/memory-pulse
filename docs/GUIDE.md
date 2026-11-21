@@ -433,7 +433,7 @@ The GitHub Action, `uses: t-crew/memory-pulse@v0`, checks the added lines of eve
 - Two status items appear: the job and a check-run named `memory-pulse`. Require the check-run.
 - Forks get log-only verdicts (no token, no comment).
 - `lint` runs by default over the governance files and blocks on a stale `CLAUDE.md`; `lint: "false"` turns it off.
-- `api-key` is exported but the Action does not request a receipt today. For a signed receipt run `npx memory-pulse check --ci --diff origin/main --receipt` as a separate step with `MEMORY_PULSE_KEY` set.
+- With `api-key` set, the Action asks the engine for a signed receipt and the comment names it. Without it nothing leaves the runner. The verdict is the one computed on the runner in both cases: an engine that is down, or that answers differently, is noted in the comment and changes nothing.
 - The verified title's "M corrections enforced" is the ledger-wide count of binding corrections, not the number that bore on this change.
 
 ## 11. Pricing and keys

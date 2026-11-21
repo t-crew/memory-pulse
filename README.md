@@ -1066,9 +1066,10 @@ Details that bite:
 - Forks get log-only verdicts: no token, no comment.
 - `lint` runs by default and blocks on a stale `CLAUDE.md`; `lint: "false"`
   turns it off.
-- `api-key` is exported to the CLI, but the Action does not request a receipt
-  today. For a signed receipt run `npx memory-pulse check --ci --diff
-  origin/main --receipt` as a separate step with `MEMORY_PULSE_KEY` set.
+- With `api-key` set, the Action asks the engine for a signed receipt and the
+  comment names it. Without it nothing leaves the runner. The verdict is the
+  one computed on the runner in both cases: an engine that is down, or that
+  answers differently, is noted in the comment and changes nothing.
 
 ## Releasing
 
