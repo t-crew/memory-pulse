@@ -48,6 +48,8 @@ import { savedKey } from "./lib/login.mjs";
 import { hostOf, normalizeHook } from "./lib/hosts.mjs";
 import { drift as driftWith } from "./lib/drift.mjs";
 import { advisoryTerm } from "./lib/advisory.mjs";
+import { heardOnly, heardLine, broadCaution } from "./lib/specific.mjs";
+import { scheduledPrompt, tailText } from "./lib/typed.mjs";
 import { commandHits, invariantsFor, preregRows, COMMAND_HINT, INVARIANT_HINT, PREREG_WRITE, cliPrereg, cliNow, cliRan } from "./lib/prereg.mjs";
 import { SOUL_WRITE, RESERVED, soulState, soulLines, soulGuard, cliSoul, cliUser, setSection, chainedOnly, heldFromMerge, taintOf, soulCapsule, verifySoulCapsule, continuityLine, soulScreen,
          isExternalTool, externalCmd, externalWhat, markTaint, taintMarked, soulTaintGuard } from "./lib/soul.mjs";
@@ -1114,6 +1116,9 @@ export async function handleCall(name, args = {}) {
     // A correction that binds nothing is still recorded, and the caller is told
     // so plainly instead of it passing silently. That includes a correction whose
     // every withdrawn term was under the 2-char floor and dropped.
+    // A person's own one ordinary word binds as asked; the result says how wide it is and how to scope it (lib/specific.mjs).
+    const caution = bound.kind === "correction" ? broadCaution(res.stored?.withdrawn) : null;
+    if (caution) { res.broad = true; res.caution = caution; }
     if (bound._unenforceable) return { ...res, enforceable: false, hint: bound._hint };
     if (bound.kind === "correction" && !res.stored?.withdrawn?.length) return { ...res, enforceable: false, hint: `This correction binds nothing: every withdrawn term was dropped (${(res.dropped ?? []).map((w) => JSON.stringify(w)).join(", ")} under the 2-character floor). Record it again with a longer term, for example the value with its unit or sign.` };
     return res;
@@ -1781,6 +1786,8 @@ export function typedUserText(o) {
   const m = o?.message; if (!m || !(o.type === "user" || m.role === "user")) return "";
   if (o.isMeta || o.isCompactSummary || o.isVisibleInTranscriptOnly || o.isSidechain === true || o.toolUseResult !== undefined) return "";
   if (o.origin && typeof o.origin === "object" && o.origin.kind !== "human") return "";
+  // the harness's own turns (a scheduled wake-up, a peer, a notification) say so; some carry neither isMeta nor origin (measured 2026-11-21)
+  if (o.promptSource === "system" || (typeof o.turnOrigin === "string" && o.turnOrigin !== "human")) return "";
   if (Array.isArray(m.content) && m.content.some((p) => p?.type === "tool_result")) return "";
   const text = partText(m.content).trim();
   return HARNESS_PREAMBLE.test(text) ? "" : text;
@@ -1926,7 +1933,8 @@ export function correctionEvent(d, prompt) {
   const r = Array.isArray(d.replacement) && d.replacement.length ? d.replacement[0] : null;
   const effect = r ? `${slug(w)}-withdrawn-for-${slug(r)}` : `${slug(w)}-withdrawn`;
   const said = r ? `User corrected "${w}" to "${r}"` : `User prohibited "${w}"`;
-  return { cause: `user-correction-${slug(w)}`, effect, kind: "correction", withdrawn: d.withdrawn, replacement: r ? d.replacement : [], tags: ["ambient", d.cue], note: `${said} — prompt: "${String(prompt).replace(/\s+/g, " ").slice(0, 140)}"` };
+  // one ordinary word is recorded as heard and binds nothing (lib/specific.mjs): as a withdrawn term it blocks every edit that contains it
+  return heardOnly({ cause: `user-correction-${slug(w)}`, effect, kind: "correction", withdrawn: d.withdrawn, replacement: r ? d.replacement : [], tags: ["ambient", d.cue], note: `${said} — prompt: "${String(prompt).replace(/\s+/g, " ").slice(0, 140)}"` }, prompt);
 }
 /** The correction a submitted prompt carries, or null when it carries none or is not something a person typed. */
 export function observeDecision(prompt) {
@@ -1945,7 +1953,10 @@ async function cliObserve() {
     // agent output gets recorded as a binding correction (t898/t899, 2026-09-03).
     const d = observeDecision(hook.prompt ?? "");
     if (!d) { if (process.argv.includes("--verbose")) console.log("memory-pulse: no correction in this prompt (none found, or it reads as harness text or an instruction)"); return; }
-    const r = appendEvent(correctionEvent(d, hook.prompt));
+    // the payload names no origin, the transcript does: a prompt the agent scheduled for itself is not a person's correction (lib/typed.mjs)
+    if (typeof hook.transcript_path === "string" && scheduledPrompt(tailText(hook.transcript_path), hook.prompt, { typedUserText })) { if (process.argv.includes("--verbose")) console.log("memory-pulse: correction not recorded: the transcript shows this prompt was scheduled, not typed"); return; }
+    const ev = correctionEvent(d, hook.prompt), r = appendEvent(ev);
+    if (r.written && !ev.withdrawn?.length) { console.log(heardLine(r.t, d.withdrawn[0], d.replacement?.[0])); return; }
     if (process.argv.includes("--verbose") || r.written) console.log(r.written ? `memory-pulse: correction recorded (t=${r.t}) — "${d.withdrawn[0]}" withdrawn${d.replacement?.[0] ? `, "${d.replacement[0]}" replaces it` : ""}; the guard enforces it from now on` : `memory-pulse: correction not recorded (${r.reason})`);
   } catch { /* silent */ }
 }
