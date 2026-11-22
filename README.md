@@ -305,6 +305,10 @@ npx memory-pulse state branch exp --at 12 --out exp.rain   # a capsule cut at ro
 npx memory-pulse state merge exp.rain        # carry a diverged branch's findings across once; conflicts are named, never resolved quietly
 npx memory-pulse state rollback --to 12 "<why>"   # one appended row; rows after 12 stay on record, out of force
 npx memory-pulse state verify agent.rain     # verify a capsule without touching any ledger; exit 2 on failure
+npx memory-pulse team setup     # share the committed ledger through git: writes the .gitattributes lines (commit them) and sets this clone's merge driver; every clone runs it once
+npx memory-pulse team           # whether this clone merges the ledger through the driver; exit 2 when the attribute is there and the driver is not
+npx memory-pulse team resolve   # run the driver's merge on a ledger git left unmerged, and stage a clean result
+npx memory-pulse merge-driver <base> <ours> <theirs> <path>   # the git merge driver team setup configures; git calls it on merge, pull and rebase
 npx memory-pulse board post --from blue --to science --kind request --title "audit stage 12" --body "..."   # the shared agent message board
 npx memory-pulse board read --as science      # unread messages for an agent; also reply, ack, thread, html (the board view), verify
 npx memory-pulse board verdict 4 refuted --as coder --defect "..."   # answer a claim; a refutation names its defect; claims lists every claim and its standing
@@ -659,7 +663,8 @@ records that decision as a ledger row, sets the old seal aside beside the ledger
 and the next engine call issues a fresh one. Neither case is fixed by deleting
 the ledger, and the guard's message never suggests it.
 
-**What to commit.** `events.jsonl`, `invariants.jsonl` and, if one exists,
+**What to commit.** `events.jsonl`, `invariants.jsonl`, the `.gitattributes`
+lines `team setup` writes and, if one exists,
 `events.jsonl.quarantine/` (the record of what was moved aside). Keep
 `seal.rain`, `seal.resume.json`, `verify.cache.json`, `events.jsonl.lock`,
 `telemetry.rain`, `memory.rain`, `violations.jsonl` and `episodes/` out of git; this repository's `.gitignore` carries that list, and nothing writes a
@@ -706,6 +711,117 @@ Three more operations, none of which rewrites a row:
 all of this for the agent ledger. The seal's engine signature is checked by
 the engine on the next call; locally the capsule's rows must fold to the
 sealed head. No server is in the loop for any of it.
+
+## Teams: one engineer corrects the agent, every clone keeps the correction
+
+There are two ways to share a project's ledger, and both are shipped. `team`
+and `merge-driver` are in releases after 0.18.0.
+
+**Through git: free, local, no key, no network.** Commit the ledger, and set
+the merge driver once in the repository:
+
+```
+npx memory-pulse team setup
+git add .gitattributes .memory-pulse/events.jsonl
+git commit -m "share the memory-pulse ledger"
+```
+
+`team setup` writes two lines to `.gitattributes` and sets
+`merge.memory-pulse.driver` in this clone's `.git/config`. The attribute
+travels with the repository. The driver definition does not, because git never
+shares `.git/config`, so every other clone runs `npx memory-pulse team setup`
+once (`install-hook --project` runs it too). The definition names node by
+absolute path and a pinned copy of the client, not `npx`: it is one machine's
+file, a git client whose PATH has no node still merges, and no merge waits on
+a download. A clone that has the attribute and no driver merges the ledger as
+plain text, and git says nothing about it. `npx memory-pulse team` reports that
+state with exit 2, and the session brief prints one line with the command.
+
+The ledger is a hash chain, so a text merge of two branches that both recorded
+a row does not verify. With the driver, `git merge`, `git pull` and
+`git rebase` do this instead: ours is kept byte for byte, and the rows the
+other side added are appended after it through the writer, which computes `t`,
+`prev` and `hash` again. The rules are the ones `state merge` uses, run by the
+same code: each finding lands once, a carried row records the branch and row it
+came from in `origin`, the other side's merge and rollback rows stay with it,
+a note that reads like an instruction is held back, and one row records the
+merge. `invariants.jsonl` is merged as a set of lines over the three versions:
+a rule either side added is kept once, and a rule either side removed stays
+removed. Git's built-in `merge=union` brings a removed rule back and keeps a
+line both sides added twice (git 2.39.5, measured 2026-11-21), so the driver
+handles that file too.
+
+The merge stops, and git keeps the path unmerged, in three cases. Each message
+names the rows and the command:
+
+- Two corrections that both still bind withdraw the same term with different
+  replacements, or one side's replacement is a value the other side withdraws.
+  Both rows are in the merged ledger, which verifies. Settle it with one
+  `remember ... --supersedes <t> --supersedes <t>` row, then
+  `git add .memory-pulse/events.jsonl`.
+- A side no longer holds a row of the common ancestor (history was rewritten),
+  or its chain is broken. Nothing is merged and ours is left as it was.
+- One rule id carries two different lines in `invariants.jsonl`. Both are kept
+  for you to choose from.
+
+What `verify` says afterwards depends on which side was ours:
+
+| how the rows arrived | chain | engine seal | this machine's anchor | writer marks |
+|---|---|---|---|---|
+| `git merge` or `git pull` (ours is your branch) | OK | OK: no row at or below its watermark changed | OK: the ledger still begins with the rows this machine last saw | OK: the carried rows were appended by this machine's writer, and `origin` names where each came from |
+| `git rebase` or `git pull --rebase` (ours is the branch you rebase onto) | OK | MISMATCH if a seal is stored | ROLLED BACK: the other branch's rows come first | exit 2 until the commands the driver prints are run: `memory-pulse anchor accept "<why>"`, and `memory-pulse seal accept "<why>"` when a seal is stored |
+| a fast-forward onto a teammate's new rows (no merge runs) | OK | OK | OK | named as rows this machine did not write, and accepted; `verify --strict` refuses them |
+| a fast-forward onto a branch that merged your rows after its own | OK | MISMATCH if a seal is stored | ROLLED BACK | exit 2 until `memory-pulse anchor accept "<why>"`, and `memory-pulse seal accept "<why>"` when a seal is stored |
+
+A chain has one order, so a merge puts one side's rows after the other's, and
+the machine whose rows moved runs the accept step. On a shared main branch,
+rebase onto main before landing (`git rebase origin/main`, or
+`git pull --rebase` when you commit on main): main's ledger then only grows at
+its end, and the accept step is run once, by the engineer who rebased, when
+the driver prints it. The anchor is one per ledger path on a
+machine, so `git checkout` of a branch whose ledger is shorter also reads as
+ROLLED BACK until `anchor accept` (measured 2026-11-21, with or without the
+driver).
+
+GitHub's merge button does not run merge drivers. A pull request whose branch
+and base both recorded a row shows a conflict there. Do not resolve it in the
+web editor: rows joined by hand do not verify, and `npx memory-pulse verify`
+in CI fails on them. Update the branch on your machine
+(`git fetch && git rebase origin/main`, or `git merge origin/main`) and push.
+The driver runs there, and the pull request then merges without a conflict
+because the branch already holds the base's ledger. The driver verifies the
+whole ledger on each merge, so its time grows with the ledger's length: about
+one second at 5,000 rows on an M1 Pro (one run, 2026-11-21).
+
+**Hosted: paid.** A hosted project holds one ledger that every machine pushes
+to and pulls from. The engine merges a diverged push by the rules `state merge`
+uses. Hosted memory is on Starter, Pro and Enterprise, and so is the key
+`login` saves: the engine makes no console key on the free tier
+(`worker/hosted.js` and `worker/accounts.js`, read 2026-11-21).
+
+```
+npx memory-pulse login        # paid (Starter, Pro, Enterprise): approve this machine in the console; the project's key is saved for you
+npx memory-pulse state push   # paid: send this ledger to the hosted project; a diverged push is merged there
+npx memory-pulse state pull   # paid: verify the hosted ledger here, then install, fast-forward or merge it
+```
+
+Turn hosted memory on for the project in the console first. Without a key,
+`state push` and `state pull` exit 1 and say which variable to set. Seat keys
+are Enterprise only: the subscription's primary key makes up to ten, one for
+each teammate or CI job, and revokes them one at a time. There is no
+`memory-pulse` command for them. They are made in the console or with the
+engine's `/v1/keys` route (`worker/api.js`, read 2026-11-21; these three lines
+need the engine and are not run by the test suite):
+
+```
+curl -X POST -H "x-mp-key: $MEMORY_PULSE_KEY" -H "content-type: application/json" -d '{"label":"ci"}' https://pulse.strategic-innovations.ai/v1/keys          # paid (Enterprise): returns the seat key once
+curl -H "x-mp-key: $MEMORY_PULSE_KEY" https://pulse.strategic-innovations.ai/v1/keys                                                                          # paid (Enterprise): list seat keys by prefix
+curl -X POST -H "x-mp-key: $MEMORY_PULSE_KEY" -H "content-type: application/json" -d '{"prefix":"mp_live_0123abcd"}' https://pulse.strategic-innovations.ai/v1/keys/revoke   # paid (Enterprise): revoke one
+```
+
+A teammate sets a seat key as `MEMORY_PULSE_KEY` and their engine calls run
+on the subscription's tier. A seat key ends when it is revoked or when the
+subscription lapses.
 
 ## Agent message board: shared memory between agents
 
@@ -960,11 +1076,13 @@ research. We chose a local ledger, a thin auditable client and a hosted engine
 over shipping a weaker local ranker. If a remote engine is a dealbreaker,
 `MEMORY_PULSE_API` points the client anywhere.
 
-**What about team memory?** Commit `.memory-pulse/` to the repo and your
-teammates' agents pulse the same ledger. Rows chain on `t` and `prev`, so two
-branches that both append conflict on merge: never keep both sides, re-record
-the losing rows with `remember`, and run `verify`. Shared hosted ledgers are
-on the roadmap.
+**What about team memory?** Two paths, both shipped. Free: commit
+`.memory-pulse/events.jsonl` and run `npx memory-pulse team setup` in each
+clone, and git merges two branches that both recorded a row through the
+memory-pulse merge driver, each finding once. Paid: a hosted project ledger
+with `login`, `state push` and `state pull` (Starter, Pro, Enterprise), and
+seat keys on Enterprise. The section "Teams" above has the commands and what
+`verify` says after each kind of merge.
 
 **License?** Client: MIT. Engine: proprietary, hosted.
 

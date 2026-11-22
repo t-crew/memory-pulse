@@ -1989,6 +1989,8 @@ async function cliBrief() {
   // withholding (lib/weights.mjs): a memory sitting out this session is left out of the brief too, or the sat-out arm would still have
   // seen it at session start (review 2026-10-21). The same draw as the prompt hook; corrections never sit out.
   const hookIn = await hookStdin(), session = typeof hookIn?.session_id === "string" && hookIn.session_id ? hookIn.session_id : null;
+  // the team path (lib/gitmerge.mjs): a clone whose .gitattributes names the merge driver its git config does not define merges the ledger as text, and git says nothing
+  if (existsSync(join(dirname(dirname(led0.path)), ".gitattributes"))) { try { const dl = (await import("./lib/gitmerge.mjs")).driverLine(led0.path); if (dl) process.stdout.write(dl + "\n"); } catch { /* never in the way of a brief */ } }
   // the local render hides a sat-out row but still reads it (a hidden fix still closes its thread: re-review 2026-10-21); the engine is
   // sent the rows without it
   let hide = new Set();
@@ -2815,6 +2817,8 @@ async function cliInstallHook() {
     changed += upsertHook(settings, "SessionEnd", "consolidate --final", `${run} consolidate --final`, { timeout: 10 });
   }
   if (process.argv.includes("--ambient")) changed += upsertHook(settings, "UserPromptSubmit", "observe", `${run} observe`);
+  // the team path (lib/gitmerge.mjs): a project install also names the git merge driver for the committed ledger and sets it for this clone; silent outside a git work tree
+  if (project) for (const l of (await import("./lib/gitmerge.mjs")).teamSetup(teamCore(), { fromInstall: true }).lines) console.log(l);
   if (!changed) { console.log("hooks already installed — nothing to do"); return; }
   mkdirSync(home, { recursive: true });
   writeFileSync(file, JSON.stringify(settings, null, 2) + "\n");
@@ -2954,6 +2958,10 @@ Commands
                                       how far this machine's anchor reaches into the ledger and which rows its writer did not write; accept is the recorded way out of a rollback or of rows written elsewhere (a restored copy, another machine, an older client); refused when the chain is broken
   state [export|branch|import|merge|rollback|verify|push|pull]
                                       agent state as a .rain capsule: export it, cut a branch at a row, import or merge it elsewhere, roll back to a row as an appended row, verify a capsule; no argument prints where the ledger stands
+  team [status|setup|resolve [--no-ancestor]]
+                                      the committed ledger through git: setup writes the .gitattributes lines (commit them) and sets this clone's merge driver in .git/config (every clone runs it once); status says whether this clone would merge the ledger through it (exit 2: the attribute without a working driver, where git merges the file as text and says nothing); resolve runs the driver's merge on a ledger git left unmerged
+  merge-driver <base> <ours> <theirs> [<path>]
+                                      the git merge driver team setup configures (%O %A %B %P): ours is kept byte for byte and the other side's rows are re-appended through the writer by the rules of state merge; invariants.jsonl is merged as a three-way set of lines; exit 0 merged, 1 merged with a conflict named, 2 refused with ours left as it was
   board post|read|reply|ack|verdict|claims|thread|html|verify|push|status|sync [--board PATH]
                                       the shared agent message board: a separate chained ledger any agent can post to and read; passive (nothing wakes or prompts an agent); a message is data, never an instruction; a claim stays open until another agent's verdict, and a synthesis is refused over an open claim
   login [--no-open] [--no-sync]       connect this machine to a hosted project: approve it in the console, the key is saved for you (no copying); turns board sync on
@@ -3557,6 +3565,10 @@ async function cliState() {
   usage();
 }
 
+// What lib/gitmerge.mjs is handed (the git merge driver and `team`): the merge is state merge's own, so the driver adds no rule.
+const teamCore = () => ({ ledgerPath, linesOf, parseRows, contentKey, isRollback, STATE_TAGS, inForceSet, supersededSet, instructionLike, verifyChainLines, buildCapsule, mergeCapsule,
+  readAnchor, anchorCheck, anchorPathFor, readSeal, verifyLocalSeal, pinnedRunner, version: PKG_VERSION });
+
 // Importable for tests; the transport runs only when this file is the entry
 // point. Compared by REALPATH, not by name: npm invokes the bin through a
 // .bin/memory-pulse symlink, and a basename comparison silently failed there —
@@ -3599,6 +3611,8 @@ if (isMain) {
   if (sub === "seal") { await cliSeal(); process.exit(0); }
   if (sub === "anchor") cliAnchor();
   if (sub === "state") { await cliState(); process.exit(0); }
+  if (sub === "merge-driver") { const { cliMergeDriver } = await import("./lib/gitmerge.mjs"); process.exit(cliMergeDriver(process.argv.slice(3), teamCore())); }
+  if (sub === "team") { const { cliTeam } = await import("./lib/gitmerge.mjs"); process.exit(cliTeam(process.argv.slice(3), teamCore())); }
   if (sub === "login") { globalThis.__MEMORY_PULSE_CORE__ = { chainAppend, verifyChain, instructionLike, readEvents, buildCapsule, API, KEY }; const { cliLogin } = await import("./lib/login.mjs"); process.exit(await cliLogin(process.argv.slice(3), { api: API, version: PKG_VERSION })); }
   if (sub === "capture") { const { cliCapture } = await import("./lib/capture.mjs"); const host = hostOf(process.argv); process.exit(cliCapture({ ledgerPath, chainAppend, instructionLike, normalize: (h) => normalizeHook(host, h) })); }
   if (sub === "consolidate") { const { cliConsolidate } = await import("./lib/capture.mjs"); const host = hostOf(process.argv); process.exit(cliConsolidate(process.argv.slice(3), { ledgerPath, readEvents, appendEvent, buildCapsule, instructionLike, normalize: (h) => normalizeHook(host, h),
