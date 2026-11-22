@@ -18,9 +18,10 @@
  * MP_ACTION_BASE (override the base ref), MP_ACTION_CLI (override the CLI).
  */
 import { execFileSync } from "node:child_process";
-import { readFileSync, appendFileSync, existsSync } from "node:fs";
+import { readFileSync, appendFileSync, existsSync, mkdtempSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, basename, resolve } from "node:path";
 
 export const MARKER = "<!-- memory-pulse-check -->";
 
@@ -49,6 +50,12 @@ export function wantsReceipt(env = process.env) { return Boolean(String(env.MEMO
 /** The sticky comment body. Idempotent by MARKER; re-rendered, never appended. */
 export function renderComment(result, { receiptId = null, sha = null, receiptNote = null } = {}) {
   const lines = [MARKER, `### ${titleFor(result)}`, ""];
+  if (result.rulesChanged?.length) {
+    const files = result.rulesChanged.map((f) => `\`${f}\``).join(", ");
+    lines.push(`**This pull request changes the rules it is checked by**: ${files}. ${result.rulesMode === "head"
+      ? "It was judged by its own rules only (`rules: head`)."
+      : result.rulesBase ? `It was judged by the rules on \`${result.rulesBase}\` as well as its own, and the stricter verdict stands${result.blockedUnderBase ? ": its own rules would have let it through" : ""}.` : "There are no earlier rules to judge it by."}`, "");
+  }
   if (result.verdict === "blocked") {
     lines.push("This change writes back a value the ledger retired, or trips a declared invariant. The verdict cites the line that binds.");
     for (const r of result.reasons ?? []) if (!/^\d+ recorded event/.test(r)) lines.push(`- ${r}`);
@@ -95,45 +102,131 @@ async function gh(path, { method = "GET", body } = {}) {
   try { return JSON.parse(text); } catch { return null; }
 }
 
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+const git = (args, opts = {}) => execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 1 << 28, ...opts });
+const revExists = (ref) => { try { git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]); return true; } catch { return false; } };
+
+/**
+ * The range a change is read over, or the reason it cannot be read. There is no fallback to the working tree: a change that
+ * cannot be read is a failure, never an empty diff reported as "nothing bears on this" (review 2026-11-21, A-3). The base is
+ * fetched only when it is missing and never with --depth, which used to leave a full clone shallow (A-4).
+ */
+export function changeRange(base) {
+  if (base) {
+    const ref = `origin/${base}`;
+    if (!revExists(ref)) { try { git(["fetch", "--no-tags", "origin", `+refs/heads/${base}:refs/remotes/origin/${base}`]); } catch { /* said below */ } }
+    if (!revExists(ref)) return { error: `the base branch ${ref} is not in this checkout and could not be fetched` };
+    try { git(["merge-base", ref, "HEAD"]); } catch { return { error: `${ref} and HEAD share no history in this checkout. With actions/checkout, set fetch-depth: 0` }; }
+    return { range: `${ref}...HEAD`, baseRef: ref, baseName: base };
+  }
+  if (revExists("HEAD~1")) return { range: "HEAD~1..HEAD", baseRef: "HEAD~1", baseName: "the previous commit" };
+  let shallow = "false"; try { shallow = git(["rev-parse", "--is-shallow-repository"]).trim(); } catch { /* not a repository: said by the next git call */ }
+  if (shallow === "true") return { error: "the previous commit is not in this shallow checkout. With actions/checkout, set fetch-depth: 0" };
+  return { range: `${EMPTY_TREE}..HEAD`, baseRef: null, baseName: null };   // the first commit of a repository
+}
+
+const parseCheck = (run) => { try { return JSON.parse(run()); } catch (e) { try { return JSON.parse(String(e.stdout)); } catch { throw new Error(String(e.stderr || e.message).split("\n").find((l) => l.trim()) ?? "check printed nothing"); } } };
+
+/**
+ * The ledger check, one file at a time, each under its own path (review 2026-11-21, A-1). A path scope (`paths` on a rule, the
+ * prefix of a `guard allow`) means something only when the check is told which file a line is in; under the single path
+ * "pull-request" none of them could apply. Returns one verdict: blocked if any file is, else verified if any is, else no evidence.
+ */
+export function checkFiles(cli, files, range, env) {
+  const out = { verdict: "no_evidence", reasons: [], evidence: [], corrections: [], invariants: [], checked: null, files: 0 };
+  const seen = { evidence: new Set(), corrections: new Set(), invariants: new Set() };
+  const add = (key, items) => { for (const x of items ?? []) { const k = JSON.stringify(x); if (!seen[key].has(k)) { seen[key].add(k); out[key].push(x); } } };
+  const one = (text, path) => parseCheck(() => execFileSync(process.execPath, [cli, "check", "--ci", "--json", "--kind", "edit", "--path", path], { input: text, encoding: "utf8", env, stdio: ["pipe", "pipe", "pipe"] }));
+  for (const f of files) {
+    const text = addedLines(git(["diff", range, "--unified=0", "--", f]));
+    if (!text.trim()) continue;
+    const r = one(text, f);
+    out.files++; out.checked ??= r.checked ?? null;
+    if (r.verdict === "blocked") { out.verdict = "blocked"; for (const x of r.reasons ?? []) if (!/^\d+ recorded event/.test(x)) out.reasons.push(`\`${f}\`: ${x}`); }
+    else if (r.verdict === "verified" && out.verdict !== "blocked") out.verdict = "verified";
+    add("evidence", r.evidence); add("corrections", r.corrections); add("invariants", r.invariants);
+  }
+  if (!out.checked) out.checked = one("", "pull-request").checked ?? null;   // how many memories there were to check, for the title
+  return out;
+}
+
+/** The rule folder as it stands on the base, unpacked beside nothing of ours: the rules a change is judged by before it changes them. */
+function baseRuleDir(baseRef, ruleDir) {
+  if (!baseRef) return null;
+  try { git(["cat-file", "-e", `${baseRef}:${ruleDir}`]); } catch { return null; }
+  const tmp = mkdtempSync(join(tmpdir(), "mp-base-rules-"));
+  execFileSync("tar", ["-x", "-C", tmp], { input: execFileSync("git", ["archive", "--format=tar", baseRef, ruleDir], { maxBuffer: 1 << 30, stdio: ["ignore", "pipe", "pipe"] }) });
+  return join(tmp, ruleDir);
+}
+
+function packCheck(cli, baseRef, env) {
+  try { return JSON.parse(execFileSync(process.execPath, [cli, "pack", "check", "--installed", "--diff", baseRef ?? EMPTY_TREE, "--ci", "--json"], { encoding: "utf8", env, stdio: ["ignore", "pipe", "pipe"] })); }
+  catch (e) { try { return JSON.parse(String(e.stdout)); } catch { if (e.status !== undefined) console.error(`rule packs were not checked: ${String(e.stderr || e.message).split("\n").find((l) => l.trim()) ?? "no output"}`); return null; } }
+}
+
 export async function main() {
   const repo = process.env.GITHUB_REPOSITORY;
   const sha = process.env.GITHUB_SHA;
   const base = process.env.MP_ACTION_BASE || process.env.GITHUB_BASE_REF || "";
   const cli = process.env.MP_ACTION_CLI || join(dirname(fileURLToPath(import.meta.url)), "..", "server.mjs");
 
-  // Added lines of the PR (base...HEAD); on a push event with no base, the last commit.
-  let diff = "";
-  try {
-    if (base) { try { execFileSync("git", ["fetch", "--no-tags", "--depth=1", "origin", base], { stdio: "ignore" }); } catch { /* shallow checkout without the base is handled below */ }
-      diff = execFileSync("git", ["diff", `origin/${base}...HEAD`, "--unified=0"], { encoding: "utf8" }); }
-    else diff = execFileSync("git", ["diff", "HEAD~1", "--unified=0"], { encoding: "utf8" });
-  } catch (err) { console.error(`could not compute the diff (${err.message}); checking the working tree instead`); diff = execFileSync("git", ["diff", "--unified=0"], { encoding: "utf8" }); }
-  const text = addedLines(diff);
+  // The change: which files, over which range. A change that cannot be read fails the job (A-3).
+  const where = changeRange(base);
+  if (where.error) {
+    const body = `### memory-pulse could not read this change\n\n${where.error}. Nothing was checked, so this is a failure and not a pass.`;
+    console.error(`memory-pulse could not read this change: ${where.error}`);
+    if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, body + "\n");
+    if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, "verdict=unread\nconclusion=failure\n");
+    process.exit(1);
+  }
+  const { range, baseRef, baseName } = where;
+  const ledger = process.env.MEMORY_PULSE_LEDGER || ".memory-pulse/events.jsonl";
+  // both sides through realpath: on macOS a temp folder is /var/... to the shell and /private/var/... to process.cwd()
+  const real = (p) => { try { return realpathSync(p); } catch { return resolve(p); } };
+  const ruleDir = (relative(real(process.cwd()), real(dirname(resolve(ledger)))) || ".").split("\\").join("/");
+  const inRules = (f) => ruleDir !== "." && !ruleDir.startsWith("..") && (f === ruleDir || f.startsWith(`${ruleDir}/`));
+  const names = (filter) => git(["diff", "--name-only", "-z", `--diff-filter=${filter}`, range]).split("\0").filter(Boolean);
+  const changed = names("d");                                   // every file the change leaves in the tree
+  const content = changed.filter((f) => !inRules(f));           // the ledger and the rules are not content checked against themselves (A-1)
+  const rulesChanged = [...changed.filter(inRules), ...names("D").filter(inRules).map((f) => `${f} (removed)`)];
+  const text = content.map((f) => addedLines(git(["diff", range, "--unified=0", "--", f]))).filter((t) => t.trim()).join("\n");
 
   let result;
-  try {
-    const out = execFileSync(process.execPath, [cli, "check", "--ci", "--json", "--kind", "edit", "--path", "pull-request"], { input: text, encoding: "utf8", env: { ...process.env } });
-    result = JSON.parse(out);
-  } catch (e) {
-    // check exits non-zero on blocked / no_evidence; the JSON is still on stdout.
-    try { result = JSON.parse(String(e.stdout)); } catch { console.error(String(e.stderr || e.message)); process.exit(1); }
-  }
-  // Rule packs, file by file. The check above runs under one path ("pull-request"), so a pack rule scoped by path cannot fire
-  // there. `pack check --installed --diff` reads each changed file's added lines under the file's own path. With no pack
-  // installed it prints a sentence, not JSON, and nothing is added. A block here blocks the pull request; a warning is listed.
-  {
-    let packs = null;
-    try { packs = JSON.parse(execFileSync(process.execPath, [cli, "pack", "check", "--installed", "--diff", base ? `origin/${base}` : "HEAD~1", "--ci", "--json"], { encoding: "utf8", env: { ...process.env }, stdio: ["ignore", "pipe", "pipe"] })); }
-    catch (e) { try { packs = JSON.parse(String(e.stdout)); } catch { if (e.status !== undefined) console.error(`rule packs were not checked: ${String(e.stderr || e.message).split("\n").find((l) => l.trim()) ?? "no output"}`); } }
-    if (packs && Array.isArray(packs.hits)) {
-      result.packs = packs;
-      const blocks = packs.hits.filter((h) => h.severity === "block");
-      if (blocks.length) {
-        result.verdict = "blocked";
-        for (const h of blocks.slice(0, 20)) result.reasons = [...(result.reasons ?? []), `rule pack ${h.rule} at ${h.file}:${h.line}: ${String(h.text ?? "").trim().slice(0, 120)}`];
+  try { result = checkFiles(cli, content, range, { ...process.env }); }
+  catch (e) { console.error(String(e.message)); process.exit(1); }
+
+  // Rule packs, file by file, under each file's own path. With no pack installed the command prints a sentence, not JSON,
+  // and nothing is added. A block here blocks the pull request; a warning is listed.
+  const foldPacks = (res, packs, label = "") => {
+    if (!packs || !Array.isArray(packs.hits)) return;
+    if (!label) res.packs = packs;
+    const blocks = packs.hits.filter((h) => h.severity === "block");
+    if (blocks.length) {
+      res.verdict = "blocked";
+      for (const h of blocks.slice(0, 20)) res.reasons = [...(res.reasons ?? []), `${label}rule pack ${h.rule} at ${h.file}:${h.line}: ${String(h.text ?? "").trim().slice(0, 120)}`];
+    }
+  };
+  foldPacks(result, packCheck(cli, baseRef, { ...process.env }));
+
+  // A pull request that changes the rules is also judged by the rules on the base (A-2). A superseding row, an override, a pack
+  // rule turned off or a deleted ledger used to turn a block into "verified" or "no evidence" in the same change that broke the
+  // rule. The stricter verdict stands, and the comment names the files. MP_ACTION_RULES=head judges by the change's own rules only.
+  const rulesMode = String(process.env.MP_ACTION_RULES || "both") === "head" ? "head" : "both";
+  if (rulesChanged.length) {
+    result.rulesChanged = rulesChanged; result.rulesMode = rulesMode; result.rulesBase = baseName;
+    const baseDir = rulesMode === "both" ? baseRuleDir(baseRef, ruleDir) : null;
+    if (baseDir) {
+      const env = { ...process.env, MEMORY_PULSE_LEDGER: join(baseDir, basename(ledger)) };
+      let under; try { under = checkFiles(cli, content, range, env); } catch (e) { console.error(String(e.message)); process.exit(1); }
+      foldPacks(under, packCheck(cli, baseRef, env), "");
+      if (under.verdict === "blocked" && result.verdict !== "blocked") {
+        result.verdict = "blocked"; result.blockedUnderBase = true;
+        result.corrections = under.corrections; result.invariants = under.invariants; if (under.packs) result.packs = under.packs;
+        result.reasons = under.reasons.map((x) => `under the rules on \`${baseName}\`: ${x}`);
       }
     }
   }
+
   // Signed receipt (the api-key input). The verdict above was computed on the runner from files in the repository and it
   // stands: the engine is asked only to sign what it sees. With no key nothing is sent. An engine that is down, or that
   // answers differently, is reported in the comment and never changes the verdict.
@@ -141,7 +234,7 @@ export async function main() {
   if (wantsReceipt()) {
     let signed = null, why = null;
     try { signed = JSON.parse(execFileSync(process.execPath, [cli, "check", "--ci", "--json", "--receipt", "--kind", "edit", "--path", "pull-request"], { input: text, encoding: "utf8", env: { ...process.env }, stdio: ["pipe", "pipe", "pipe"] })); }
-    catch (e) { try { signed = JSON.parse(String(e.stdout)); } catch { why = String(e.stderr || e.message).split("\n").find((l) => l.trim()) ?? "the engine did not answer"; } }
+    catch (e) { try { signed = JSON.parse(String(e.stdout)); } catch { const errLines = String(e.stderr || e.message).split("\n").map((l) => l.trim()).filter(Boolean); why = (errLines.find((l) => /unreachable|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|timed out/i.test(l)) ?? "the engine did not answer").replace(/^(?:Error: )?/, "").slice(0, 160); } }
     if (signed?.receipt?.head) result.receipt = signed.receipt;
     else receiptNote = `no receipt was issued (${(why ?? signed?.receiptHint ?? "the engine returned none").slice(0, 160)})`;
     if (signed?.verdict && signed.verdict !== result.verdict) receiptNote = [receiptNote, `the engine answered ${signed.verdict}; this check reports the verdict computed on the runner`].filter(Boolean).join("; ");

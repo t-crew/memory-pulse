@@ -505,9 +505,10 @@ a rule your ledger retired is still being loaded into sessions
 
 The GitHub Action, `uses: t-crew/memory-pulse@v0`, checks the added lines of every pull request against the committed ledger and invariants:
 
-- `fetch-depth: 0` on the checkout, or the diff falls back to the working tree.
+- `fetch-depth: 0` on the checkout. When the change cannot be read, the job fails and the summary is headed "memory-pulse could not read this change"; nothing is reported as checked.
 - `base` is a bare branch name (`main`), defaulting to the pull request's base.
-- The added lines are checked under the path `pull-request`, so path-scoped overrides and path-scoped invariants do not fire there. Record an override without `--path` on the pull-request branch when a historical value is legitimate.
+- Each changed file is checked under its own path, so a rule scoped with `paths` and an override recorded with `guard allow --path` apply there as they do in the editor. Files under `.memory-pulse/` are the rules, not content.
+- A pull request that changes anything under `.memory-pulse/` is judged by the rules on the base branch as well as its own, and the stricter verdict stands. The comment names the files. `rules: head` judges by the pull request's own rules only.
 - Two status items appear: the job and a check-run named `memory-pulse`. Require the check-run.
 - Forks get log-only verdicts (no token, no comment).
 - `lint` runs by default over the governance files and blocks on a stale `CLAUDE.md`; `lint: "false"` turns it off.

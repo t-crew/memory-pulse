@@ -1288,14 +1288,22 @@ is committed, and the first pull request it blocked is the demo.
 
 Details that bite:
 
-- `fetch-depth: 0` is required; without it the diff falls back to the working
-  tree, the job log says `could not compute the diff ... checking the working
-  tree instead`, and the comment reports no evidence on an empty diff.
+- `fetch-depth: 0` is required. When the change cannot be read (the base branch
+  is not in the checkout, or it shares no history with the head), the job
+  fails and the summary is headed "memory-pulse could not read this change".
+  Nothing is reported as checked. The runner fetches the base only when it is
+  missing and never makes a full checkout shallow.
 - `base` is a bare branch name (`main`), defaulting to the pull request's base.
-- The added lines are checked under the path `pull-request`, so path-scoped
-  overrides and path-scoped invariants do not fire in CI. Record an override
-  without `--path` on the pull-request branch when a historical value is
-  legitimate.
+- Each changed file's added lines are checked under that file's own path, so
+  a rule scoped with `paths` and an override recorded with
+  `guard allow --path` apply on the pull request as they do in the editor.
+  Files under `.memory-pulse/` are the rules, not content: a pull request that
+  only records a correction or declares a rule passes its own check.
+- A pull request that changes anything under `.memory-pulse/` is judged by the
+  rules on the base branch as well as its own, and the stricter verdict
+  stands, so a change cannot loosen a rule and break it in one step. The
+  comment names the files. `rules: head` judges by the pull request's own
+  rules only.
 - Two status items appear, the job and a check-run named `memory-pulse`.
   Require the check-run in branch protection.
 - Forks get log-only verdicts: no token, no comment.

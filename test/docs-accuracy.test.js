@@ -133,10 +133,11 @@ test("Codex shell writes: SKILL.md, README and GUIDE agree that `Bash` is in the
   }
 });
 
-test("the fetch-depth note quotes the job-log string from action/run.mjs and does not credit the comment with it", () => {
-  assert.ok(RUN.includes("could not compute the diff (") && RUN.includes("); checking the working tree instead"), "run.mjs logs the fallback");
-  assert.ok(!/renderComment[\s\S]*working tree/.test(RUN.slice(RUN.indexOf("export function renderComment"), RUN.indexOf("export const findSticky"))), "renderComment never mentions the fallback");
-  assert.ok(README.includes("the job log says `could not compute the diff ... checking the working\n  tree instead`") || README.includes("the job log says `could not compute the diff ... checking the working tree instead`"), "README quotes the job-log string");
-  assert.ok(!README.includes("the comment says so"), "README no longer says the comment says so");
-  assert.ok(README.includes("the comment reports no evidence on an empty diff"), "README says what the comment does show");
+test("the fetch-depth note says what the runner does when the change cannot be read: it fails, with the sentence the summary carries", () => {
+  // Until 2026-11-21 the runner fell back to an empty working-tree diff and reported no evidence. It now fails (review A-3).
+  assert.ok(RUN.includes("memory-pulse could not read this change"), "run.mjs writes the sentence");
+  assert.ok(!RUN.includes("checking the working tree instead"), "the fallback is gone from run.mjs");
+  assert.ok(README.includes('the summary is headed "memory-pulse could not read this change"'), "README quotes the summary's heading");
+  assert.ok(!README.includes("falls back to the working"), "README no longer describes the fallback");
+  assert.ok(README.includes("checked under that file's own path"), "README says each file is checked under its own path");
 });
