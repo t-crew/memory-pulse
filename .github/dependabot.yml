@@ -1,0 +1,9 @@
+# The workflows pin each action to a full commit SHA with its version as a comment on the same line; Dependabot opens a pull
+# request when a newer release exists and updates both (GitHub, "Secure use reference", read 2026-11-22). The package has no
+# npm dependencies, so only the actions ecosystem is watched.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

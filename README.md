@@ -1374,6 +1374,11 @@ Details that bite:
   comment names the files. `rules: head` judges by the pull request's own
   rules only.
 - Two status items appear, the job and a check-run named `memory-pulse`.
+- `@v0` is a tag that moves to each release. To run exactly the code you
+  read, pin the commit instead, with the version as a comment so Dependabot
+  can update it: `uses: t-crew/memory-pulse@<commit sha> # v0.19.0`. With a
+  GitHub Actions workflow lockfile (`.github/workflows/actions.lock`), the
+  lockfile records the commit for you.
   Require the check-run in branch protection.
 - Forks get log-only verdicts: no token, no comment.
 - `lint` runs by default and blocks on a stale `CLAUDE.md`; `lint: "false"`
