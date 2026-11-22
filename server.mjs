@@ -2448,6 +2448,17 @@ export function findViolations(allEvents, text, filePath = "") {
   }
   return hits;
 }
+// The one-line way out, in one sentence, when a blocked correction has a replacement (review G-1, 2026-11-21): the line rule blocks
+// old and new written on separate lines, and the writer has to be told that the same two values on one line pass. A correction
+// with no replacement has no comparison to offer, so nothing is said for it.
+function comparisonSentence(blocked) {
+  const hit = blocked.flatMap(({ v }) => v.corrections ?? []).find((h) => Array.isArray(h.replacement) && h.replacement.some((r) => typeof r === "string" && r));
+  if (!hit) return "";
+  const rep = hit.replacement.find((r) => typeof r === "string" && r), quotable = (x) => !/\n/.test(x) && x.length <= 60 && !termLike(x).length;
+  return quotable(String(hit.term)) && quotable(rep)
+    ? `A line that names both "${hit.term}" and "${rep}" passes: the guard reads it as a comparison. `
+    : "Naming the old value and its replacement on the same line passes: the guard reads it as a comparison. ";
+}
 async function cliGuard() {
   // `guard allow "<term>" [--path p] "<reason>"` records an OVERRIDE: an
   // explicit decision that a hit is a false block, scoped to a path prefix.
@@ -2587,7 +2598,7 @@ async function cliGuard() {
       : blocked.every((b) => b.command) ? COMMAND_HINT
       // 0.18.0 (review): an override answers a withdrawn value. A block with none (an invariant, a rule on commands) does not offer one
       : !withdrawnHit ? (blocked.some((b) => b.command) ? `${INVARIANT_HINT}\n${COMMAND_HINT}` : INVARIANT_HINT)
-      : 'Use the corrected value (naming old and new together on one line, as a comparison, is fine), record a new correction if the old one is wrong, or `memory-pulse guard allow "<term>" --path <prefix> "<reason>"` if this is a false block.';
+      : `${comparisonSentence(blocked)}Use the corrected value, record a new correction if the old one is wrong, or \`memory-pulse guard allow "<term>" --path <prefix> "<reason>"\` if this is a false block.`;
   hint = packHint(blocked, invariants, hint);   // a block by a pack rule names its own way out: memory-pulse pack rule <pack>/<rule> warn|off
   if (cursor) {
     const plain = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");

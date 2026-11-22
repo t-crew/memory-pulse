@@ -4,9 +4,10 @@
  * Measured on one real ledger (2026-11-21): of 166 term blocks recorded between 2026-09-01 and 2026-11-20, 125 came from
  * seven corrections that ambient capture wrote by itself and whose withdrawn term was one ordinary word (merge 85,
  * send 16, ten 9, trigger 5, universal 5, just 3, capture 2). The other 41 came from terms isSpecificTerm calls
- * specific. Over 5,917 files on the same machine a lowercase word sampled by occurrence sits in a median 7.2% of files,
- * a Capitalized word in 1.2%, a two-letter capital word in 1.3%; a capital word of three letters or more sits in 0.34%,
- * a camelCase name in 0.20% and a value with a digit or a symbol in 0.24%. The rule follows those numbers.
+ * specific. The rule is 0.17.1's: one word of letters only is not specific, whatever its capitals. A first version of this
+ * module let a camelCase name and a capital word of three letters or more bind, on the median share of files such a word
+ * sits in (0.20% and 0.34% of 5,917 files). The median hid the words people name: in a fixed sample of 3,000 files JSON is
+ * in 14.9%, API in 8.6%, URL in 7.0%, HTTP in 2.8%, README in 1.9%, against 6.1% for merge (review, 2026-11-21).
  *
  * 0.17.1 stopped the guard blocking on such a row at read time. From here the row is not written as binding at all:
  * it records what was heard, says it is not enforced, and gives the command that enforces the word on purpose.
@@ -18,7 +19,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 for (const k of ["MEMORY_PULSE_LEDGER", "MEMORY_PULSE_PROJECT", "MEMORY_PULSE_KEY", "MEMORY_PULSE_BOARD"]) delete process.env[k];
 process.env.MEMORY_PULSE_MODE = "deliberate"; process.env.MEMORY_PULSE_AGENT = "/nonexistent/agent/events.jsonl";
-import { mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
@@ -41,11 +42,14 @@ const mk = () => {
 };
 
 // ---------------------------------------------------------------- the predicate ----
-test("isSpecificTerm: a phrase, a digit, a symbol, camelCase or a capital word of three letters or more; one ordinary word is not", async () => {
+test("isSpecificTerm: a phrase, a digit or a symbol; one word of letters only is not, whatever its capitals", async () => {
   const { isSpecificTerm } = await specific();
-  for (const t of ["two words", "Player join", "$49", "6144", "0.030", "3/11", "us-east-1", "memory_key", "v2", "em-dashes", "a.b", "@scope", "#general", "camelCase", "useEffect", "OpenAI", "JSON", "README"])
+  for (const t of ["two words", "Player join", "$49", "6144", "0.030", "3/11", "us-east-1", "memory_key", "v2", "em-dashes", "a.b", "@scope", "#general", "don't"])
     assert.equal(isSpecificTerm(t), true, `${t} is specific`);
-  for (const t of ["merge", "send", "ten", "trigger", "universal", "just", "capture", "only", "upgrades", "Merge", "Postgres", "TO", "ID", "don't", "", "  ", null, undefined, 49])
+  // 0.17.1's rule, which the first version of this module loosened for capitals and a review put back (2026-11-21): in a fixed
+  // sample of 3,000 files JSON is in 14.9%, API 8.6%, URL 7.0%, forEach 4.1%, toString 3.9%, HTTP 2.8%, README 1.9%; merge is in 6.1%
+  for (const t of ["merge", "send", "ten", "trigger", "universal", "just", "capture", "only", "upgrades", "Merge", "Postgres", "TO", "ID",
+                   "JSON", "HTTP", "API", "URL", "README", "TODO", "useEffect", "innerHTML", "forEach", "toString", "camelCase", "OpenAI", "Ünïcode", "", "  ", null, undefined, 49])
     assert.equal(isSpecificTerm(t), false, `${JSON.stringify(t)} is not specific`);
 });
 
@@ -57,12 +61,13 @@ test("isSpecificTerm separates the recorded blocks: the seven words behind 125 o
   for (const t of ["6144", "0.030", "3/11", "renderer swap", "Player join", "$79"]) assert.equal(isSpecificTerm(t), true, t);
 });
 
-test("advisoryTerm is the same rule: an ambient two-letter capital word is advisory, an ambient camelCase name or acronym is enforced", () => {
+test("advisoryTerm is 0.17.1's rule: an ambient word of letters only is never enforced, whatever its capitals", () => {
   const amb = (term) => ({ kind: "correction", cause: `user-correction-${term.toLowerCase()}`, withdrawn: [term], tags: ["ambient", "prohibit-no-x"] });
-  assert.equal(advisoryTerm(amb("send"), "send"), true);
-  assert.equal(advisoryTerm(amb("TO"), "TO"), true);
-  assert.equal(advisoryTerm(amb("useEffect"), "useEffect"), false, "a camelCase name is as rare in files as a value with a symbol");
-  assert.equal(advisoryTerm(amb("JSON"), "JSON"), false);
+  for (const w of ["send", "TO", "JSON", "HTTP", "README", "useEffect", "innerHTML"]) {
+    assert.equal(advisoryTerm(amb(w), w), true, w);
+    assert.equal(advisoryTerm({ kind: "correction", cause: `user-correction-${w.toLowerCase()}`, withdrawn: [w] }, w), true, `${w}, as the guard's cached row (no tags)`);
+  }
+  assert.equal(advisoryTerm(amb("don't"), "don't"), false, "not letters only: enforced, as 0.17.1 and 0.18.0 read it");
   assert.equal(advisoryTerm(amb("us-east-1"), "us-east-1"), false);
   assert.equal(advisoryTerm(amb(""), ""), false);
   assert.equal(advisoryTerm({ kind: "correction", cause: "naming-review", withdrawn: ["users"] }, "users"), false, "a word a person recorded is enforced");
@@ -104,6 +109,42 @@ test("observe (UserPromptSubmit): 'no merge, ...' writes a correction that binds
   assert.doesNotMatch(r.stdout, /the guard enforces it from now on/);
   const g = write("git merge main && echo merged");
   assert.equal(g.status, 0, g.stderr + g.stdout);
+});
+
+// The review's capture table (2026-11-21, C-1): one overheard sentence, then one ordinary line that holds the word. Expected: what
+// 0.18.0 let through, this version lets through, both for a row it writes and for the row 0.18.0 wrote (the term as withdrawn).
+const CAPTURE_CASES = [
+  // prompt, the ordinary line, its file, what the new row binds (null: heard only), the guard on the line, the term 0.18.0 wrote
+  ["don't use JSON, use YAML for the config", "const cfg = JSON.parse(raw);", "src/a.js", null, 0, "JSON"],
+  ["never use HTTP, use HTTPS", "if (res.status !== 200) throw new Error(`HTTP ${res.status}`);", "src/a.js", null, 0, "HTTP"],
+  ["never use innerHTML", "el.textContent = name; // not innerHTML here", "src/a.js", null, 0, "innerHTML"],
+  ["never use useEffect for data fetching", "import { useEffect, useState } from 'react';", "src/a.tsx", null, 0, "useEffect"],
+  ["don't say README, say guide", "See the README for setup.", "docs/p.md", null, 0, "README"],
+  ["use pnpm, not npm", "Run `npm test` before you push.", "README.md", null, 0, "npm"],
+  ["we say Vitest, not Jest", "Jest is still used by the legacy package.", "README.md", null, 0, "Jest"],
+  ["never use moment", "Wait a moment for the build.", "README.md", null, 0, "moment"],
+  ["never use Postgres 14; use Postgres 16.", "We run Postgres 16 in production.", "README.md", ["Postgres 14"], 0, null],
+  ["no, the cap is 20, not 48", "padding: 48px;", "src/a.css", ["48"], 2, "48"],
+  ["never cite $49 in the docs", "| Pro | $49/mo |", "docs/p.md", ["$49"], 2, "$49"],
+];
+test("the review's capture table: an overheard acronym or camelCase name binds nothing and blocks nothing; a value still binds", () => {
+  for (const [prompt, line, file, binds, exit] of CAPTURE_CASES) {
+    const { run, rows, write } = mk();
+    run(["observe"], JSON.stringify({ prompt }));
+    const row = rows().find((e) => e.kind === "correction");
+    assert.ok(row, `a row for: ${prompt}`);
+    assert.deepEqual(row.withdrawn ?? null, binds, `${prompt} binds ${JSON.stringify(row.withdrawn)}`);
+    assert.equal(write(line + "\n", file).status, exit, `${prompt} then: ${line}`);
+  }
+});
+test("the review's capture table over a ledger 0.18.0 wrote: the row that carries the word as withdrawn blocks nothing it did not block then", () => {
+  for (const [prompt, line, file, , exit, old] of CAPTURE_CASES) {
+    if (!old) continue;
+    const { ledger, write, cwd } = mk();
+    mkdirSync(join(cwd, ".memory-pulse"), { recursive: true });
+    writeFileSync(ledger, JSON.stringify({ t: 1, cause: `user-correction-${old.toLowerCase()}`, effect: `${old.toLowerCase()}-withdrawn`, kind: "correction", withdrawn: [old], tags: ["ambient", "prohibit-never-x"], note: `User prohibited "${old}" — prompt: "${prompt}"` }) + "\n");
+    assert.equal(write(line + "\n", file).status, exit, `0.18.0's row for ${JSON.stringify(old)}, then: ${line}`);
+  }
 });
 
 test("observe: a specific term still binds and still says so", () => {
