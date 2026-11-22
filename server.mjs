@@ -49,7 +49,7 @@ import { hostOf, normalizeHook } from "./lib/hosts.mjs";
 import { drift as driftWith } from "./lib/drift.mjs";
 import { advisoryTerm } from "./lib/advisory.mjs";
 import { commandHits, invariantsFor, preregRows, COMMAND_HINT, INVARIANT_HINT, PREREG_WRITE, cliPrereg, cliNow, cliRan } from "./lib/prereg.mjs";
-import { installedPackRules, scopeHas, packReason, packHint, packWarnings, packContext, forEngine } from "./lib/packs.mjs";
+import { installedPackRules, pathInScope, packReason, packHint, packWarnings, packContext, forEngine } from "./lib/packs.mjs";
 import { SOUL_WRITE, RESERVED, soulState, soulLines, soulGuard, cliSoul, cliUser, setSection, chainedOnly, heldFromMerge, taintOf, soulCapsule, verifySoulCapsule, continuityLine, soulScreen,
          isExternalTool, externalCmd, externalWhat, markTaint, taintMarked, soulTaintGuard } from "./lib/soul.mjs";
 
@@ -2315,7 +2315,7 @@ export function localCheck(allEvents, action, invariants = [], opts = {}) {
     // `paths`: prefixes the invariant applies to; absent = every path. A rule
     // about public wording must not fire on a proofs file or a test fixture.
     const scope = Array.isArray(inv.paths) ? inv.paths.filter((x) => typeof x === "string" && x) : [];
-    if (scope.length && !scope.some((p) => scopeHas(p, path))) continue;   // a prefix as before; an entry with a * is a glob (lib/packs.mjs)
+    if (scope.length && !pathInScope(scope, path)) continue;   // a prefix as before; an entry with a * is a glob, and !glob excludes (lib/packs.mjs)
     const tests = (inv.patterns ?? []).map(compilePattern);
     if (tests.some((t) => t === null)) reasons.push(`invariant ${inv.id} ignored: a pattern does not compile`);
     const hit = tests.find((t) => t && t.test(text));
@@ -3647,7 +3647,7 @@ if (isMain) {
   if (sub === "prereg") process.exit(cliPrereg(process.argv.slice(3), { ledgerPath, readEvents, appendEvent, chainRows }));
   if (sub === "ran") process.exit(cliRan(process.argv.slice(3), { ledgerPath, readEvents, chainRows }));
   if (sub === "lint") { await cliLint(); process.exit(0); }
-  if (sub === "pack") { const { cliPack } = await import("./lib/packs.mjs"); process.exit(cliPack(process.argv.slice(3), { dir: dirname(ledgerPath()) })); }
+  if (sub === "pack") { const { cliPack } = await import("./lib/packs.mjs"); process.exit(await cliPack(process.argv.slice(3), { dir: dirname(ledgerPath()) })); }
   if (sub === "report") { cliReport(); process.exit(0); }
   if (sub === "bench") { await cliBench(); process.exit(0); }
   if (sub === "stats") { await cliStats(); process.exit(0); }

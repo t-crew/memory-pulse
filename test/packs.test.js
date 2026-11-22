@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SERVER } from "./_helpers.mjs";
 import { localCheck, readInvariants } from "../server.mjs";
-import { globMatch, scopeHas, verifyPack, installedPackRules, forEngine } from "../lib/packs.mjs";
+import { globMatch, scopeHas, pathInScope, verifyPack, installedPackRules, forEngine } from "../lib/packs.mjs";
 
 const SRC = "https://example.com/demo/changelog#2-0";
 const HEADER = { name: "demo-stack", version: "1.0.0", description: "Rules for the demo stack.", stack: "demo" };
@@ -73,6 +73,31 @@ test("a `paths` entry without a `*` is a prefix, exactly as before: startsWith o
   assert.equal(scopeHas("app/[slug]/", "app/[slug]/page.tsx"), true); assert.equal(scopeHas("app/[slug]/", "app/s/page.tsx"), false, "brackets never become a pattern");
   assert.equal(scopeHas("src/a?.js", "src/ab.js"), false, "a ? without a * is a literal prefix character");
   assert.equal(scopeHas("**/*.py", "src/a.py"), true); assert.equal(scopeHas("**/*.py", "src/a.js"), false);
+});
+
+test("a glob entry that starts with ! takes paths out of scope; without a * it is still a prefix", () => {
+  const app = ["app/**/*.{ts,tsx}", "src/app/**/*.{ts,tsx}", "!**/pages/**"];
+  assert.equal(pathInScope(app, "app/shop/page.tsx"), true);
+  assert.equal(pathInScope(app, "src/app/layout.tsx"), true);
+  assert.equal(pathInScope(app, "app/pages/index.tsx"), false, "a Pages Router project that lives in a folder named app");
+  assert.equal(pathInScope(app, "lib/x.tsx"), false);
+  const code = ["**/*.py", "!**/tests/**", "!**/test_*.py"];
+  assert.equal(pathInScope(code, "src/llm.py"), true);
+  assert.equal(pathInScope(code, "tests/unit/x.py"), false); assert.equal(pathInScope(code, "pkg/tests/x.py"), false); assert.equal(pathInScope(code, "src/test_llm.py"), false);
+  assert.equal(pathInScope(code, join(process.cwd(), "tests", "x.py")), false, "an absolute path is excluded by its project-relative form");
+  assert.equal(pathInScope(["!**/vendor/**"], "src/a.js"), true, "only exclusions: every other path is in scope");
+  assert.equal(pathInScope(["!**/vendor/**"], "vendor/a.js"), false);
+  assert.equal(pathInScope([], "anything"), true);
+  // 0.18.0 behaviour for an entry with no *: a prefix, whatever its first character
+  assert.equal(pathInScope(["!notes/"], "!notes/a.md"), true); assert.equal(pathInScope(["!notes/"], "notes/a.md"), false);
+  assert.equal(pathInScope(["docs/", "site/"], "site/index.html"), true); assert.equal(pathInScope(["docs/", "site/"], "src/site/index.html"), false);
+  const inv = [{ id: "no-tests", patterns: ["FORBIDDEN"], paths: ["**/*.py", "!**/tests/**"] }];
+  const ids = (path) => localCheck([], { kind: "edit", text: "x FORBIDDEN y", path }, inv).invariants.map((h) => h.id);
+  assert.deepEqual(ids("src/a.py"), ["no-tests"]); assert.deepEqual(ids("tests/a.py"), []);
+  // the linter wants one glob that puts paths in scope
+  const v = verifyPack(tmpPack(packText([{ ...RULES[0], paths: ["!**/tests/**"] }])));
+  assert.equal(v.ok, false); assert.ok(v.errors.some((e) => /old-call: .*paths/.test(e)), v.errors.join(" | "));
+  assert.equal(verifyPack(tmpPack(packText([{ ...RULES[0], paths: ["**/*.py", "!**/tests/**"] }]))).ok, true);
 });
 
 test("localCheck: prefix-scoped invariants match as in 0.18.0, and a glob-scoped one matches by extension and directory", () => {
@@ -317,6 +342,16 @@ test("pack check <path> [dir] is a dry run: hits per rule with file and line, ex
   const j = JSON.parse(p.cli("pack", "check", p.file, "src", "--json").out);
   assert.equal(j.pack, "demo-stack"); assert.equal(j.files, 2);
   assert.deepEqual(j.hits.map((h) => `${h.rule} ${h.file}:${h.line}`), ["old-call a.py:2", "old-call a.py:5", "soft-call a.py:4"]);
+});
+
+test("pack check --json over a pipe is whole however many hits there are (found measuring a 954-file repository: the output stopped at 65,536 bytes)", () => {
+  const p = project(); mkdirSync(join(p.dir, "src"));
+  writeFileSync(join(p.dir, "src", "big.py"), Array.from({ length: 3000 }, (_, i) => `value_${i} = old_call(${i})  # a line long enough to make the report large`).join("\n") + "\n");
+  const r = p.cli("pack", "check", p.file, "--json");
+  assert.equal(r.code, 0, r.err); assert.ok(r.out.length > 200000, `${r.out.length} bytes`);
+  const j = JSON.parse(r.out);
+  assert.equal(j.hits.length, 3000); assert.equal(j.hits[2999].line, 3000); assert.equal(j.block, 3000);
+  const t = p.cli("pack", "check", p.file); assert.match(t.out, /old-call\s+block\s+3000 hits/); assert.match(t.out, /\+2980 more/); assert.match(t.out, /1 file read, 3000 hits/);
 });
 
 test("pack check --installed applies this project's overrides, and --ci exits 1 only when a block rule hits", () => {
