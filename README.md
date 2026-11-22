@@ -53,12 +53,34 @@ floor it returns an empty result, and the brief says so.
 
 Every route, host by host, with what runs on each: [docs/INSTALL.md](docs/INSTALL.md) (also at pulse.strategic-innovations.ai/install).
 
+**Try it, set it up, check it.** Three commands. The first installs nothing.
+
+```
+npx -y memory-pulse demo     # one correction and three edits in a temporary folder: the guard blocks the write-back (exit status 2) and passes the other two
+npx -y memory-pulse init     # in your repository: prints its plan, asks once, installs the hooks for the hosts it finds, creates .memory-pulse/, runs doctor
+npx -y memory-pulse doctor   # checks the wiring one line at a time; a failed check prints the command that fixes it, and the exit is 1
+```
+
+`demo` records the correction with `remember` and runs the `guard` command on each edit, so what it prints
+is what a host gets; `--withdrawn`, `--replacement` and `--text "<edit>"` try your own values. `init`
+writes nothing before it has printed its plan: `--dry-run` stops there, `--yes` skips the question, and with
+no terminal and no `--yes` nothing is changed. It runs `install-hook` for Claude Code, Codex and Cursor where
+it finds them (`--project` writes into the repository instead), and a second run changes nothing. It installs
+hooks only: the routes below also register the MCP server. Every file it writes is in the plan, the `.gitattributes` lines and the git config entry of a
+`--project` install in a git work tree included. `doctor` checks Node; each host's guard hook (its event,
+its matcher and its type), the file every hook runs and that copy's version; the guard on five synthetic edits
+against a temporary ledger; and the project ledger through `verify`. It runs the guard from this package or
+from the pinned copy the hooks name, never a command it read from a hook file: a repository can ship that file,
+so such a command is shown as text and listed as not run. It sends one GET to the engine with no key, as
+information, and `--offline` skips it. `demo`, `init` and `doctor` arrive in the release after 0.18.0. On 0.18.0 they exit 1 with
+`unknown command`; from a checkout, run `node server.mjs demo`.
+
 Six routes. Pick the row for your agent. Node 18 or newer (`package.json`
 engines); the test suite runs on 22 and 24.
 
 `remember` and `help` from the shell arrive in 0.5.9. npm served 0.5.8 on
 2026-09-09, where both exit 1 with `unknown command`. If npx serves an older
-cached release, pin this one: `npx -y memory-pulse@0.18.0`; from a checkout,
+cached release, pin this one: `npx -y memory-pulse@0.19.0`; from a checkout,
 run `node server.mjs`. Four more things in this README are
 0.5.9 behaviour and differ on 0.5.8: `guard --verbose` names non-JSON stdin
 on stderr (0.5.8 prints nothing), `handoff` with no transcript writes nothing
@@ -113,10 +135,13 @@ Then, inside Codex, run `/hooks` and trust the three `memory-pulse` entries
 Codex runs no hook it has not shown you, and installing a plugin does not
 trust its hooks. That is Codex's rule and a good one.
 
-**npm, global install.** `install-hook` writes four hooks into
+**npm, global install.** `install-hook` writes eight hooks into
 `~/.claude/settings.json`: SessionStart brief, UserPromptSubmit prompt,
-PreToolUse guard and PreCompact handoff. `--codex` targets `~/.codex/hooks.json` instead, `--project` writes
-them into the repository, and `--ambient` adds the UserPromptSubmit observer.
+PreToolUse guard, PreCompact handoff, and capture with consolidation
+(PostToolUse, PostToolUseFailure, Stop, SessionEnd; `--no-capture` leaves
+those four out). `--codex` targets `~/.codex/hooks.json` instead, without
+capture; `--cursor` writes `~/.cursor/hooks.json`; `--project` writes them
+into the repository; `--ambient` adds the UserPromptSubmit observer.
 
 ```
 npm i -g memory-pulse
@@ -191,17 +216,30 @@ and exits 0. The first `remember` creates `.memory-pulse/events.jsonl`, from a
 tool call or from the shell:
 
 ```
-npx -y memory-pulse@0.18.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
+npx -y memory-pulse@0.19.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 # before 0.6.0 is on npm, the same command from a checkout:
 git clone https://github.com/t-crew/memory-pulse.git && node memory-pulse/server.mjs remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 ```
 
-The hook command `install-hook` writes is `npx -y memory-pulse guard`, and npx
-resolves the package on every call: 0.99 s warm and 1.4 s cold (empty npm
-cache) per edit on an M1 Pro on 2026-10-16 with 0.8.0, against 52 ms for
-`node server.mjs guard` on the same ledger, which is the path the plugin runs. If the cost matters,
-install the plugin, or install globally and edit the hook command to
-`memory-pulse guard`.
+The hook command `install-hook` writes for your own machine is
+`node "<data dir>/<version>/server.mjs" guard` (since 0.16.1): node on a copy of
+the package that `install-hook` keeps under `MEMORY_PULSE_DATA_DIR`, one folder
+per version. On a 1-row ledger the pinned copy took 63 ms for an edit that
+passes and 66 ms for one that is blocked, median of 12 runs each, process start
+included, on an M1 Pro on 2026-11-21 with 0.18.0. The plugin runs `server.mjs`
+from its own folder the same way. Upgrading the package changes neither the
+pinned copy nor the settings file, so after an upgrade run `memory-pulse
+install-hook` (or `init`) again; `doctor` fails a hook that still runs the
+older copy and names that command.
+
+`install-hook --project` still writes `npx -y memory-pulse guard`, because a
+committed file has to run on every clone, and npx resolves the package on
+every call: 0.99 s warm and 1.4 s cold (empty npm cache) per edit on an M1 Pro
+on 2026-10-16 with 0.8.0, and 0.98 to 1.54 s per hook call on a clean machine
+on 2026-10-23. A repository that commits its hooks pays that before each edit
+and shell command the guard checks. `doctor` names the files whose hooks run
+through npx; `install-hook` without `--project` writes the pinned form for one
+machine.
 
 ### Where the key goes
 
@@ -217,11 +255,13 @@ Showing an agent a correction is not enough. TRACE
 re-violating more than half of the corrections they had been shown, with a
 memory tool installed. The PreToolUse guard sees every `Edit`, `Write` and
 `MultiEdit` in Claude Code, plus a `Bash` command whose write is literal in
-the command string (a heredoc, a redirect or a `tee`, read with nothing
-executed), and every `apply_patch` in Codex, where one patch may touch several
+the command string (a heredoc with the redirect before or after its marker, a
+redirect or a `tee`, `sed -i` and `perl -i`, judged on the replacement side
+only, and `python -c` or `node -e` whose write call is handed a string
+literal; all read with nothing executed), and every `apply_patch` in Codex, where one patch may touch several
 files and each is checked under its own path. An edit that writes back a
 withdrawn value is **blocked**, and the agent is told which ledger line retired
-it and when. An edit that names the replacement beside the old value passes,
+it and when. A line that names the replacement beside the old value passes,
 because "was $49, now $29" is a comparison. Only a bare reintroduction is
 blocked. A shell command whose write cannot be read from the string returns
 nothing, so it is a miss rather than a false block, and `check --ci` on the
@@ -243,10 +283,24 @@ The rules that decide whether the guard can act on a correction:
   inflections. `n=14` does not block `N=14`. Record every spelling you have
   seen, one term each. `before` matches case-insensitively, and it advises
   rather than blocks.
-- **A replacement anywhere in the edit releases every term of that
-  correction.** Make replacements as specific as withdrawn terms: `$29`, not
-  `29`. Terms under 2 characters are dropped and the result says
+- **A replacement releases a withdrawn term only on its own line.** A line
+  that states both the old value and its replacement is a comparison and
+  passes. A line that states only the old value is blocked, whatever the rest
+  of the edit says: `| Pro | $49/mo |` is blocked even when
+  `<!-- coupon: $29 -->` sits two lines below it. Text that states the old
+  value on one line and the new one on the next is blocked too; put both on
+  one line, as the block message says. A term that spans lines is judged on
+  the lines it covers. Make replacements as specific as withdrawn terms:
+  `$29`, not `29`. Terms under 2 characters are dropped and the result says
   `enforceable: false`.
+
+  Measured by an independent review on 2026-11-21, with the corrections of
+  one real ledger over 6,204 file checks: 0.18.0 blocked 91 files and this
+  version blocks 100. Of the 9 newly blocked files none was a true
+  reintroduction: 3 held a comparison split over lines, and 6 held an
+  unrelated use of a broad phrase that the old rule had released by accident.
+  Of 91 ways to write a withdrawn value back, 0.18.0 caught 13 and this
+  version catches 30.
 - **Pass the terms yourself.** When a correction declares no withdrawn term
   and its effect reads `X-corrected-to-Y` (or `-withdrawn-for-`,
   `-superseded-by-`, `-replaced-by-`), the terms are read out of the slug:
@@ -275,10 +329,103 @@ Exit 2 with the ledger line means the guard is live. Stdin that is not hook
 JSON is allowed through silently; `guard --verbose` says so on stderr, which
 is how you tell a miswired hook from "no evidence".
 
+### Rule packs: rules for your stack before your first correction
+
+A coding agent writes the API its training data knew. The framework has often
+removed it since. A rule pack is a prepared set of rules for one stack, and
+every rule names the vendor page it rests on and the date that page was read.
+Eight packs ship inside the package (61 rules); nothing is fetched.
+
+```
+$ npx memory-pulse pack list
+bundled with memory-pulse:
+  cloudflare-workers  1.0.0  cloudflare-workers  7 rules (3 can block, 4 warn)     verified 2026-11-21   not installed
+  fastapi             1.0.0  fastapi             7 rules (1 can block, 6 warn)     verified 2026-11-21   not installed
+  llm-models          1.0.0  llm-apis            11 rules (0 can block, 11 warn)   verified 2026-11-21   not installed
+  nextjs-app-router   1.0.0  nextjs              6 rules (1 can block, 5 warn)     verified 2026-11-21   not installed
+  pydantic-v2         1.0.0  pydantic            9 rules (0 can block, 9 warn)     verified 2026-11-21   not installed
+  python-stdlib       1.0.0  python              12 rules (3 can block, 9 warn)    verified 2026-11-21   not installed
+  stripe              1.0.0  stripe              5 rules (0 can block, 5 warn)     verified 2026-11-21   not installed
+  supabase-auth       1.0.0  supabase            4 rules (0 can block, 4 warn)     verified 2026-11-21   not installed
+
+$ npx memory-pulse pack add python-stdlib
+installed python-stdlib 1.0.0: 12 rules (3 can block, 9 warn) in .memory-pulse/packs/python-stdlib.jsonl
+every rule warns and none blocks. The 3 rules the pack marks safe to block are turned on with memory-pulse pack add python-stdlib --block, or one at a time with memory-pulse pack rule python-stdlib/<rule> block
+```
+
+An installed pack is one file in your repository. Commit it and it is reviewed
+in a pull request like any other change. It is never written into
+`invariants.jsonl` and it adds no row to the ledger; `pack remove` deletes it.
+
+**A pack never blocks by default.** Every rule of an installed pack is a
+warning. The guard hands it to the agent as context, after the ledger's own
+corrections, and the edit goes through:
+
+```
+memory-pulse: an installed rule pack has a warning for this edit. The edit is not blocked:
+  warning pack python-stdlib, rule datetime-utcnow: datetime.utcnow() and datetime.utcfromtimestamp() are deprecated since Python 3.12 and return naive datetimes — instead: datetime.now(tz=datetime.UTC) and datetime.fromtimestamp(ts, tz=datetime.UTC). Source: https://docs.python.org/3/whatsnew/3.12.html
+```
+
+Blocking is a choice your project makes. `pack add python-stdlib --block`
+turns it on for the rules the pack marks safe to block (8 of the 61), and
+`pack rule <pack>/<rule> block` for one rule. A block then names the pack, the
+rule, what to use, the source and the way to change the rule:
+
+```
+memory-pulse guard: blocked.
+  • pack python-stdlib, rule unittest-aliases: seven unittest.TestCase aliases, assertEquals, assertRegexpMatches and assertRaisesRegexp among them, were removed in Python 3.12 (matched /\bself\.(?:assertEquals|assertNotEquals|assertAlmostEquals|assertNotAlmostEquals|assertRegexpMatches|assertNotRegexpMatches|assertRaisesRegexp)\(/) — instead: assertEqual, assertNotEqual, assertAlmostEqual, assertRegex, assertNotRegex, assertRaisesRegex. Source: https://docs.python.org/3/whatsnew/3.12.html (read 2026-11-21)
+This rule comes from an installed rule pack (.memory-pulse/packs/python-stdlib.jsonl), where this project turned blocking on, not from a correction, so guard allow does not apply. Change the text. If the rule is wrong for this project, change it here without editing the pack: memory-pulse pack rule python-stdlib/unittest-aliases warn (reports, does not block) or memory-pulse pack rule python-stdlib/unittest-aliases off. The choice is written to .memory-pulse/packs/overrides.jsonl.
+```
+
+A rule a pack marks safe to block does not count a line that only names the old
+API: a `#` or `//` comment, a string in Python, JavaScript or TypeScript code,
+any line of a Markdown file. It reads one line at a time, so a mention in the
+middle of a multi-line docstring is still matched. The mark is not a promise:
+[`packs/MEASURED.md`](packs/MEASURED.md) has every rule's hits over 35 public
+repositories and over 110 near misses a review wrote. With every marked rule
+turned on, 2 of the 110 block (a project's own `assertEquals`, a local package
+named `configparser`); as installed, none do. Look before you turn a pack on.
+`pack check` is a dry run over your tree:
+
+```
+$ npx memory-pulse pack check python-stdlib .
+pack check: python-stdlib 1.0.0, as the pack marks its rules, over .
+
+unittest-aliases   can block  1 hit   seven unittest.TestCase aliases, assertEquals, assertRegexpMatches and assertRaisesRegexp among them, were removed in Python 3.12
+  tests/test_a.py:3: self.assertEquals(1, 1)
+datetime-utcnow    warn       1 hit   datetime.utcnow() and datetime.utcfromtimestamp() are deprecated since Python 3.12 and return naive datetimes
+  src/clock.py:2: now = datetime.datetime.utcnow()
+
+2 files read, 2 hits (1 from rules that can block, 1 from warn rules)
+dry run: nothing was blocked and nothing was written
+```
+
+`pack rule <pack>/<rule> off|warn|block|default` changes one rule for this
+project and leaves the pack file as shipped, so a newer pack never fights a
+local choice. A pack rule's `paths` are globs (`**/*.py`, `**/app/**/*.tsx`, and
+`!**/tests/**` to leave a folder out); the same globs work in
+`invariants.jsonl`, where an entry without a `*` is still a prefix.
+`pack check --installed --diff origin/main --ci` checks the lines a branch adds,
+each file under its own path, and exits 1 when a rule that blocks here hits;
+the GitHub Action runs it on a pull request. With no base, `--diff` reads
+staged, unstaged and untracked changes, which is the form for a pre-commit hook.
+
+Two things a pack cannot do quietly. A pack file that does not parse (a merge
+left conflict markers in it) is not applied, and every guard run says so and
+names `pack verify`; `check --ci` and `pack check --ci` fail on it. And a
+pattern of a pack that did not ship with the client runs under a time budget:
+one that uses 400 ms of processor time on an edit without an answer is skipped
+and reported, so a bad pattern cannot hang an edit. `pack verify` refuses such
+a pattern before `pack add` installs it.
+Writing a pack of your own: [`packs/CONTRIBUTING.md`](packs/CONTRIBUTING.md).
+
 ### Commands
 
 ```
 npx memory-pulse help           # every command and environment variable; also --help, -h
+npx memory-pulse demo           # try it with nothing installed: one correction, three edits and the guard's verdict on each, in a temporary folder; --withdrawn, --replacement, --text "<edit>", --json
+npx memory-pulse init           # set it up in a repository: plan first, one question (--yes skips it, --dry-run stops at the plan), install-hook per host found (--project), .memory-pulse/, then doctor
+npx memory-pulse doctor         # check the wiring: one line per check, the fix after a FAIL, exit 1 when one fails; --json, --offline
 npx memory-pulse serve          # the MCP server on stdio (the default with no command)
 npx memory-pulse brief          # the SessionStart re-entry: the organized memory (scaffold) by default; with a key, --engine or --budget the engine brief
 npx memory-pulse scaffold       # the organized memory: identity and rules, corrections in force, project state, recent findings, open threads; --section S, --all
@@ -305,6 +452,10 @@ npx memory-pulse state branch exp --at 12 --out exp.rain   # a capsule cut at ro
 npx memory-pulse state merge exp.rain        # carry a diverged branch's findings across once; conflicts are named, never resolved quietly
 npx memory-pulse state rollback --to 12 "<why>"   # one appended row; rows after 12 stay on record, out of force
 npx memory-pulse state verify agent.rain     # verify a capsule without touching any ledger; exit 2 on failure
+npx memory-pulse team setup     # share the committed ledger through git: writes the .gitattributes lines (commit them) and sets this clone's merge driver; every clone runs it once
+npx memory-pulse team           # whether this clone merges the ledger through the driver; exit 2 when the attribute is there and the driver is not
+npx memory-pulse team resolve   # run the driver's merge on a ledger git left unmerged, and stage a clean result
+npx memory-pulse merge-driver <base> <ours> <theirs> <path>   # the git merge driver team setup configures; git calls it on merge, pull and rebase
 npx memory-pulse board post --from blue --to science --kind request --title "audit stage 12" --body "..."   # the shared agent message board
 npx memory-pulse board read --as science      # unread messages for an agent; also reply, ack, thread, html (the board view), verify
 npx memory-pulse board verdict 4 refuted --as coder --defect "..."   # answer a claim; a refutation names its defect; claims lists every claim and its standing
@@ -322,11 +473,20 @@ npx memory-pulse prereg list    # open and settled seals: id, row, stamp, verdic
 npx memory-pulse ran 'train\.py .*--n (4096|8192)' --since 12   # the recorded shell commands that match, with time and session, since the seal at row 12 (from capture's episodes)
 npx memory-pulse now            # the machine clock as the two stamps a record uses; paste a record's stamp from it, never type one; --json
 npx memory-pulse lint [--ci]    # do CLAUDE.md / AGENTS.md / .claude/rules still state a value the ledger retired?
+npx memory-pulse pack list      # rule packs bundled with the client: prepared rules for one stack, each with the vendor page it rests on; which are installed
+npx memory-pulse pack show python-stdlib   # every rule: what it catches, what to use instead, severity, source URL, the date the source was read
+npx memory-pulse pack add python-stdlib    # install it as .memory-pulse/packs/python-stdlib.jsonl (commit it); a path to a pack file works too. Every rule warns; none blocks
+npx memory-pulse pack add python-stdlib --block   # turn blocking on for the rules the pack marks safe to block
+npx memory-pulse pack check python-stdlib [dir]   # dry run over a tree before turning it on: hits per rule with file and line, nothing blocked
+npx memory-pulse pack check --installed --diff origin/main --ci   # the installed packs over the lines a branch adds; exit 1 when a rule that blocks here hits. With no base: staged, unstaged and untracked changes
+npx memory-pulse pack rule python-stdlib/unittest-aliases block   # one rule to block, warn, off or default for this project; the pack file is not edited
+npx memory-pulse pack remove python-stdlib   # delete the file; its rules stop applying
+npx memory-pulse pack verify ./my-pack.jsonl   # lint a pack file before sharing it
 npx memory-pulse report         # correction re-violation scoreboard, computed locally
 npx memory-pulse bench          # instant measured metrics on YOUR ledger
 npx memory-pulse stats          # your telemetry capsule, signature verified by the engine
 npx memory-pulse badge          # README badge markdown from your own signed numbers
-npx memory-pulse install-hook   # four hooks (idempotent); --codex targets Codex; --project commits them; --ambient adds the observer
+npx memory-pulse install-hook   # eight hooks for Claude Code (idempotent); --no-capture writes four; --codex targets Codex; --cursor targets Cursor; --project commits them; --ambient adds the observer
 npx memory-pulse mode [agent|soul|deliberate]   # show or set the mode
 npx memory-pulse identity "<name>, <role>; <stance>"   # pin the agent's self on the agent ledger
 npx memory-pulse soul "<persona, voice, values>"   # soul mode: the agent's soul; confirm / reject held changes; history / revert; import / export --openclaw
@@ -383,6 +543,13 @@ An `AT RISK` block appears after the guard has blocked the same correction
 twice; `before "<what you are about to do>"` names the corrections that bear
 on a change before you make it, and the rows that record the same idea as
 already tried, with the closed or failed ones marked.
+
+`report` and the `AT RISK` block label a rule as noisy when the guard blocked
+it 5 times or more, in 3 directories or more, and its term is one ordinary
+word. The label gives the two ways out on one line: retire the row with
+`remember ... --supersedes <t>`, or scope the term with `guard allow`. A value
+or a phrase blocked that often is a correction doing its work and gets no
+label.
 
 ## Lint: the rules a session loads, checked against the ledger
 
@@ -659,7 +826,8 @@ records that decision as a ledger row, sets the old seal aside beside the ledger
 and the next engine call issues a fresh one. Neither case is fixed by deleting
 the ledger, and the guard's message never suggests it.
 
-**What to commit.** `events.jsonl`, `invariants.jsonl` and, if one exists,
+**What to commit.** `events.jsonl`, `invariants.jsonl`, the `.gitattributes`
+lines `team setup` writes and, if one exists,
 `events.jsonl.quarantine/` (the record of what was moved aside). Keep
 `seal.rain`, `seal.resume.json`, `verify.cache.json`, `events.jsonl.lock`,
 `telemetry.rain`, `memory.rain`, `violations.jsonl` and `episodes/` out of git; this repository's `.gitignore` carries that list, and nothing writes a
@@ -706,6 +874,140 @@ Three more operations, none of which rewrites a row:
 all of this for the agent ledger. The seal's engine signature is checked by
 the engine on the next call; locally the capsule's rows must fold to the
 sealed head. No server is in the loop for any of it.
+
+## Teams: one engineer corrects the agent, every clone keeps the correction
+
+There are two ways to share a project's ledger, and both are shipped. `team`
+and `merge-driver` are in releases after 0.18.0.
+
+**Through git: free, local, no key, no network.** Commit the ledger, and set
+the merge driver once in the repository:
+
+```
+npx memory-pulse team setup
+git add .gitattributes .memory-pulse/events.jsonl
+git commit -m "share the memory-pulse ledger"
+```
+
+`team setup` writes two lines to `.gitattributes` and sets
+`merge.memory-pulse.driver` in this clone's `.git/config`. The attribute
+travels with the repository. The driver definition does not, because git never
+shares `.git/config`, so every other clone runs `npx memory-pulse team setup`
+once (`install-hook --project` runs it too). The definition names node by
+absolute path and a pinned copy of the client, not `npx`: it is one machine's
+file, a git client whose PATH has no node still merges, and no merge waits on
+a download. A clone that has the attribute and no driver merges the ledger as
+plain text, and git says nothing about it. `npx memory-pulse team` reports that
+state with exit 2, and the session brief prints one line with the command.
+
+The ledger is a hash chain, so a text merge of two branches that both recorded
+a row does not verify. With the driver, `git merge`, `git pull` and
+`git rebase` do this instead: ours is kept byte for byte, and the rows the
+other side added are appended after it through the writer, which computes `t`,
+`prev` and `hash` again. The rules are the ones `state merge` uses, run by the
+same code: each finding lands once, a carried row records the branch and row it
+came from in `origin`, the other side's merge and resume records stay with it,
+a note that reads like an instruction is held back, and one row records the
+merge. A rollback on the other side is carried with its effect: when it put
+rows out of force that this ledger still holds in force, the same rollback is
+recorded here, and the rows of this ledger that stay in force are recorded
+again after it, each naming the row it repeats. A `supersedes` row and a
+`guard allow` row carry as they are. Before anything is written the result is
+checked: ours byte for byte at its start, the chain verifies, and the findings
+in force are the ones the two sides hold against where they started.
+Otherwise the merge is refused and ours is left as it was. `invariants.jsonl` is merged as a set of lines over the three versions:
+a rule either side added is kept once, and a rule either side removed stays
+removed. Git's built-in `merge=union` brings a removed rule back and keeps a
+line both sides added twice (git 2.39.5, measured 2026-11-21), so the driver
+handles that file too.
+
+The merge stops, and git keeps the path unmerged, in three cases. Each message
+names the rows and the command:
+
+- Two corrections that both still bind withdraw the same term with different
+  replacements, or one side's replacement is a value the other side withdraws.
+  Both rows are in the merged ledger, which verifies. Settle it with one
+  `remember ... --supersedes <t> --supersedes <t>` row, then
+  `git add .memory-pulse/events.jsonl`.
+- A side no longer holds a row of the common ancestor (history was rewritten),
+  or its chain is broken. Nothing is merged and ours is left as it was.
+- One rule id carries two different lines in `invariants.jsonl`. Both are kept
+  for you to choose from.
+
+`team resolve` runs the same merge on a path git left unmerged, from the three
+versions in the index, and stages a clean result. It keeps a row that was
+recorded while the file held conflict markers, and it replaces the ledger by a
+temp file and a rename, so a failure leaves the file as it was. A ledger whose
+two sides were both kept by hand (the web editor's "accept both", or deleting
+the marker lines) is two chains after one row. `verify`, the guard and `team`
+say it was merged by hand, nothing is moved aside, and `team resolve` rebuilds
+it by the same rule; a clone with the driver that merges such a ledger merges
+its two tails first and says so.
+
+One limit: a `prereg seal` forbid rule fires only in the clone that sealed it.
+The seal records that machine's directory and the rule is scoped to it, so
+another clone lists the seal as open and does not block the command
+(2026-11-21).
+
+What `verify` says afterwards depends on which side was ours:
+
+| how the rows arrived | chain | engine seal | this machine's anchor | writer marks |
+|---|---|---|---|---|
+| `git merge` or `git pull` (ours is your branch) | OK | OK: no row at or below its watermark changed | OK: the ledger still begins with the rows this machine last saw | OK: the carried rows were appended by this machine's writer, and `origin` names where each came from |
+| `git rebase` or `git pull --rebase` (ours is the branch you rebase onto) | OK | MISMATCH if a seal is stored | ROLLED BACK: the other branch's rows come first | exit 2 until the commands the driver prints are run: `memory-pulse anchor accept "<why>"`, and `memory-pulse seal accept "<why>"` when a seal is stored |
+| a fast-forward onto a teammate's new rows (no merge runs) | OK | OK | OK | named as rows this machine did not write, and accepted; `verify --strict` refuses them |
+| a fast-forward onto a branch that merged your rows after its own | OK | MISMATCH if a seal is stored | ROLLED BACK | exit 2 until `memory-pulse anchor accept "<why>"`, and `memory-pulse seal accept "<why>"` when a seal is stored |
+
+A chain has one order, so a merge puts one side's rows after the other's, and
+the machine whose rows moved runs the accept step. On a shared main branch,
+rebase onto main before landing (`git rebase origin/main`, or
+`git pull --rebase` when you commit on main): main's ledger then only grows at
+its end, and the accept step is run once, by the engineer who rebased, when
+the driver prints it. The anchor is one per ledger path on a
+machine, so `git checkout` of a branch whose ledger is shorter also reads as
+ROLLED BACK until `anchor accept` (measured 2026-11-21, with or without the
+driver).
+
+GitHub's merge button does not run merge drivers. A pull request whose branch
+and base both recorded a row shows a conflict there. Do not resolve it in the
+web editor: rows joined by hand do not verify, and `npx memory-pulse verify`
+in CI fails on them. Update the branch on your machine
+(`git fetch && git rebase origin/main`, or `git merge origin/main`) and push.
+The driver runs there, and the pull request then merges without a conflict
+because the branch already holds the base's ledger. The carried rows are
+appended in one pass: a `git merge` with 5,000 rows on each side of a 1,000-row
+base took 5.1 s and 6.1 s (two runs on an M1 Pro with other work running,
+2026-11-21), and `verify` on the 11,003-row result took 0.6 s.
+
+**Hosted: paid.** A hosted project holds one ledger that every machine pushes
+to and pulls from. The engine merges a diverged push by the rules `state merge`
+uses. Hosted memory is on Starter, Pro and Enterprise, and so is the key
+`login` saves: the engine makes no console key on the free tier
+(`worker/hosted.js` and `worker/accounts.js`, read 2026-11-21).
+
+```
+npx memory-pulse login        # paid (Starter, Pro, Enterprise): approve this machine in the console; the project's key is saved for you
+npx memory-pulse state push   # paid: send this ledger to the hosted project; a diverged push is merged there
+npx memory-pulse state pull   # paid: verify the hosted ledger here, then install, fast-forward or merge it
+```
+
+Turn hosted memory on for the project in the console first. Without a key,
+`state push` and `state pull` exit 1 and say which variable to set. Seat keys
+are Enterprise only: the subscription's primary key makes up to ten, one for
+each teammate or CI job, and revokes them one at a time. There is no
+`memory-pulse` command for them. They are made in the console or with the
+engine's `/v1/keys` route (`worker/api.js`, read 2026-11-21; these three lines
+need the engine and are not run by the test suite):
+
+```
+curl -X POST -H "x-mp-key: $MEMORY_PULSE_KEY" -H "content-type: application/json" -d '{"label":"ci"}' https://pulse.strategic-innovations.ai/v1/keys          # paid (Enterprise): returns the seat key once
+curl -H "x-mp-key: $MEMORY_PULSE_KEY" https://pulse.strategic-innovations.ai/v1/keys                                                                          # paid (Enterprise): list seat keys by prefix
+curl -X POST -H "x-mp-key: $MEMORY_PULSE_KEY" -H "content-type: application/json" -d '{"prefix":"mp_live_0123abcd"}' https://pulse.strategic-innovations.ai/v1/keys/revoke   # paid (Enterprise): revoke one
+```
+
+A teammate sets a seat key as `MEMORY_PULSE_KEY` and their engine calls run
+on the subscription's tier. A seat key ends when it is revoked or when the
+subscription lapses.
 
 ## Agent message board: shared memory between agents
 
@@ -775,7 +1077,7 @@ Four things added on 2026-09-03, each deterministic (no model in the loop):
 
 - **Compaction handoff.** `install-hook` adds a PreCompact hook (the plugin's `hooks.json` does not; see Install). Before Claude Code compacts, `memory-pulse handoff` reads the transcript and records what the session was doing as facts: the last asks, the files edited, the last error, and the assistant's last state. The next session start prints it first, online or offline. An instruction-like message is dropped from the note and never recorded; a call with no transcript writes nothing.
 - **Offline brief.** When the engine is unreachable, whether air-gapped, on a dead network or during an outage, the session no longer starts empty. `brief` prints a local render carrying every binding correction with its withdrawn and replacement terms, the last handoff and the recent rows, labelled as a local render with no ranking applied. `brief --offline` forces it. Guard, check, lint and verify never needed the network. The MCP `pulse` tool returns an error instead, so a client with no hook starts empty when the engine is down.
-- **Ambient correction capture, opt-in.** `install-hook --ambient` adds a UserPromptSubmit hook. A prompt shaped like a correction, such as `the price is $29 not $49`, `change 0.3.1 to 0.3.2` or `500 events -> 924 events`, is recorded as a correction carrying both terms, so the guard enforces it from the next edit on. A prompt that does not yield both terms is left alone. Silent unless `--verbose`.
+- **Ambient correction capture, opt-in.** `install-hook --ambient` adds a UserPromptSubmit hook. A prompt shaped like a correction, such as `the price is $29 not $49`, `change 0.3.1 to 0.3.2` or `500 events -> 924 events`, is recorded as a correction carrying both terms, so the guard enforces it from the next edit on. A prompt that does not yield both terms is left alone. When the withdrawn term is one word of letters only, whatever its capitals (`no merge`, `never use JSON`), the row records what was heard and binds nothing: as a withdrawn term the word would block every edit that contains it. The row's note carries the command that enforces the word on purpose. A prompt the transcript shows the agent scheduled for itself is not recorded. Silent unless `--verbose` or a row was written.
 - **Python client.** `python/memory_pulse.py` is a single stdlib-only file with the same ledger format, the same hash chain and the same guard rule. A LangChain or CrewAI agent and a Claude Code session can share one ledger and verify each other's rows. The test suite writes rows from Python and verifies them in Node, and back.
 - **Decode-time guard for local models.** `python/span_guard.py` applies the same rule one layer down. The token that would complete a withdrawn value is masked while the model decodes, so the value cannot be generated, and the replacement's next token is offered in its place. It reads the ledger under the rules `check` uses, so a superseded correction is not enforced and a broken chain refuses to build. Stdlib only, and its suite runs without a model. Measured with mlx-lm on TinyLlama-1.1B and Qwen2.5-1.5B on 2026-09-03, the same prompt whose plain decode wrote the withdrawn price wrote the corrected one under the guard, and the sentence around it stayed intact. It blocks the spellings it was given, including the written variants you record, and a paraphrase nobody enumerated gets through.
 
@@ -960,11 +1262,13 @@ research. We chose a local ledger, a thin auditable client and a hosted engine
 over shipping a weaker local ranker. If a remote engine is a dealbreaker,
 `MEMORY_PULSE_API` points the client anywhere.
 
-**What about team memory?** Commit `.memory-pulse/` to the repo and your
-teammates' agents pulse the same ledger. Rows chain on `t` and `prev`, so two
-branches that both append conflict on merge: never keep both sides, re-record
-the losing rows with `remember`, and run `verify`. Shared hosted ledgers are
-on the roadmap.
+**What about team memory?** Two paths, both shipped. Free: commit
+`.memory-pulse/events.jsonl` and run `npx memory-pulse team setup` in each
+clone, and git merges two branches that both recorded a row through the
+memory-pulse merge driver, each finding once. Paid: a hosted project ledger
+with `login`, `state push` and `state pull` (Starter, Pro, Enterprise), and
+seat keys on Enterprise. The section "Teams" above has the commands and what
+`verify` says after each kind of merge.
 
 **License?** Client: MIT. Engine: proprietary, hosted.
 
@@ -1053,22 +1357,36 @@ is committed, and the first pull request it blocked is the demo.
 
 Details that bite:
 
-- `fetch-depth: 0` is required; without it the diff falls back to the working
-  tree, the job log says `could not compute the diff ... checking the working
-  tree instead`, and the comment reports no evidence on an empty diff.
+- `fetch-depth: 0` is required. When the change cannot be read (the base branch
+  is not in the checkout, or it shares no history with the head), the job
+  fails and the summary is headed "memory-pulse could not read this change".
+  Nothing is reported as checked. The runner fetches the base only when it is
+  missing and never makes a full checkout shallow.
 - `base` is a bare branch name (`main`), defaulting to the pull request's base.
-- The added lines are checked under the path `pull-request`, so path-scoped
-  overrides and path-scoped invariants do not fire in CI. Record an override
-  without `--path` on the pull-request branch when a historical value is
-  legitimate.
+- Each changed file's added lines are checked under that file's own path, so
+  a rule scoped with `paths` and an override recorded with
+  `guard allow --path` apply on the pull request as they do in the editor.
+  Files under `.memory-pulse/` are the rules, not content: a pull request that
+  only records a correction or declares a rule passes its own check.
+- A pull request that changes anything under `.memory-pulse/` is judged by the
+  rules on the base branch as well as its own, and the stricter verdict
+  stands, so a change cannot loosen a rule and break it in one step. The
+  comment names the files. `rules: head` judges by the pull request's own
+  rules only.
 - Two status items appear, the job and a check-run named `memory-pulse`.
+- `@v0` is a tag that moves to each release. To run exactly the code you
+  read, pin the commit instead, with the version as a comment so Dependabot
+  can update it: `uses: t-crew/memory-pulse@<commit sha> # v0.19.0`. With a
+  GitHub Actions workflow lockfile (`.github/workflows/actions.lock`), the
+  lockfile records the commit for you.
   Require the check-run in branch protection.
 - Forks get log-only verdicts: no token, no comment.
 - `lint` runs by default and blocks on a stale `CLAUDE.md`; `lint: "false"`
   turns it off.
-- `api-key` is exported to the CLI, but the Action does not request a receipt
-  today. For a signed receipt run `npx memory-pulse check --ci --diff
-  origin/main --receipt` as a separate step with `MEMORY_PULSE_KEY` set.
+- With `api-key` set, the Action asks the engine for a signed receipt and the
+  comment names it. Without it nothing leaves the runner. The verdict is the
+  one computed on the runner in both cases: an engine that is down, or that
+  answers differently, is noted in the comment and changes nothing.
 
 ## Releasing
 

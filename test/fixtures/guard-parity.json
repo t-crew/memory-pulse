@@ -1,0 +1,200 @@
+{
+ "about": "Texts the npm guard and the Python client (python/memory_pulse.py Ledger.check) must judge alike, over one ledger. Cases 1 to 12 are the twelve of an independent review (2026-11-21, G-4): the two disagreed on 8, 9, 10 and 12 because the Python client matched a withdrawn term as a substring and never received the token rule of 2026-10-12. The rest cover a term that spans lines, a word that keeps its inflections, and an ambient word. `blocked` is the verdict both must give. Both test sides read this file.",
+ "corrections": [
+  {
+   "cause": "pricing-set",
+   "effect": "price-corrected",
+   "withdrawn": [
+    "$49"
+   ],
+   "replacement": [
+    "$29"
+   ]
+  },
+  {
+   "cause": "api-version",
+   "effect": "version-corrected",
+   "withdrawn": [
+    "v2.1"
+   ],
+   "replacement": [
+    "v2"
+   ]
+  },
+  {
+   "cause": "auth-fetch",
+   "effect": "fetch-wrapped",
+   "withdrawn": [
+    "fetch"
+   ],
+   "replacement": [
+    "fetchWithAuth"
+   ]
+  },
+  {
+   "cause": "limit-set",
+   "effect": "limit-corrected",
+   "withdrawn": [
+    "ten"
+   ],
+   "replacement": [
+    "eight"
+   ]
+  },
+  {
+   "cause": "retry-policy",
+   "effect": "policy-corrected",
+   "withdrawn": [
+    "retries: 3\n  backoff: none"
+   ],
+   "replacement": [
+    "backoff: exponential"
+   ]
+  },
+  {
+   "cause": "user-correction-send",
+   "effect": "send-withdrawn",
+   "withdrawn": [
+    "send"
+   ],
+   "tags": [
+    "ambient",
+    "prohibit-no-x"
+   ]
+  }
+ ],
+ "cases": [
+  {
+   "n": 1,
+   "name": "bare value",
+   "text": "| Pro | $49/mo |",
+   "blocked": true,
+   "review": true
+  },
+  {
+   "n": 2,
+   "name": "corrected value",
+   "text": "| Pro | $29/mo |",
+   "blocked": false,
+   "review": true
+  },
+  {
+   "n": 3,
+   "name": "comparison on one line",
+   "text": "Pro was $49 and is now $29.",
+   "blocked": false,
+   "review": true
+  },
+  {
+   "n": 4,
+   "name": "replacement on another line",
+   "text": "| Pro | $49/mo |\n<!-- coupon: $29 -->",
+   "blocked": true,
+   "review": true
+  },
+  {
+   "n": 5,
+   "name": "replacement inside the term (v2.1 -> v2)",
+   "text": "the client uses v2.1 of the API",
+   "blocked": true,
+   "review": true
+  },
+  {
+   "n": 6,
+   "name": "v2.1 and v2 both named",
+   "text": "moved from v2.1 to v2 in March",
+   "blocked": false,
+   "review": true
+  },
+  {
+   "n": 7,
+   "name": "replacement contains the term",
+   "text": "const r = await fetchWithAuth(url)",
+   "blocked": false,
+   "review": true
+  },
+  {
+   "n": 8,
+   "name": "value inside a longer number ($490)",
+   "text": "Enterprise is $490 a month",
+   "blocked": false,
+   "review": true
+  },
+  {
+   "n": 9,
+   "name": "value with cents ($49.00)",
+   "text": "| Pro | $49.00/mo |",
+   "blocked": false,
+   "review": true
+  },
+  {
+   "n": 10,
+   "name": "short word inside another word (ten in tenant)",
+   "text": "each tenant has written content",
+   "blocked": false,
+   "review": true
+  },
+  {
+   "n": 11,
+   "name": "CRLF, replacement on the next line",
+   "text": "| Pro | $49/mo |\r\n<!-- $29 -->\r\n",
+   "blocked": true,
+   "review": true
+  },
+  {
+   "n": 12,
+   "name": "version run on (v2.10)",
+   "text": "pin the SDK to v2.10",
+   "blocked": false,
+   "review": true
+  },
+  {
+   "n": 13,
+   "name": "a term of two lines written back whole",
+   "text": "http:\n  retries: 3\n  backoff: none\n  timeout: 10\n",
+   "blocked": true
+  },
+  {
+   "n": 14,
+   "name": "a term of two lines beside its replacement on the lines it covers",
+   "text": "  retries: 3\n  backoff: none  (now backoff: exponential)\n",
+   "blocked": false
+  },
+  {
+   "n": 15,
+   "name": "a term of two lines, the replacement on a line it does not cover",
+   "text": "  retries: 3\n  backoff: none\n# use backoff: exponential\n",
+   "blocked": true
+  },
+  {
+   "n": 16,
+   "name": "a word of five letters keeps its inflections (fetching)",
+   "text": "we are fetching the list directly",
+   "blocked": true
+  },
+  {
+   "n": 17,
+   "name": "the value straight after letters still counts (US$49): $ is not a letter",
+   "text": "list price US$49 per seat",
+   "blocked": true
+  },
+  {
+   "n": 18,
+   "name": "a short word as a whole word (ten)",
+   "text": "retry ten times",
+   "blocked": true
+  },
+  {
+   "n": 19,
+   "name": "a short word after an underscore (max_ten)",
+   "text": "const max_ten = 10",
+   "blocked": true
+  },
+  {
+   "n": 20,
+   "name": "an ambient word of letters only is advisory (send)",
+   "text": "await env.EMAIL.send(message)",
+   "blocked": false
+  }
+ ]
+}

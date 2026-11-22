@@ -2,7 +2,151 @@
 
 This file starts at 0.16.0. Earlier releases are described in their tagged commits.
 
-## 0.18.0 (unreleased)
+## 0.19.0 (22 November 2026)
+
+Three new command families, a stricter guard and a reworked pull-request check. Read "What changes for you" first:
+some edits and pull requests that 0.18.0 passed are now stopped.
+
+**After upgrading, run `memory-pulse install-hook` again (or `memory-pulse init`).** The hooks run a pinned copy of the
+client, so an upgrade alone leaves them on the old one. `memory-pulse doctor` now fails when a hook runs an older copy
+and prints the command that re-pins it.
+
+**What changes for you.**
+
+- A replacement releases a withdrawn value only on the same line. 0.18.0 let `| Pro | $49/mo |` through when `$29`
+  stood anywhere else in the edit. Before-and-after text on two lines is now blocked; put both on one line, as a
+  comparison. Measured with one real ledger (131 corrections that have a replacement) over 6,204 file checks on
+  2026-11-21: 0.18.0 blocked 91 files and this version 100; of the 9 newly blocked none was a true reintroduction
+  (3 comparisons split over two lines, 6 uses of a broad phrase). Of 91 ways of writing a value back, 0.18.0 caught 13
+  and this version 30.
+- A replacement that is part of the old value no longer releases it: with `v2.1` corrected to `v2`, 0.18.0 never
+  blocked `v2.1`.
+- A rule scoped with `paths` now fires when the editor names the file by its absolute path. Claude Code does, so a
+  rule scoped to `docs/` was never enforced there on 0.18.0. Scoped rules you declared will start to apply.
+- `sed -i`, `perl -i`, `python -c` and `node -e` commands that write a withdrawn value are blocked, and so is a heredoc
+  whose redirect follows its marker (`cat <<'EOF' > file`). A command that removes the value, or only reads, passes.
+- The guard's block message has a new first sentence. A script that matches the old text will not match.
+- A number that capture overheard by itself ("48") is no longer enforced, including on rows 0.18.0 wrote: it is as
+  broad as an ordinary word (48 stands in 10.3% of a 3,000-file sample). A number you record on purpose still binds,
+  and so does one with a unit or a symbol (`$49`, `48 tests`, `v2.1`).
+- The pull-request Action checks each file under its own path, judges a pull request that changes the rules by the
+  base branch's rules as well, runs installed rule packs, and fails when it cannot read the change. Details below.
+- `uses: t-crew/memory-pulse@v0` now follows every release. Until this release the tag still served 0.2.2, so a
+  workflow on `@v0` receives every change since then at once: `lint` over the governance files is on by default
+  (`lint: "false"` turns it off), and the checks described under "The pull-request Action".
+- `install-hook --project` also runs team setup: it writes two lines to `.gitattributes` and a merge driver to this
+  clone's `.git/config`.
+- An unknown hyphenated option to `remember` (`--dry-run`) is refused. It used to be dropped.
+- `lint` no longer judges `.memory-pulse/invariants.jsonl`. A rule's own line holds its pattern, so one unscoped
+  literal rule blocked that file, and through the Action every pull request.
+
+**Try it, check it, set it up: `demo`, `doctor`, `init`.** `npx memory-pulse demo` records one correction in a temporary
+folder and prints the guard's verdict on three edits, in about 0.3 s, with nothing installed and nothing left behind.
+`doctor` checks the wiring: each host's hooks, their event and matcher, whether the copy they run exists and is
+current, and the guard's answer to a synthetic edit. It exits 1 when a check fails and names the fix. It runs a hook's
+program only when that program is this copy of the client, your pinned copy or a plugin under your home folder, with
+an argument list and no shell. Any other hook command is shown and counted as not tested, and the last line then says
+so instead of "All checks passed". A second editor that is present with no hooks is reported as not set up, not as a
+failure. Unless `--offline` is given, `doctor` makes one GET to the engine's address and, through `verify`, writes
+this machine's anchor for the ledger. `init` prints its plan (every file it will write, `.gitattributes` and `.git/config`
+included), asks once, installs the hooks and runs `doctor`. `install-hook` now sets the hook type and repairs a
+matcher that misses a guarded tool.
+
+**Rule packs.** A pack is a file of sourced rules for one stack: `pack list`, `show`, `add`, `remove`, `check`,
+`rule` and `verify`. Eight packs and 61 rules ship: Python standard library, Pydantic v2, FastAPI, Next.js App
+Router, Cloudflare Workers, Stripe, Supabase auth and retired model identifiers. Each rule carries the vendor's page
+and the date it was read. `pack add` installs every rule as a warning the agent is shown; a rule blocks only when you
+turn it on (`pack add <name> --block`, or `pack rule <pack>/<rule> block`), and the eight rules marked safe to block
+skip comments, strings and Markdown. Measured over 35 public repositories and 110 near-miss snippets: 0 blocked as
+installed, 2 with every block turned on. The skipping also hides a real use that sits inside a string or beside one on
+the same line: in one test 16 of 29 such uses were not flagged. `pack check` previews a pack against your tree. A pack file that does not
+load is reported on every guard run and fails `check --ci`. A `paths` entry with a `*` in `invariants.jsonl` is now a
+glob, and one that starts with `!` takes paths out of scope. A hand-declared `warn` rule is still silent in the guard, as before.
+
+**Teams: a merge driver for the committed ledger.** `team setup` (also run by `install-hook --project`) makes git merge
+`.memory-pulse/events.jsonl` and `invariants.jsonl` through `memory-pulse merge-driver`. Both sides' rows are kept,
+carried through the writer so the chain verifies; rollback, superseding and override rows keep their effect in every
+shape tested but three rare ones (see Known limits); two
+corrections that contradict each other stop the merge with the rows and the settling command named. `team` reports a
+clone that has the attribute and no driver, and a ledger that was merged by hand; `team resolve` rebuilds it without
+dropping a row. 5,000 rows a side merge in about 5 s. Limits: GitHub's merge button runs no merge driver, so merge or
+rebase locally and push; a pre-registration's forbid rule applies only in the clone that sealed it.
+
+**The pull-request Action.**
+
+- Each changed file is checked under its own path, so `paths` scopes and `guard allow --path` apply as they do in the
+  editor. Files are checked eight at a time: about 13 s for 300 changed files and about 90 s for 1,000, measured on a loaded
+  machine. The ledger, the
+  declared rules and the installed packs (and everything under a folder named `.memory-pulse`) are the rules, not
+  content: a pull request that only records a correction or declares a rule no longer fails its own check. A file that
+  merely sits beside a ledger kept elsewhere is content and is checked; folders named `packs` and `rows` beside the
+  ledger are read as rules.
+- A pull request that changes any of those rule files is judged by the rules on the base branch as well as its own,
+  and the stricter verdict stands. Superseding a correction, recording an override, turning a pack rule off, or moving
+  or deleting the ledger in the same change that breaks the rule no longer passes. The comment names the files.
+  `rules: head` opts out.
+- An added line that begins with `++` is read. It used to be taken for a file header and skipped.
+- When the change cannot be read (no base in the checkout, no shared history) the job fails and says so. It used to
+  check an empty diff and report no evidence. The base is fetched only when missing, and a full clone stays full.
+- Installed rule packs run file by file; a block fails the check and a warning is listed.
+- With `api-key` set the Action requests a signed receipt and the comment names it. The input did nothing before. The
+  verdict is always the one computed on the runner.
+
+**Capture.** A prohibition of one ordinary word heard in a prompt ("no merge") is recorded as heard and not enforced,
+with the command that enforces it on purpose. 0.17.1 had stopped the guard blocking on such a word; the row was still
+written as if it were enforceable. On one real ledger, 125 of 166 term blocks between 1 September and 20 November 2026
+had come from seven such rows. A deliberate `remember --withdrawn <word>` still binds and returns a caution. A
+scheduled prompt found in the transcript is not captured. `adopt` reads "Never use Postgres 14; use Postgres 16." as
+a correction from one to the other. `report` and the brief label a correction that was blocked 5 or more times across
+3 or more folders on a non-specific term as noisy, with the two ways out.
+
+**Python client.** `check` follows the same token, line and advisory rules as the Node client; the two agree on a
+shared fixture of twenty texts. It still does not read rollbacks or overrides.
+
+**Output through a pipe arrives whole, in bounded time.** A command prints and then exits. On macOS, when another
+program captured that output (every host runs a hook this way, and so does an agent's shell tool), everything past the
+first 8,192 bytes was dropped on Node 18 and 20, and past about 64 KB on Node 22 to 26; how much survived also depended
+on the program reading. `help` is 18 KB. `scaffold --section corrections` passes 8 KB at about 85 corrections, so an
+agent on Node 20 read a list of corrections that stopped in the middle with nothing to say so. The stdio server also
+lost answers that were still queued when its input closed, on macOS and, in some runs, on Linux. Each write of a
+command to a pipe is now made in full before the next line runs, and given up only when the reader has taken nothing
+for 2 seconds, so a host that never reads cannot hold a hook (a blocked edit still exits 2). One case is left: if
+another Node process writes to the same pipe and exits during those 2 seconds, it can set the pipe back to waiting, and
+a host that never reads then holds the hook; it needs a shared pipe and a reader that never reads. On Linux a very
+slow reader can still lose the end of a long output, as before: in the review's test, one that took a byte every 100 ms
+received 65,536 of 87,961 bytes. The server sends its last
+answers before it exits. Measured after the change on macOS with Node 18, 20, 22, 24 and 26: 2 MB arrives whole, the
+exit status is the same, a reader that closes early ends the command at once, and a guard block with 300 hits exits 2
+within the limit when its host reads nothing until the hook ends. Not run on Windows.
+
+**The base branch's rules are read on a macOS runner.** A pull request that changes `.memory-pulse/` is also judged by
+the rules on its base branch, which the Action unpacks with `git archive` and `tar`. Through a pipe, macOS `tar` stopped
+reading at the archive's end marker, and on Node 20 the rest of the write failed, so the job stopped before any verdict.
+The archive now goes through a file. Linux was not affected.
+
+**Tests and releases.** `npm test` runs through `scripts/test.mjs`, which clears the caller's ledger, project, board
+and key variables: the suite used to write test rows into whatever ledger the shell named. `scripts/release.sh` moves
+the major tag, skips it for a pre-release, stops when the version it would tag is not the one asked for, can leave the
+engine undeployed (`RELEASE_SKIP_WORKER=1`), and runs the IP gate in strict mode.
+
+**A ledger this client cannot read is never passed in silence.** A later release may keep the ledger in another layout
+and will mark it with `.memory-pulse/layout.json`. When this client meets a marker it does not know, the guard says so
+on every edit (to you and to the agent), the brief opens with it, `doctor` fails with the upgrade command, and `check`,
+`lint` and the pull-request Action fail. With no marker nothing changes.
+
+**Known limits.** Cursor's hooks are written by `install-hook --cursor` and have not been run inside Cursor. The guard
+does not catch a paraphrase, `sed` text supplied on following lines, or an inline script that writes a variable. A
+project's own function named like a removed API can trip a pack rule you have set to block. A pack pattern that
+exceeds its time budget is skipped and reported, not blocked, and bundled packs run without the budget. In the team
+merge, three rare shapes are wrong: after a rollback of a rollback the verdict can depend on who merges; a row
+recorded while the ledger was unmerged is kept without its `--supersedes`; and after the driver refuses a cherry-pick
+and one row is recorded, `team resolve --no-ancestor` says there is nothing to resolve. With the ledger at the
+repository root, the project's own `packs/` and `rows/` folders are not checked on a pull request and a `layout.json`
+of its own fails it; keep the ledger in `.memory-pulse/`. A rule file that is a symlink is not covered by the
+base-branch pass. The suite has run on macOS only; the new
+`test` workflow runs it on Linux for the first time on the release pull request.
+
+## 0.18.0 (19 November 2026)
 
 **Pre-registered research gets a command for each of three slips.** An agent
 doing pre-registered work (a builder writes a spec, seals it and builds; a

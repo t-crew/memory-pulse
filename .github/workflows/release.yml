@@ -20,7 +20,9 @@ jobs:
   publish:
     runs-on: ubuntu-latest   # trusted publishing requires GitHub-hosted runners
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
       # No `registry-url:` here on purpose. With it, setup-node writes an
       # .npmrc line `_authToken=${NODE_AUTH_TOKEN}` and exports the placeholder
       # NODE_AUTH_TOKEN=XXXXX-XXXXX-XXXXX-XXXXX; npm then publishes with that
@@ -28,11 +30,11 @@ jobs:
       # answers E404 "not found or no permission". Measured on run 33493544779
       # (three attempts, 2026-09-01). With no token configured, npm >= 11.5.1
       # uses the runner's id-token and the Trusted Publisher.
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
       - name: npm >= 11.5.1 (trusted publishing)
-        run: npm install -g npm@latest && npm --version
+        run: npm install -g npm@11.21.3 && npm --version   # an exact npm: the release must not run whatever "latest" is that day
       - name: tag must match package.json, and every manifest must match package.json
         # server.json (MCP registry), .claude-plugin/plugin.json (Claude Code)
         # and .codex-plugin/plugin.json (Codex) each carry their own version.
@@ -71,6 +73,8 @@ jobs:
           # against npm, so wait for it (measured 2026-10-16: about 6 minutes for 0.8.0) instead of failing and re-running.
           for i in $(seq 1 60); do npm view "memory-pulse@${v}" version >/dev/null 2>&1 && break; echo "waiting for npm to serve ${v} ($i)"; sleep 15; done
           curl -sSL -o mp.tgz https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz
+          # the publisher runs with this job's OIDC token: it must be the file its project published (registry_1.8.1_checksums.txt)
+          echo "a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc  mp.tgz" | sha256sum -c -
           tar xzf mp.tgz mcp-publisher
           ./mcp-publisher login github-oidc
           ./mcp-publisher publish
@@ -83,8 +87,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
       - name: build the .mcpb from mcpb/manifest.json (validated by the official CLI before packing)

@@ -45,10 +45,17 @@ import { promptSlice as promptSliceWith, editSlice as editSliceWith } from "./li
 import { recordUsage, consentState, setConsent, hasConsentAnswer, resetInstall, usagePayload, maybeSendUsage } from "./lib/usage.mjs";
 import { lessonBank as lessonBankWith, screenLesson, bankSummary, bankLabel, lessonHead, isLesson, lessonKey, PROBE_EFFECT } from "./lib/lessons.mjs";
 import { savedKey } from "./lib/login.mjs";
-import { hostOf, normalizeHook } from "./lib/hosts.mjs";
+import { hostOf, normalizeHook, matcherCovers } from "./lib/hosts.mjs";
 import { drift as driftWith } from "./lib/drift.mjs";
 import { advisoryTerm } from "./lib/advisory.mjs";
+import { heardOnly, heardLine, broadCaution, blockStats, noisyLine, broadKind } from "./lib/specific.mjs";
+import { scheduledPrompt, tailText } from "./lib/typed.mjs";
+import { commandWrites } from "./lib/shell.mjs";
+import { bareTerm as bareOnLine } from "./lib/release.mjs";
+import { foreignLayout, layoutMessage } from "./lib/layout.mjs";
+import { addedLines as addedLinesOf } from "./lib/diff.mjs";
 import { commandHits, invariantsFor, preregRows, COMMAND_HINT, INVARIANT_HINT, PREREG_WRITE, cliPrereg, cliNow, cliRan } from "./lib/prereg.mjs";
+import { installedPackRules, pathInScope, packReason, packHint, packHit, packProblems, packWarnings, packContext, forEngine } from "./lib/packs.mjs";
 import { SOUL_WRITE, RESERVED, soulState, soulLines, soulGuard, cliSoul, cliUser, setSection, chainedOnly, heldFromMerge, taintOf, soulCapsule, verifySoulCapsule, continuityLine, soulScreen,
          isExternalTool, externalCmd, externalWhat, markTaint, taintMarked, soulTaintGuard } from "./lib/soul.mjs";
 
@@ -307,8 +314,16 @@ export function inspectChain(input) {
     if (ok && typeof row.hash === "string") ok = rowHash(row) === row.hash && (prevTail === null || row.prev === prevTail);
     if (ok) { selfValid++; lastT = row.t; if (typeof row.hash === "string") prevTail = row.hash; }
   }
+  // 0.19.0: a tail whose first row links to an EARLIER row of the verified part is the other side of a git conflict, kept by hand in a
+  // clone without the merge driver: a chain of its own from that row. It is not a bad tail and is never moved aside (a puller's guard
+  // moved the other engineer's corrections out of the ledger); memory-pulse team resolve rebuilds the file.
+  let forked = null, f = null; try { f = tailRows.length ? JSON.parse(tailRows[0].text) : null; } catch { f = null; }
+  if (f && typeof f.prev === "string" && f.prev !== res.head && typeof f.hash === "string" && rowHash(f) === f.hash) {
+    const at = entries.slice(0, k + 1).find((e) => { try { return JSON.parse(e.text).hash === f.prev; } catch { return false; } });
+    if (at) forked = { afterT: rowT(at.text), line: tailRows[0].line, rows: tailRows.length };
+  }
   return { ...res, firstBad: bad ? { t: rowT(bad.text), line: bad.line } : null,
-    tail: { keepBytes: keep, rows: tailRows.length, allBad: tailRows.length > 0 && selfValid === 0, headT: maxT || null } };
+    tail: { keepBytes: keep, rows: tailRows.length, allBad: tailRows.length > 0 && selfValid === 0 && !forked, headT: maxT || null, forked } };
 }
 
 /** 0.18.0: the ledger's rows as the row chain sees them, [{e, chained, line}], for a reader that must know which rows the writer
@@ -374,7 +389,7 @@ function quarantineTailLocked(path) {
   const buf = readFileSync(path);
   const info = inspectChain(buf);
   if (info.ok) return { quarantined: false, reason: "the chain verifies" };
-  if (!info.tail?.allBad) return { quarantined: false, notTail: true, reason: info.reason, firstBad: info.firstBad };
+  if (!info.tail?.allBad) return { quarantined: false, notTail: true, reason: info.reason, firstBad: info.firstBad, forked: info.tail?.forked ?? null };
   return moveTailAsideLocked(path, buf, { keepBytes: info.tail.keepBytes, rows: info.tail.rows, headT: info.tail.headT, reason: info.reason, firstBad: info.firstBad });
 }
 export function quarantineTail(path) { return withLedgerLock(path, () => quarantineTailLocked(path)); }
@@ -402,11 +417,14 @@ export function quarantineUnmarkedTail(path) { return withLedgerLock(path, () =>
 // Link a finished row to the chain and append it (lock held): t when the caller left it unset (the file's max t
 // plus one, read under the lock, so two writers never share a t), prev = the last chained row's hash, gap_digest =
 // the unchained rows since it (or legacy_digest = every row so far, for the first chained row), then its own hash.
-function appendRowLocked(path, event) {
+const appendRowLocked = (path, event) => appendRowsLocked(path, [event])[0];
+// The same for several rows in one pass (0.19.0: a merge carried each row through its own read of the whole ledger, so 5,000 rows
+// onto 6,000 took about ten minutes): the file is read once, each row is linked to the one before it, and one write appends them all.
+function appendRowsLocked(path, events) {
   if (!existsSync(path)) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, ""); }
   const raw = readFileSync(path, "utf8");
   if (raw.length && !raw.endsWith("\n")) appendFileSync(path, "\n"); // a torn last line stays its own row
-  const lines = raw.split("\n").filter((l) => l.trim()); let last = null, seen = false, maxT = 0; const gap = [];
+  const lines = raw.split("\n").filter((l) => l.trim()); let last = null, seen = false, maxT = 0; let gap = [];
   for (const l of lines) {
     let o = null; try { o = JSON.parse(l); } catch { /* torn */ }
     if (o && Number.isInteger(o.t) && o.t > maxT) maxT = o.t;
@@ -416,14 +434,17 @@ function appendRowLocked(path, event) {
   // existing one from where it stands), and every row carries this machine's mark. A trust store that cannot be written leaves the
   // row unmarked and the ledger unanchored, as before: memory is never refused for it.
   let w = null; try { if (anchoredByWriter(path)) ensureAnchor(path, lines.map((l) => l.trim()), "writer"); w = writerKey({ create: true }); } catch { w = null; }
-  delete event.prev; delete event.hash; delete event.gap_digest; delete event.legacy_digest; delete event.mac;
-  if (!Number.isInteger(event.t)) event.t = maxT + 1;
-  if (seen) { event.prev = last; if (gap.length) event.gap_digest = sealDigest(gap); } else { event.legacy_digest = sealDigest(gap); event.prev = null; }
-  if (w) event.mac = rowMac(event, w);
-  event.hash = rowHash(event);
-  appendFileSync(path, JSON.stringify(event) + "\n");
+  for (const event of events) {
+    delete event.prev; delete event.hash; delete event.gap_digest; delete event.legacy_digest; delete event.mac;
+    if (!Number.isInteger(event.t)) event.t = maxT + 1;
+    if (seen) { event.prev = last; if (gap.length) event.gap_digest = sealDigest(gap); } else { event.legacy_digest = sealDigest(gap); event.prev = null; }
+    if (w) event.mac = rowMac(event, w);
+    event.hash = rowHash(event);
+    seen = true; last = event.hash; gap = []; if (event.t > maxT) maxT = event.t;
+  }
+  if (events.length) appendFileSync(path, events.map((e) => JSON.stringify(e)).join("\n") + "\n");
   try { advanceAnchor(path); } catch { /* read-only trust store */ }
-  return event;
+  return events;
 }
 // The one writer. A bad tail is moved aside before anything is chained onto it, and so (0.16.0) is an unchained tail this machine's
 // writer did not write: the next write used to seal it into the chain.
@@ -436,6 +457,16 @@ export function chainAppend(path, event, { unless } = {}) {
     if (!info.ok && info.tail?.allBad) quarantineTailLocked(path);
     quarantineUnmarkedTailLocked(path);
     return appendRowLocked(path, event);
+  });
+}
+/** Several finished rows under one lock and in one pass (a merge's carried rows): the same checks as chainAppend, once. */
+export function chainAppendMany(path, events) {
+  if (!events.length) return [];
+  return withLedgerLock(path, () => {
+    const info = existsSync(path) ? inspectChain(path) : { ok: true };
+    if (!info.ok && info.tail?.allBad) quarantineTailLocked(path);
+    quarantineUnmarkedTailLocked(path);
+    return appendRowsLocked(path, events);
   });
 }
 
@@ -776,8 +807,8 @@ export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn
   // Replacement terms let the guard tell a REINTRODUCTION ("price is $49")
   // apart from a DISAVOWAL or comparison ("was $49, now $29"): an edit that
   // carries a replacement alongside the withdrawn term is allowed.
-  // A replacement anywhere in an edit releases every withdrawn term of its correction, so a one-character
-  // replacement ("8") would release the block on nearly any text. Same floor as withdrawn terms.
+  // A replacement on the same line releases a withdrawn term of its correction (lib/release.mjs), so a one-character
+  // replacement ("8") would release the block on nearly any line. Same floor as withdrawn terms.
   if (Array.isArray(replacement)) {
     const all = replacement.map((w) => String(w).trim()).filter(Boolean);
     const terms = all.filter((w) => w.length >= 2);
@@ -1016,7 +1047,7 @@ export const TOOLS = [
         kind: { type: "string", enum: ["event", "correction"], description: "Default event." },
         scope: { type: "string", enum: ["project", "agent"], description: "agent = the agent's own cross-project ledger (agent mode)." },
         withdrawn: { type: "array", items: { type: "string" }, description: "For corrections: the exact strings that were withdrawn (a number, a name, a claim). The guard hook blocks an edit that writes them back." },
-        replacement: { type: "array", items: { type: "string" }, description: "For corrections: the corrected value(s). An edit containing both a withdrawn term and a replacement (a comparison or disavowal) is allowed through the guard." },
+        replacement: { type: "array", items: { type: "string" }, description: "For corrections: the corrected value(s). A line that states both a withdrawn term and a replacement (a comparison or disavowal) is allowed through the guard." },
         supersedes: { type: "array", items: { type: "number" }, description: "For corrections: ledger t values of earlier corrections whose withdrawn terms no longer bind." },
         tags: { type: "array", items: { type: "string" } },
         pinned: { type: "boolean", description: "Never decays out of the brief." },
@@ -1114,6 +1145,9 @@ export async function handleCall(name, args = {}) {
     // A correction that binds nothing is still recorded, and the caller is told
     // so plainly instead of it passing silently. That includes a correction whose
     // every withdrawn term was under the 2-char floor and dropped.
+    // A person's own one ordinary word binds as asked; the result says how wide it is and how to scope it (lib/specific.mjs).
+    const caution = bound.kind === "correction" ? broadCaution(res.stored?.withdrawn) : null;
+    if (caution) { res.broad = true; res.caution = caution; }
     if (bound._unenforceable) return { ...res, enforceable: false, hint: bound._hint };
     if (bound.kind === "correction" && !res.stored?.withdrawn?.length) return { ...res, enforceable: false, hint: `This correction binds nothing: every withdrawn term was dropped (${(res.dropped ?? []).map((w) => JSON.stringify(w)).join(", ")} under the 2-character floor). Record it again with a longer term, for example the value with its unit or sign.` };
     return res;
@@ -1360,6 +1394,8 @@ function sealCheckCached(path, chain) {
 }
 const cliPrefixFor = (path) => path === agentPath() ? "memory-pulse" : process.env.MEMORY_PULSE_LEDGER ? `MEMORY_PULSE_LEDGER=${path} memory-pulse` : "memory-pulse";
 const scopeFlagFor = (path) => path === agentPath() ? " --scope agent" : "";
+/** What a ledger merged by hand is, and the command that rebuilds it (inspectChain's `forked`). */
+export const handMergedLine = (path, f) => `memory-pulse: ledger ${path} was merged by hand: after row t=${f.afterT ?? "?"} it holds two tails, each a chain of its own (both sides of a git conflict were kept, in a clone without the merge driver). Every row is still read and nothing was moved aside. Rebuild it by the driver's rule: ${cliPrefixFor(path)} team resolve`;
 /** Verify one ledger for the guard; a bad tail is quarantined here, so the work that follows is not refused. */
 const quarantineWarning = (path, q) => `memory-pulse: quarantined ${q.rows} row${q.rows === 1 ? "" : "s"} from the tail of ${path} (${q.reason}): moved byte-for-byte to ${q.file}, recorded at t=${q.t}, nothing deleted; to re-adopt after review: ${cliPrefixFor(path)} repair${scopeFlagFor(path)} --adopt-quarantine ${q.file}`;
 export function ledgerHealth(path) {
@@ -1371,7 +1407,7 @@ export function ledgerHealth(path) {
       if (q.quarantined) {
         chain = verifyChainCached(path);
         warnings.push(quarantineWarning(path, q));
-      }
+      } else if (q.forked) warnings.push(handMergedLine(path, q.forked));
     } catch { /* locked by another writer or read-only: verified as it stands */ }
   }
   // 0.16.0: the anchor and the writer marks, checked from the bytes (cached in the trust store). An unchained tail this machine's
@@ -1720,6 +1756,8 @@ export function atRiskLines(allEvents, { now = Date.now(), minBlocks = 2, blocks
     const c = corr.get(m.t); const ov = overrides.get(String(m.term).toLowerCase()) ?? 0;
     const where = [...m.dirs].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([d, n]) => `${d} ×${n}`).join(", ");
     lines.push(`  ! t${m.t} "${safeTerm(m.term)}" blocked ${m.n}× (${where})${c?.replacement?.length ? ` → use ${c.replacement.map(safeTerm).join(", ")}` : ""}${ov ? ` · ${ov} override(s)` : ""}${m.last ? ` · last ${ago(now - m.last)}` : ""}`);
+    // one ordinary word blocked often and widely is a rule that is too wide: say so, with the two ways out (lib/specific.mjs)
+    const noisy = noisyLine({ t: m.t, term: safeTerm(m.term), blocks: m.n, dirs: m.dirs.size, advisory: advisoryTerm(c, m.term) }); if (noisy) lines.push(`    ${noisy}`);
   }
   return lines.join("\n");
 }
@@ -1781,6 +1819,8 @@ export function typedUserText(o) {
   const m = o?.message; if (!m || !(o.type === "user" || m.role === "user")) return "";
   if (o.isMeta || o.isCompactSummary || o.isVisibleInTranscriptOnly || o.isSidechain === true || o.toolUseResult !== undefined) return "";
   if (o.origin && typeof o.origin === "object" && o.origin.kind !== "human") return "";
+  // the harness's own turns (a scheduled wake-up, a peer, a notification) say so; some carry neither isMeta nor origin (measured 2026-11-21)
+  if (o.promptSource === "system" || (typeof o.turnOrigin === "string" && o.turnOrigin !== "human")) return "";
   if (Array.isArray(m.content) && m.content.some((p) => p?.type === "tool_result")) return "";
   const text = partText(m.content).trim();
   return HARNESS_PREAMBLE.test(text) ? "" : text;
@@ -1852,7 +1892,11 @@ const CORRECTION_SHAPES = [
 // Measured against this repo's own session corpus: recall 3/11 -> 11/11 with
 // precision unchanged at 1.00 over 19 negatives, including the pasted-document
 // shape that caused the t918 false positive.
-const OBJ_P = `((?:"[^"]{2,48}"|'[^']{2,48}'|\`[^\`]{2,48}\`|[A-Za-z$][\\w$.\\-/]*(?:[ -][A-Za-z][\\w$.\\-/]*){0,3}))`;
+// A later token may be a number (2026-10-23, ported 2026-11-21): "Never use Postgres 14" withdrew "Postgres", so the guard then blocked "Postgres 16".
+const OBJ_P = `((?:"[^"]{2,48}"|'[^']{2,48}'|\`[^\`]{2,48}\`|[A-Za-z$][\\w$.\\-/]*(?:[ -][A-Za-z0-9][\\w$.\\-/]*){0,3}))`;
+// "Never use X; use Y" / "Don't use X, use Y instead": a ban that names what to use is a correction from X to Y, not a
+// prohibition of X alone.
+const BAN_THEN_USE = new RegExp(`\\b(?:never|do\\s?n['’]?t|don['’]?t|do not|stop|avoid)\\s+(?:use|using)\\s+${OBJ_P}\\s*(?:[;,:]|\\.\\s|\\s[-–—]+)\\s*(?:and\\s+|instead\\s*,?\\s*|but\\s+)?(?:use|prefer|switch to)\\s+${OBJ_P}`, "i");
 const SAY_NOT = new RegExp(`\\b(?:say|use|write|call it|make it|put)\\s+${OBJ_P}\\s*,?\\s+not\\s+${OBJ_P}`, "i");
 const PROHIBIT_SHAPES = [
   ["no-x",    new RegExp(`(?:^|[.;!?]\\s+|,\\s*)(?:absolutely\\s+)?no\\s+${OBJ_P}`, "i")],
@@ -1898,6 +1942,11 @@ export function detectProhibition(prompt) {
     const keep = cleanTerm(sn[1] ?? ""), drop = cleanTerm(sn[2] ?? "");
     if (ok(drop)) return { withdrawn: [drop], replacement: keep ? [keep] : [], cue: "say-not" };
   }
+  const bu = BAN_THEN_USE.exec(p);
+  if (bu) {
+    const drop = cleanTerm(bu[1] ?? ""), keep = cleanTerm(bu[2] ?? "");
+    if (ok(drop) && ok(keep) && drop.toLowerCase() !== keep.toLowerCase()) return { withdrawn: [drop], replacement: [keep], cue: "ban-use" };
+  }
   for (const [cue, re] of PROHIBIT_SHAPES) {
     const m = re.exec(p);
     if (!m) continue;
@@ -1926,7 +1975,8 @@ export function correctionEvent(d, prompt) {
   const r = Array.isArray(d.replacement) && d.replacement.length ? d.replacement[0] : null;
   const effect = r ? `${slug(w)}-withdrawn-for-${slug(r)}` : `${slug(w)}-withdrawn`;
   const said = r ? `User corrected "${w}" to "${r}"` : `User prohibited "${w}"`;
-  return { cause: `user-correction-${slug(w)}`, effect, kind: "correction", withdrawn: d.withdrawn, replacement: r ? d.replacement : [], tags: ["ambient", d.cue], note: `${said} — prompt: "${String(prompt).replace(/\s+/g, " ").slice(0, 140)}"` };
+  // one ordinary word is recorded as heard and binds nothing (lib/specific.mjs): as a withdrawn term it blocks every edit that contains it
+  return heardOnly({ cause: `user-correction-${slug(w)}`, effect, kind: "correction", withdrawn: d.withdrawn, replacement: r ? d.replacement : [], tags: ["ambient", d.cue], note: `${said} — prompt: "${String(prompt).replace(/\s+/g, " ").slice(0, 140)}"` }, prompt);
 }
 /** The correction a submitted prompt carries, or null when it carries none or is not something a person typed. */
 export function observeDecision(prompt) {
@@ -1945,7 +1995,10 @@ async function cliObserve() {
     // agent output gets recorded as a binding correction (t898/t899, 2026-09-03).
     const d = observeDecision(hook.prompt ?? "");
     if (!d) { if (process.argv.includes("--verbose")) console.log("memory-pulse: no correction in this prompt (none found, or it reads as harness text or an instruction)"); return; }
-    const r = appendEvent(correctionEvent(d, hook.prompt));
+    // the payload names no origin, the transcript does: a prompt the agent scheduled for itself is not a person's correction (lib/typed.mjs)
+    if (typeof hook.transcript_path === "string" && scheduledPrompt(tailText(hook.transcript_path), hook.prompt, { typedUserText })) { if (process.argv.includes("--verbose")) console.log("memory-pulse: correction not recorded: the transcript shows this prompt was scheduled, not typed"); return; }
+    const ev = correctionEvent(d, hook.prompt), r = appendEvent(ev);
+    if (r.written && !ev.withdrawn?.length) { console.log(heardLine(r.t, d.withdrawn[0], d.replacement?.[0])); return; }
     if (process.argv.includes("--verbose") || r.written) console.log(r.written ? `memory-pulse: correction recorded (t=${r.t}) — "${d.withdrawn[0]}" withdrawn${d.replacement?.[0] ? `, "${d.replacement[0]}" replaces it` : ""}; the guard enforces it from now on` : `memory-pulse: correction not recorded (${r.reason})`);
   } catch { /* silent */ }
 }
@@ -1989,6 +2042,8 @@ async function cliBrief() {
   // withholding (lib/weights.mjs): a memory sitting out this session is left out of the brief too, or the sat-out arm would still have
   // seen it at session start (review 2026-10-21). The same draw as the prompt hook; corrections never sit out.
   const hookIn = await hookStdin(), session = typeof hookIn?.session_id === "string" && hookIn.session_id ? hookIn.session_id : null;
+  // the team path (lib/gitmerge.mjs): a clone whose .gitattributes names the merge driver its git config does not define merges the ledger as text, and git says nothing
+  if (existsSync(join(dirname(dirname(led0.path)), ".gitattributes"))) { try { const dl = (await import("./lib/gitmerge.mjs")).driverLine(led0.path); if (dl) process.stdout.write(dl + "\n"); } catch { /* never in the way of a brief */ } }
   // the local render hides a sat-out row but still reads it (a hidden fix still closes its thread: re-review 2026-10-21); the engine is
   // sent the rows without it
   let hide = new Set();
@@ -2223,7 +2278,8 @@ export function patchSections(input) {
 export function shellWrites(input) {
   const cmd = typeof input === "string" ? input
     : input && typeof input === "object"
-      ? Object.values(input).find((v) => typeof v === "string" && /[><]|tee\b/.test(v))
+      // the command field first (a sed -i has no > or tee, so the search below never found it)
+      ? (typeof input.command === "string" ? input.command : Object.values(input).find((v) => typeof v === "string" && /[><]|tee\b/.test(v)))
       : null;
   if (!cmd) return [];
   const out = [];
@@ -2244,6 +2300,8 @@ export function shellWrites(input) {
     const lit = /(?:echo|printf)\s+(-\w+\s+)*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')\s*\|/.exec(cmd);
     if (lit) push(m[1], lit[2].slice(1, -1));
   }
+  // a heredoc with the redirect after its marker, sed -i / perl -i (the replacement side only), python -c / node -e with a write call (lib/shell.mjs)
+  try { for (const w of commandWrites(cmd)) push(w.path, w.text); } catch { /* unreadable: a miss, never a block */ }
   return out;
 }
 
@@ -2257,13 +2315,16 @@ export function supersededSet(events) {
 const invariantsPath = () => join(dirname(ledgerPath()), "invariants.jsonl");
 /** Declared invariants: .memory-pulse/invariants.jsonl, one {id, statement, patterns[], severity?} per line. Never inferred. */
 export function readInvariants(path = invariantsPath()) {
-  if (!existsSync(path)) return [];
+  // rule packs (lib/packs.mjs): installed packs, .memory-pulse/packs/<name>.jsonl, are read after the project's declared rules. A
+  // path given by the caller (a capsule's invariants) reads that file alone.
+  const packs = arguments.length ? [] : installedPackRules(join(dirname(path), "packs"));
+  if (!existsSync(path)) return packs;
   const out = [];
   for (const line of readFileSync(path, "utf8").split("\n")) {
     const l = line.trim(); if (!l) continue;
     try { const inv = JSON.parse(l); if (inv && typeof inv.id === "string" && Array.isArray(inv.patterns)) out.push(inv); } catch { /* a torn line is reported by check, not fatal here */ }
   }
-  return out;
+  return packs.length ? out.concat(packs) : out;
 }
 const compilePattern = (p) => {
   const m = typeof p === "string" ? p.match(/^\/(.+)\/([a-z]*)$/s) : null;
@@ -2293,13 +2354,12 @@ export function localCheck(allEvents, action, invariants = [], opts = {}) {
     const retired = supersededSet(events);
     for (const c of events) {
       if (c.kind !== "correction" || !Array.isArray(c.withdrawn) || retired.has(c.t)) continue;
-      const disavowed = Array.isArray(c.replacement) && c.replacement.some((r) => r && text.includes(r));
       for (const term of c.withdrawn) {
         if (!containsTerm(text, term)) continue;
-        if (disavowed) { reasons.push(`"${term}" appears beside its replacement (comparison or disavowal) — allowed, per ledger t${c.t}`); continue; }
+        if (!bareTerm(text, term, c.replacement)) { reasons.push(`"${term}" appears beside its replacement on the same line (comparison or disavowal) — allowed, per ledger t${c.t}`); continue; }
         const o = overridesFor.find((x) => x.override.term === term && (!x.override.path || (path && path.startsWith(x.override.path))));
         if (o) { overrides.push({ t: o.t, term }); reasons.push(`"${term}" is withdrawn at t${c.t} but overridden at t${o.t}${o.override.reason ? ` (${o.override.reason})` : ""}`); continue; }
-        if (advisoryTerm(c, term)) { reasons.push(`"${safeTerm(term)}" is advisory, not blocked: t${c.t} came from ambient capture and is one ordinary word. To enforce it, record it on purpose: memory-pulse remember <cause> <effect> --kind correction --withdrawn "${safeTerm(term)}"`); continue; }
+        if (advisoryTerm(c, term)) { reasons.push(`"${safeTerm(term)}" is advisory, not blocked: t${c.t} came from ambient capture and is ${broadKind(term)}. To enforce it, record it on purpose: memory-pulse remember <cause> <effect> --kind correction --withdrawn "${safeTerm(term)}"`); continue; }
         corrections.push({ t: c.t, term, replacement: c.replacement ?? [], cause: c.cause, effect: c.effect, note: c.note ?? "" });
       }
     }
@@ -2311,10 +2371,11 @@ export function localCheck(allEvents, action, invariants = [], opts = {}) {
     // `paths`: prefixes the invariant applies to; absent = every path. A rule
     // about public wording must not fire on a proofs file or a test fixture.
     const scope = Array.isArray(inv.paths) ? inv.paths.filter((x) => typeof x === "string" && x) : [];
-    if (scope.length && !scope.some((p) => path.startsWith(p))) continue;
+    if (scope.length && !pathInScope(scope, path)) continue;   // a prefix as before; an entry with a * is a glob, and !glob excludes (lib/packs.mjs)
     const tests = (inv.patterns ?? []).map(compilePattern);
     if (tests.some((t) => t === null)) reasons.push(`invariant ${inv.id} ignored: a pattern does not compile`);
-    const hit = tests.find((t) => t && t.test(text));
+    // a pack rule's patterns run under a time budget and do not count a line that only names the old API (lib/packs.mjs packHit)
+    const hit = inv.pack ? packHit(inv, text, path, reasons) : tests.find((t) => t && t.test(text));
     if (!hit) continue;
     const severity = inv.severity === "warn" ? "warn" : "block";
     // `cite`: the ledger rows the invariant rests on; `replacement`: what to do instead — the block names both.
@@ -2322,6 +2383,7 @@ export function localCheck(allEvents, action, invariants = [], opts = {}) {
     const replacement = typeof inv.replacement === "string" ? inv.replacement : "";
     invHits.push({ id: inv.id, severity, pattern: hit.src, cite, replacement });
     reasons.push(`${severity === "warn" ? "warning" : "invariant"} ${inv.id}${inv.statement ? `: ${inv.statement}` : ""} (matched ${hit.src})${cite.length ? ` — ledger ${cite.join(", ")}` : ""}${replacement ? ` — instead: ${replacement}` : ""}`);
+    if (inv.pack) reasons[reasons.length - 1] = packReason(inv, severity, hit.src);   // a pack rule's line names the pack, the rule and the vendor page
   }
   // 0.18.0: an invariant declared with "on": "command" is matched against a shell command and nothing else, and `paths` does not
   // apply to it (lib/prereg.mjs). Here that is a check of kind command; the guard matches a tool call's command itself.
@@ -2391,6 +2453,9 @@ export function containsTerm(text, term) {
   return false;
 }
 
+/** A withdrawn term on a line that does not also hold one of its replacements (lib/release.mjs): the rule localCheck, findViolations and the brief's stale marker share. */
+export const bareTerm = (text, term, replacement = []) => bareOnLine(text, term, replacement, containsTerm);
+
 // An ambient single word is advisory (0.17.1): lib/advisory.mjs.
 export { advisoryTerm };
 
@@ -2405,14 +2470,23 @@ export function findViolations(allEvents, text, filePath = "") {
   for (const e of events) {
     if (e.kind !== "correction" || !Array.isArray(e.withdrawn)) continue;
     if (retired.has(e.t)) continue; // a later correction narrowed or replaced it
-    // A comparison or disavowal names the old value next to the new one;
+    // A comparison or disavowal names the old value next to the new one, on the same line (bareTerm);
     // only a bare reintroduction is blocked. (Adversarial review, 2026-08-31:
     // a guard that fires on "the $49 figure is withdrawn" livelocks the agent.)
-    const disavowed = Array.isArray(e.replacement) && e.replacement.some((r) => r && text.includes(r));
-    if (disavowed) continue;
-    for (const term of e.withdrawn) if (!advisoryTerm(e, term) && containsTerm(text, term)) hits.push({ term, t: e.t, cause: e.cause, effect: e.effect, note: e.note ?? "", replacement: e.replacement ?? [] });
+    for (const term of e.withdrawn) if (!advisoryTerm(e, term) && bareTerm(text, term, e.replacement)) hits.push({ term, t: e.t, cause: e.cause, effect: e.effect, note: e.note ?? "", replacement: e.replacement ?? [] });
   }
   return hits;
+}
+// The one-line way out, in one sentence, when a blocked correction has a replacement (review G-1, 2026-11-21): the line rule blocks
+// old and new written on separate lines, and the writer has to be told that the same two values on one line pass. A correction
+// with no replacement has no comparison to offer, so nothing is said for it.
+function comparisonSentence(blocked) {
+  const hit = blocked.flatMap(({ v }) => v.corrections ?? []).find((h) => Array.isArray(h.replacement) && h.replacement.some((r) => typeof r === "string" && r));
+  if (!hit) return "";
+  const rep = hit.replacement.find((r) => typeof r === "string" && r), quotable = (x) => !/\n/.test(x) && x.length <= 60 && !termLike(x).length;
+  return quotable(String(hit.term)) && quotable(rep)
+    ? `A line that names both "${hit.term}" and "${rep}" passes: the guard reads it as a comparison. `
+    : "Naming the old value and its replacement on the same line passes: the guard reads it as a comparison. ";
 }
 async function cliGuard() {
   // `guard allow "<term>" [--path p] "<reason>"` records an OVERRIDE: an
@@ -2476,10 +2550,11 @@ async function cliGuard() {
   const command = typeof payload.tool_input?.command === "string" ? payload.tool_input.command : "";
   const invariants = readInvariants();
   const health = { project: ledgerHealth(ledgerPath()), agent: existsSync(agentPath()) ? ledgerHealth(agentPath()) : null };
-  const blocked = []; const warnings = new Set();
+  const blocked = []; const warnings = new Set(); const packNotes = new Set();
   for (const a of actions) {
     const v = guardVerdict({ kind: "edit", text: a.text, path: a.path, ...(command ? { command } : {}) }, { invariants, health });
     for (const w of v.warnings ?? []) warnings.add(w);
+    for (const w of packWarnings(v)) packNotes.add(w);   // a pack's warn rule that matched: shown to the agent below, never a block
     // no_evidence and verified pass SILENTLY here: a hook that warns on every
     // edit the ledger has nothing to say about livelocks the agent. The loud
     // form of no_evidence is `check --ci`. A quarantine or a broken chain that
@@ -2497,6 +2572,7 @@ async function cliGuard() {
   }
   recordUsage("guard_check");
   if (!blocked.length) {
+    { const said = packContext(packNotes, 2000); if (said) warnings.add(said); }   // a pack file that did not load, then the pack warnings, capped
     if (warnings.size) process.stderr.write([...warnings].join("\n") + "\n");
     if (cursor) { process.stdout.write(JSON.stringify({ permission: "allow" })); return; }
     // Allowed: add the memory that bears on this file as context. Never a permissionDecision — "allow" would skip the
@@ -2508,7 +2584,8 @@ async function cliGuard() {
         const sl = editSlice(rows, invariants, { path: a.path ?? "", text: a.text ?? "" }, { agentRows });
         for (const line of sl.split("\n")) if (line && !seen.has(line)) { seen.add(line); parts.push(line); }
       }
-      const ctx = parts.join("\n").slice(0, 2000);
+      // the ledger's own lines come first and are never cut for a pack; pack lines take what is left, PACK_CONTEXT_CHARS at most (review of 0.19.0, P-2)
+      const own = parts.join("\n").slice(0, 2000); const ctx = [own, packContext(packNotes, 1999 - own.length)].filter(Boolean).join("\n");
       if (ctx) { process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: ctx } })); recordUsage("edit_slice"); }
     } catch { /* context is a convenience; the verdict above is what the hook is for */ }
     return;
@@ -2542,7 +2619,7 @@ async function cliGuard() {
   const sealStale = !chainBroken && !inQuestion && allReasons.some((r) => /^sealed head mismatch/.test(r));
   const envPrefix = process.env.MEMORY_PULSE_LEDGER ? `MEMORY_PULSE_LEDGER=${process.env.MEMORY_PULSE_LEDGER} ` : "";
   const withdrawnHit = allReasons.some((r) => /" was withdrawn at (?:agent )?ledger t\d+/.test(r));
-  const hint = inQuestion
+  let hint = inQuestion
     ? `The rows verify as a chain, but not against what this machine last saw: an older copy of the ledger was put back, or rows this machine's writer marked were changed and re-chained. Writes to the ledger, its files and the trust store are blocked until the newer copy is restored, or \`${envPrefix}memory-pulse anchor accept "<why>"\` records that you trust the ledger as it stands. Other work is not blocked. \`memory-pulse verify\` names what differs.`
     : chainBroken
     ? "The ledger's own row chain is broken mid-file: a row was edited, removed or inserted and rows after it still verify, so writes to the ledger and its sidecars are blocked until it is restored from a copy you trust (`memory-pulse verify` names the first broken row and lists backups that verify). Other work is not blocked. Do not delete the ledger to clear this; the rows are the record. An override cannot repair a chain."
@@ -2551,7 +2628,8 @@ async function cliGuard() {
       : blocked.every((b) => b.command) ? COMMAND_HINT
       // 0.18.0 (review): an override answers a withdrawn value. A block with none (an invariant, a rule on commands) does not offer one
       : !withdrawnHit ? (blocked.some((b) => b.command) ? `${INVARIANT_HINT}\n${COMMAND_HINT}` : INVARIANT_HINT)
-      : 'Use the corrected value (mentioning both old and new in a comparison is fine), record a new correction if the old one is wrong, or `memory-pulse guard allow "<term>" --path <prefix> "<reason>"` if this is a false block.';
+      : `${comparisonSentence(blocked)}Use the corrected value, record a new correction if the old one is wrong, or \`memory-pulse guard allow "<term>" --path <prefix> "<reason>"\` if this is a false block.`;
+  hint = packHint(blocked, invariants, hint);   // a block by a pack rule names its own way out: memory-pulse pack rule <pack>/<rule> warn|off
   if (cursor) {
     const plain = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
     process.stdout.write(JSON.stringify({ permission: "deny", user_message: `memory-pulse guard: blocked.\n${plain}`, agent_message: `memory-pulse guard blocked this ${command ? "command" : "edit"}.\n${plain}\n${hint}` }));
@@ -2607,7 +2685,7 @@ async function cliCheck() {
     const { execFileSync } = await import("node:child_process");
     const args = base ? ["diff", `${base}...HEAD`, "--unified=0"] : ["diff", "--unified=0"];
     const out = execFileSync("git", args, { encoding: "utf8" });
-    text = out.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++")).map((l) => l.slice(1)).join("\n");
+    text = addedLinesOf(out);   // by position, so an added line that begins with ++ is read (lib/diff.mjs)
     path = path ?? "git-diff";
   }
   if (text == null) { let raw = ""; for await (const c of process.stdin) raw += c; text = raw; }
@@ -2621,12 +2699,14 @@ async function cliCheck() {
   let receipt = null, integrity = null;
   if (wantReceipt) {
     // the engine does not know "on": it is sent the invariants that apply to this kind of action, so both verdicts judge by one rule (0.18.0)
-    const out = await callApi("/v1/check", { action: { kind, text, path }, events, invariants: invariantsFor(kind, text, invariants, prereg), ...(readMemoryKey() ? { verifyKey: true } : {}) });
+    const out = await callApi("/v1/check", { action: { kind, text, path }, events, invariants: forEngine(invariantsFor(kind, text, invariants, prereg), path), ...(readMemoryKey() ? { verifyKey: true } : {}) });
     v = { ...out, local: v.verdict };
     receipt = out.receipt ?? null; integrity = out.integrity ?? null;
     if (out.receiptHint && !receipt) v.reasons.push(out.receiptHint);
   }
-  const code = exitCodeFor(v.verdict, { ci });
+  // an installed pack file that does not load is said on every check, and fails one run with --ci (review of 0.19.0, P-3)
+  const packFail = packProblems().map((p) => p.replace(/^memory-pulse: /, "")); if (packFail.length) v.reasons = [...(v.reasons ?? []), ...packFail];
+  const code = ci && packFail.length ? exitCodeFor(v.verdict, { ci }) || 1 : exitCodeFor(v.verdict, { ci });
   if (has("json")) { console.log(JSON.stringify({ ...v, receipt, integrity }, null, 2)); process.exit(code); }
   console.log(`memory-pulse check: ${v.verdict.toUpperCase()}${ci && v.verdict === "no_evidence" ? " (not a pass — the ledger has nothing to say about this)" : ""}`);
   for (const r of v.reasons) console.log(`  • ${r}`);
@@ -2651,6 +2731,8 @@ function cliReport() {
   console.log(`  edits blocked by the guard: ${blocks.reduce((n, b) => n + b.hits.length, 0)}${blocks.length ? ` (last: ${blocks[blocks.length - 1].at.slice(0, 10)})` : ""}`);
   const top = [...byT.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
   for (const [t, n] of top) { const c = corrections.find((x) => x.t === t); console.log(`  ${n}× t${t} ${c ? `${c.cause} -> ${c.effect}` : ""} — withdrawn: ${c?.withdrawn?.join(", ")}`); }
+  // a noisy rule is named wherever it ranks, with the two ways out on one line (lib/specific.mjs)
+  for (const m of blockStats(blocks).values()) { const c = corrections.find((x) => x.t === m.t); const line = c && !retired.has(m.t) ? noisyLine({ ...m, term: safeTerm(m.term), advisory: advisoryTerm(c, m.term) }) : ""; if (line) console.log(`  ${line}`); }
   const unenforced = corrections.filter((c) => !c.withdrawn?.length && !retired.has(c.t));
   if (unenforced.length) console.log(`  ${unenforced.length} correction(s) have no withdrawn terms and cannot be enforced — add them with remember(withdrawn: [...])`);
 }
@@ -2717,7 +2799,7 @@ const hookRunner = (project) => (project ? NPX_RUNNER : pinnedRunner());
 // dropped, every other hook is kept. Nested shape (Claude Code, Codex): [{ matcher?, hooks: [{ type, command, ... }] }].
 function upsertHook(settings, event, verb, command, extra = {}, entry = {}) {
   const list = (settings.hooks[event] = settings.hooks[event] || []);
-  let found = false, changed = false; const emptied = new Set();
+  let found = false, changed = false, owner = null, ours = null; const emptied = new Set();
   for (const e of list) {
     if (!Array.isArray(e?.hooks)) continue; // not this shape: someone else's entry, left exactly as it is
     const before = e.hooks.length;
@@ -2725,15 +2807,27 @@ function upsertHook(settings, event, verb, command, extra = {}, entry = {}) {
       const m = typeof h?.command === "string" ? OUR_HOOK.exec(h.command) : null;
       if (!m || m[1].trim() !== verb) return true;
       if (found) { changed = true; return false; }
-      found = true; if (h.command !== command) { h.command = command; changed = true; }
+      found = true; owner = e; ours = h; if (h.command !== command) { h.command = command; changed = true; }
+      if (h.type !== "command") { h.type = "command"; changed = true; } // a hook of another type is not run as a command (review 2026-11-21, R-2)
       return true;
     });
     if (before && !e.hooks.length) emptied.add(e); // only an entry this call emptied is removed
   }
   settings.hooks[event] = list.filter((e) => !emptied.has(e));
+  // review 2026-11-21, R-2: an entry from an older release kept its matcher (Edit|Write before 0.10.0), so MultiEdit and Bash never
+  // reached the guard. A matcher that misses a tool this release names is brought up to date; a wider one is left as it is. Where the
+  // entry also holds someone else's hook, theirs keeps its matcher and ours moves to an entry of its own.
+  if (owner && typeof entry.matcher === "string" && !matcherCovers(owner.matcher, entry.matcher.split("|"))) {
+    if (owner.hooks.length === 1) owner.matcher = entry.matcher;
+    else { owner.hooks = owner.hooks.filter((h) => h !== ours); settings.hooks[event].push({ ...entry, hooks: [ours] }); }
+    changed = true;
+  }
   if (!found) { settings.hooks[event].push({ ...entry, hooks: [{ type: "command", command, ...extra }] }); changed = true; }
   return changed;
 }
+// A "hooks" value that is a list is not a shape a host reads. Hooks set on a list are dropped when the file is written, so an empty
+// one becomes the object it should be and one with entries is refused (review 2026-11-21: "installed 8 hook(s)" with none written).
+const hooksObject = (v, file) => { if (!Array.isArray(v)) return v || {}; if (v.length) { console.error(`refusing to touch ${file}: its "hooks" value is a list, not an object keyed by event`); process.exit(1); } return {}; };
 const isOurHook = (command, verbs) => { const m = typeof command === "string" ? OUR_HOOK.exec(command) : null; return !!m && verbs.includes(m[1].trim()); };
 
 // `npx memory-pulse install-hook` — make re-entry automatic: a Claude Code
@@ -2746,7 +2840,7 @@ function installCursorHooks() {
   const file = join(dir, "hooks.json");
   let cfg = { version: 1, hooks: {} };
   if (existsSync(file)) { try { cfg = JSON.parse(readFileSync(file, "utf8")); } catch { console.error(`refusing to touch ${file}: it is not valid JSON`); process.exit(1); } }
-  cfg.version = cfg.version ?? 1; cfg.hooks = cfg.hooks || {};
+  cfg.version = cfg.version ?? 1; cfg.hooks = hooksObject(cfg.hooks, file);
   const run = hookRunner(project);
   const want = [
     ["sessionStart", { command: `${run} brief --host cursor` }],
@@ -2767,6 +2861,7 @@ function installCursorHooks() {
       if (!m || m[1].trim() !== verb) return true;
       if (found) { changed++; return false; }
       found = true; if (x.command !== h.command) { x.command = h.command; changed++; }
+      if (typeof h.matcher === "string" && !matcherCovers(x.matcher, h.matcher.split("|"))) { x.matcher = h.matcher; changed++; } // an old matcher is brought up to date (R-2)
       return true;
     }));
     if (!found) { list.push(h); changed++; }
@@ -2800,7 +2895,7 @@ async function cliInstallHook() {
     try { settings = JSON.parse(readFileSync(file, "utf8")); }
     catch { console.error(`refusing to touch ${file}: it is not valid JSON`); process.exit(1); }
   }
-  settings.hooks = settings.hooks || {};
+  settings.hooks = hooksObject(settings.hooks, file);
   let changed = 0;
   const run = hookRunner(project);
   changed += upsertHook(settings, "SessionStart", "brief", `${run} brief`);
@@ -2815,6 +2910,8 @@ async function cliInstallHook() {
     changed += upsertHook(settings, "SessionEnd", "consolidate --final", `${run} consolidate --final`, { timeout: 10 });
   }
   if (process.argv.includes("--ambient")) changed += upsertHook(settings, "UserPromptSubmit", "observe", `${run} observe`);
+  // the team path (lib/gitmerge.mjs): a project install also names the git merge driver for the committed ledger and sets it for this clone; silent outside a git work tree
+  if (project) for (const l of (await import("./lib/gitmerge.mjs")).teamSetup(teamCore(), { fromInstall: true }).lines) console.log(l);
   if (!changed) { console.log("hooks already installed — nothing to do"); return; }
   mkdirSync(home, { recursive: true });
   writeFileSync(file, JSON.stringify(settings, null, 2) + "\n");
@@ -2853,7 +2950,10 @@ async function askUsageConsent() {
 // Muse Code (2026-10-22): .agents/AGENTS.md is one of its instruction files, and .agents/memory/ (a MEMORY.md index plus topic files)
 // is committed project memory, which it loads even in a workspace the user has not trusted. A line in any linted file that reads like
 // an instruction planted for the agent (plantedLines) makes the file BLOCKED too.
-const LINT_DEFAULTS = ["CLAUDE.md", "AGENTS.md", ".claude/CLAUDE.md", ".claude/rules", ".cursorrules", ".cursor/rules", ".github/copilot-instructions.md", ".codex/AGENTS.md", ".agents/AGENTS.md", ".agents/memory", ".memory-pulse/invariants.jsonl"];
+const LINT_DEFAULTS = ["CLAUDE.md", "AGENTS.md", ".claude/CLAUDE.md", ".claude/rules", ".cursorrules", ".cursor/rules", ".github/copilot-instructions.md", ".codex/AGENTS.md", ".agents/AGENTS.md", ".agents/memory"];
+// .memory-pulse/invariants.jsonl was in this list until 0.19.0. The guard never judges a file under .memory-pulse/ against the
+// corrections, so lint could only judge the declared rules against themselves, and a rule's own line holds its pattern: one
+// unscoped literal rule blocked the file, and through the Action every pull request (review 2026-11-22, N-A1).
 // An entry lint cannot read (a dangling symlink, a directory named like a file) is skipped and named on stderr, never a crash and
 // never silent (release review 2026-10-22).
 function lintTargets(args, skipped = []) {
@@ -2887,7 +2987,11 @@ async function cliLint() {
   const lintSeal = verifyLocalSeal(events, readSeal(), lintChain0);
   for (const f of files) {
     let text = ""; try { text = readFileSync(f, "utf8"); } catch { continue; }
-    const v = localCheck(events, { kind: "lint", text, path: f }, invariants, { chain: lintChain, seal: lintSeal });
+    // Named on the command line, the declared-rules file is not judged against the declared rules: it would trip itself (N-A1).
+    // compared through realpath: on macOS the same temp folder is /var/... in one variable and /private/var/... in process.cwd()
+    const realOf = (x) => { try { return realpathSync(x); } catch { return resolvePath(x); } };
+    const isRuleFile = realOf(f) === realOf(invariantsPath());
+    const v = localCheck(events, { kind: "lint", text, path: f }, isRuleFile ? [] : invariants, { chain: lintChain, seal: lintSeal });
     const injections = plantedLines(text);
     // a file blocked for a planted line does not also say "no recorded event bears on this lint" (release review 2026-10-22)
     const reasons = [...v.reasons.filter((r) => !/^\d+ recorded event/.test(r) && !(injections.length && /^no recorded event bears/.test(r))), ...injections.map((i) => `${f}:${i.line} reads like an instruction planted for the agent (${i.patterns.join(", ")}); the line is not printed`)];
@@ -2930,6 +3034,11 @@ function cliHelp() {
 usage: memory-pulse <command> [options]        (npx -y memory-pulse <command> without a global install)
 
 Commands
+  demo [--withdrawn <old>] [--replacement <new>] [--text "<edit>"] [--json]
+                                      try it with nothing installed: records one correction in a temporary folder, runs the guard on three edits (and on yours with --text), prints each verdict as a host gets it, removes the folder
+  init [--yes] [--dry-run] [--project] [--offline]
+                                      set it up in a repository: prints its plan (hosts found, files it will write), asks once on a terminal (--yes skips the question; with no terminal and no --yes nothing is changed), runs install-hook for each host, creates .memory-pulse/, runs doctor; with --project in a git work tree the plan also lists .gitattributes and this clone's git config (team setup); a second run changes nothing
+  doctor [--json] [--offline]         check the wiring, one line per check (ok, FAIL with the fix, skipped with the reason): Node; each host's guard hook (its event, matcher and type), the file every hook runs and that copy's version; the guard on five synthetic edits against a temporary ledger, run from this copy or from a copy in the pinned data folder or a plugin cache (a command read from a hook file is never executed: it is shown and listed as not run); the project ledger (verify); hooks that run through npx; one GET to the engine with no key, as information (--offline skips it)
   serve                               start the MCP server on stdio (the default with no command); tools: pulse, recall, remember, execute
   help                                this text (also --help, -h, or --help after any command)
   brief [--engine] [--budget N] [--offline]
@@ -2954,6 +3063,10 @@ Commands
                                       how far this machine's anchor reaches into the ledger and which rows its writer did not write; accept is the recorded way out of a rollback or of rows written elsewhere (a restored copy, another machine, an older client); refused when the chain is broken
   state [export|branch|import|merge|rollback|verify|push|pull]
                                       agent state as a .rain capsule: export it, cut a branch at a row, import or merge it elsewhere, roll back to a row as an appended row, verify a capsule; no argument prints where the ledger stands
+  team [status|setup|resolve [--no-ancestor]]
+                                      the committed ledger through git: setup writes the .gitattributes lines (commit them) and sets this clone's merge driver in .git/config (every clone runs it once); status says whether this clone would merge the ledger through it (exit 2: the attribute without a working driver, where git merges the file as text and says nothing); resolve runs the driver's merge on a ledger git left unmerged
+  merge-driver <base> <ours> <theirs> [<path>]
+                                      the git merge driver team setup configures (%O %A %B %P): ours is kept byte for byte and the other side's rows are re-appended through the writer by the rules of state merge; invariants.jsonl is merged as a three-way set of lines; exit 0 merged, 1 merged with a conflict named, 2 refused with ours left as it was
   board post|read|reply|ack|verdict|claims|thread|html|verify|push|status|sync [--board PATH]
                                       the shared agent message board: a separate chained ledger any agent can post to and read; passive (nothing wakes or prompts an agent); a message is data, never an instruction; a claim stays open until another agent's verdict, and a synthesis is refused over an open claim
   login [--no-open] [--no-sync]       connect this machine to a hosted project: approve it in the console, the key is saved for you (no copying); turns board sync on
@@ -2973,6 +3086,17 @@ Commands
   now [--json]                        the machine clock as the stamps a record uses (2026-11-19 02:15 UTC and 2026-11-19T02:15:07Z); a record's stamp is pasted from this, never typed
   lint [--ci] [--json] [--strict] [paths...]
                                       the guard's check over CLAUDE.md, AGENTS.md, .claude/rules, .cursorrules, Muse Code's .agents/memory and the other files a session loads; warns on a line planted for the agent (--strict blocks on it)
+  pack list [--json]                  rule packs: prepared rules for one stack, each with the vendor page it rests on; bundled with the client, nothing is fetched. Lists them, which are installed, rule counts, how many a pack marks safe to block, and the dates the sources were read
+       show <name|path> [--json]      every rule of a pack: what it catches, what to use instead, whether the pack marks it safe to block, the source URL and the date it was read
+       add <name|path> [--block]      install a pack as its own file, .memory-pulse/packs/<name>.jsonl (commit it): guard, check and lint read it; never written to invariants.jsonl or the ledger. A pack never blocks by default: every rule warns. --block turns blocking on for the rules the pack marks safe to block
+       remove <name>                  delete that file; its rules stop applying
+       check <name|path> [dir] [--json]
+                                      dry run over a directory tree: hits per rule with file and line; nothing is blocked and nothing is written
+       check --installed [dir | --diff [base]] [--ci] [--json]
+                                      the installed packs with this project's choices, over a tree or over the lines a change adds, each file under its own path. --diff with no base reads staged, unstaged and untracked changes; --diff <base> reads what the branch adds since <base>. --ci exits 1 when a rule that blocks here hits, or when a pack file does not load
+       rule <pack>/<rule> off|warn|block|default [--reason "..."]
+                                      change one rule for this project without editing the pack file (.memory-pulse/packs/overrides.jsonl): block turns it on, default goes back to a warning; rule <pack> block|warn does it for the rules a pack marks safe to block
+       verify <name|path>             lint a pack file: every rule has an id, a pattern that compiles, does not match the empty string and does not stall on a line built from its own characters, a source URL, a verified date, paths, and a statement or a replacement
   guard [--verbose]                   PreToolUse hook: reads the tool call from stdin, exit 2 with the ledger line when an edit writes a withdrawn value back
   guard allow "<term>" [--path <prefix>] "<reason>"
                                       record a false block as an override scoped to a path prefix
@@ -2980,8 +3104,8 @@ Commands
   bench                               measured metrics on your own ledger (brief size, guard coverage, recall self-consistency); needs the engine
   stats                               the signed telemetry capsule, signature verified by the engine
   badge                               README badge markdown from the capsule's counters
-  install-hook [--codex] [--project] [--ambient]
-                                      write four hooks (SessionStart brief, UserPromptSubmit prompt, PreToolUse guard, PreCompact handoff) into ~/.claude/settings.json; --codex targets ~/.codex/hooks.json; --project writes them into the repo; --ambient adds the UserPromptSubmit observer
+  install-hook [--codex] [--cursor] [--project] [--ambient] [--no-capture]
+                                      write eight hooks into ~/.claude/settings.json (SessionStart brief, UserPromptSubmit prompt, PreToolUse guard, PreCompact handoff, and capture with consolidation on PostToolUse, PostToolUseFailure, Stop, SessionEnd; --no-capture leaves those four out); --codex targets ~/.codex/hooks.json without capture; --cursor writes ~/.cursor/hooks.json; --project writes them into the repo; --ambient adds the UserPromptSubmit observer
   mode [agent|soul|deliberate]        show or set the mode; agent adds a Stop and a UserPromptSubmit hook and an agent ledger at ~/.memory-pulse/agent/; soul adds a soul
   identity "<name>, <role>; <stance>" pin the agent's self on the agent ledger (agent mode prints it first in every brief)
   soul ["<text>"|confirm|reject|history|revert|import|export]  soul mode: the agent's own persona; held changes; versions; OpenClaw import/export
@@ -3018,7 +3142,7 @@ Environment
   NO_COLOR, TERM                      colour in the guard's block message only when NO_COLOR is unset, TERM is not dumb and stderr is a TTY
   HOME                                root for the agent ledger, ~/.claude/settings.json and ~/.codex/hooks.json
 
-Exit codes: 0 done; 1 usage or refused (remember, append, repair without --yes, mode, lint --ci with nothing to check, check --ci with no evidence, prereg seal on a failed assertion or a refused forbid pattern); 2 blocked (guard, check, lint), verification failed (verify, anchor), a sealed file changed or the seal row is not on the row chain (prereg verify) or not a tail (repair --quarantine-tail).
+Exit codes: 0 done; 1 usage or refused (remember, append, repair without --yes, mode, lint --ci with nothing to check, check --ci with no evidence, prereg seal on a failed assertion or a refused forbid pattern), a check failed (doctor, init) or the verdicts were not the ones described (demo); 2 blocked (guard, check, lint), verification failed (verify, anchor), a sealed file changed or the seal row is not on the row chain (prereg verify) or not a tail (repair --quarantine-tail).
 Guide: docs/GUIDE.md in the repository (https://github.com/t-crew/memory-pulse/blob/main/docs/GUIDE.md).`);
 }
 
@@ -3064,7 +3188,7 @@ function cliVerify() {
   const flag = scope === "agent" ? " --scope agent" : "";
   const prefix = scope === "agent" ? "memory-pulse" : cliPrefixFor(ledger);
   const backups = chain.ok || info?.tail?.allBad ? [] : trustedBackups(ledger);
-  const fix = chain.ok ? null : info?.tail?.allBad ? `${prefix} repair${flag} --quarantine-tail` : backups.length ? `cp "${backups[0].file}" "${ledger}"` : null;
+  const fix = chain.ok ? null : info?.tail?.forked ? `${prefix} team resolve` : info?.tail?.allBad ? `${prefix} repair${flag} --quarantine-tail` : backups.length ? `cp "${backups[0].file}" "${ledger}"` : null;
   // 0.16.0: this machine's anchor (rollback) and writer marks; the anchor starts here on first sight of a ledger whose chain verifies
   const hadAnchor = !!readAnchor(ledger), trust = ledgerTrust(ledger, { init: chain.ok, ...(argv.includes("--strict") ? { strict: true } : {}) });
   const ts = (xs) => xs.slice(0, 12).map((x) => `t=${x.t ?? "?"}`).join(", ") + (xs.length > 12 ? `, … (${xs.length})` : "");
@@ -3079,7 +3203,8 @@ function cliVerify() {
   console.log(chain.ok ? `chain: OK — ${chain.chained} chained row(s)${chain.chained ? ` from t=${chain.from}` : ""}, ${chain.legacy} legacy row(s)${chain.sealed ? " sealed" : " (unsealed until the first chained write)"}${chain.head ? ` · head ${chain.head.slice(0, 12)}` : ""}${unsealedNote}` : `chain: BROKEN — ${chain.reason}`);
   if (info) {
     console.log(`first bad row: t=${info.firstBad?.t ?? "?"} (line ${info.firstBad?.line ?? "?"})`);
-    if (info.tail?.allBad) {
+    if (info.tail?.forked) console.log(handMergedLine(ledger, info.tail.forked).replace(/^memory-pulse: /, ""));
+    else if (info.tail?.allBad) {
       console.log(`every row from line ${info.firstBad?.line ?? "?"} on fails on its own (${info.tail.rows} row(s)): a bad tail. Move it aside byte-for-byte, recorded, nothing deleted (the guard also does this on its next run):\n  ${fix}`);
     } else {
       console.log(`the rows after it verify on their own, so this is not a bad tail: a row at or before line ${info.firstBad?.line ?? "?"} was edited, removed or inserted. Writes to this ledger stay blocked; other work is not. Restore it from a copy you trust:`);
@@ -3192,10 +3317,11 @@ async function cliRemember() {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--pinned") { opts.pinned = true; continue; }
-    const m = /^--([a-z]+)(?:=(.*))?$/.exec(a);
+    // a hyphenated option (--withdrawn-command) used to fall through as a positional and was dropped without a word
+    const m = /^--([a-z][a-z-]*)(?:=(.*))?$/.exec(a);
     if (!m) { pos.push(a); continue; }
     const [, k, inline] = m;
-    if (!multi.has(k) && !single.has(k)) { console.error(`memory-pulse remember: unknown option --${k} (run memory-pulse help)`); process.exit(1); }
+    if (!multi.has(k) && !single.has(k)) { console.error(`memory-pulse remember: unknown option --${k} (run memory-pulse help)${k === "withdrawn-command" ? '. A command to stop running is a rule on shell commands: one line in .memory-pulse/invariants.jsonl with "on": "command"' : ""}`); process.exit(1); }
     const v = inline ?? argv[++i];
     if (v == null) { console.error(`memory-pulse remember: --${k} needs a value`); process.exit(1); }
     if (multi.has(k)) opts[k].push(v); else opts[k] = v;
@@ -3230,6 +3356,10 @@ async function cliRemember() {
 export const STATE_SCHEMA = "catalyst.rain.state.v1";
 const STATE_TAGS = ["state", "merge", "rollback"];
 const isRollback = (e) => !!e && Array.isArray(e.tags) && e.tags.includes("rollback") && Number.isInteger(e.rollback_to);
+// A branch's own bookkeeping is the row that holds the record: a resume or merge row carries `state`, a rollback row carries
+// rollback_to. A finding a person tagged state (the organized memory's project-state section) is a finding, and a merge carries it
+// (0.19.0: the tag alone left such a row behind, and after a git merge it was on neither tip).
+const isBookkeeping = (r) => isRollback(r) || (!!r && Array.isArray(r.tags) && r.tags.some((t) => STATE_TAGS.includes(t)) && !!r.state && typeof r.state === "object");
 /**
  * The row numbers (t) in force at the head. A rollback row restores the ledger as it stood at its target t and keeps
  * everything recorded after itself, so rolling back past a rollback restores what that rollback removed. Rows without
@@ -3260,7 +3390,7 @@ export function inForce(events) {
 /** What a finding IS, apart from where it sits: the key a merge dedupes on and the order-free content head folds. */
 const contentKey = (r) => canonicalJson({ cause: r.cause, effect: r.effect, kind: r.kind ?? "event", note: r.note ?? "", withdrawn: r.withdrawn ?? [], replacement: r.replacement ?? [], override: r.override ?? null });
 /** Order-free head over the findings in force, bookkeeping rows excluded: two ledgers that carried the same findings in any order fold to the same value. */
-export const contentHeadHex = (rows) => setHeadHex(inForce(rows).filter((r) => !(Array.isArray(r.tags) && r.tags.some((t) => STATE_TAGS.includes(t)))).map((r) => ({ content: contentKey(r) })));
+export const contentHeadHex = (rows) => setHeadHex(inForce(rows).filter((r) => !isBookkeeping(r)).map((r) => ({ content: contentKey(r) })));
 
 const ledgerFor = (scope) => (scope === "agent" ? agentPath() : ledgerPath());
 const linesOf = (path) => (existsSync(path) ? readFileSync(path, "utf8").split("\n").map((l) => l.trim()).filter(Boolean) : []);
@@ -3395,10 +3525,10 @@ export function mergeCapsule(cap, { scope = "project" } = {}) {
   const decidedAtSource = new Set(v.rows.flatMap((x) => (Number.isInteger(x.decides) ? [x.decides] : [])));
   const id = cap.branch?.id ?? "main";
   let next = maxT(localRows) + 1;
-  const carried = [], skipped = [], held = [], atSource = [], conflicts = [];
+  const carried = [], skipped = [], held = [], atSource = [], conflicts = [], batch = [];
   for (const r of foreign) {
     const fromT = r.t;
-    if (isRollback(r) || (Array.isArray(r.tags) && r.tags.some((t) => STATE_TAGS.includes(t)))) { atSource.push(fromT); continue; }
+    if (isBookkeeping(r)) { atSource.push(fromT); continue; }
     if (Number.isInteger(fromT) && !branchForce.has(fromT)) { atSource.push(fromT); continue; }
     const key = contentKey(r);
     if (have.has(key)) { skipped.push(fromT); if (Number.isInteger(fromT) && localByKey.has(key)) tMap.set(fromT, localByKey.get(key)); continue; }
@@ -3413,7 +3543,7 @@ export function mergeCapsule(cap, { scope = "project" } = {}) {
       if (h === null) { atSource.push(fromT); next--; continue; }
       if (h) {
         if (localRows.some((x) => x.origin?.branch === id && x.origin?.t === fromT)) { skipped.push(fromT); next--; continue; }
-        chainAppend(ledger, { ...h, t: row.t, origin: row.origin }); carried.push(row.t); have.add(key); if (Number.isInteger(fromT)) tMap.set(fromT, row.t); continue;
+        batch.push({ ...h, t: row.t, origin: row.origin }); carried.push(row.t); have.add(key); if (Number.isInteger(fromT)) tMap.set(fromT, row.t); continue;
       }
     }
     if (Array.isArray(row.supersedes)) { const m = row.supersedes.map((t) => tMap.get(t)).filter((t) => Number.isInteger(t)); if (m.length) row.supersedes = m; else delete row.supersedes; }
@@ -3426,8 +3556,9 @@ export function mergeCapsule(cap, { scope = "project" } = {}) {
       row.credit = c;
     }
     if (r.kind === "correction" && Array.isArray(row.withdrawn)) for (const term of row.withdrawn) { const lc = localCorr.find((c) => c.withdrawn.includes(term) && canonicalJson(c.replacement ?? []) !== canonicalJson(row.replacement ?? [])); if (lc) conflicts.push({ term, local: lc.t, merged: row.t }); }
-    chainAppend(ledger, row); carried.push(row.t); have.add(key); if (Number.isInteger(fromT)) tMap.set(fromT, row.t);
+    batch.push(row); carried.push(row.t); have.add(key); if (Number.isInteger(fromT)) tMap.set(fromT, row.t);
   }
+  chainAppendMany(ledger, batch);   // one locked pass for every carried row
   if (!carried.length) return { status: "unchanged", reason: `nothing new to carry: ${skipped.length} duplicate(s)${held.length ? `, ${held.length} held back` : ""}${atSource.length ? `, ${atSource.length} applied at source` : ""}`, code: 0, carried, skipped, held, atSource };
   const note = `merged ${carried.length} row(s) from branch ${id} (.rain state capsule ${short(cap.digest)}, head ${short(cap.head)}); fork after t=${fork}; ${skipped.length} duplicate(s) skipped${held.length ? `; ${held.length} row(s) held back, note reads like an instruction` : ""}${atSource.length ? `; ${atSource.length} row(s) applied at source, not carried` : ""}${conflicts.length ? `; ${conflicts.length} conflict(s): ${conflicts.map((c) => `"${c.term}" t${c.local} against t${c.merged}`).join(", ")}` : ""}`;
   const m = appendEvent({ cause: "state-merged", effect: `from-${id}-${short(cap.head)}`, note, tags: ["merge"], scope, fields: { state: { capsule: cap.digest, head: short(cap.head), branch: id, fork, carried: carried.length, conflicts } } });
@@ -3557,6 +3688,10 @@ async function cliState() {
   usage();
 }
 
+// What lib/gitmerge.mjs is handed (the git merge driver and `team`): the merge is state merge's own, so the driver adds no rule.
+const teamCore = () => ({ ledgerPath, linesOf, parseRows, contentKey, isRollback, isBookkeeping, inForceSet, supersededSet, instructionLike, verifyChainLines, buildCapsule, mergeCapsule,
+  appendEvent, chainAppendMany, withLedgerLock, inspectChain, handMergedLine, readAnchor, anchorCheck, anchorPathFor, readSeal, verifyLocalSeal, pinnedRunner, version: PKG_VERSION });
+
 // Importable for tests; the transport runs only when this file is the entry
 // point. Compared by REALPATH, not by name: npm invokes the bin through a
 // .bin/memory-pulse symlink, and a basename comparison silently failed there —
@@ -3568,6 +3703,9 @@ try {
 } catch { /* argv[1] missing or unreadable — we are being imported */ }
 if (isMain) {
   const sub = process.argv[2];
+  // A command prints and exits: its output must reach a pipe whole and in bounded time (lib/stdio.mjs; cut at 8 KB on macOS with Node 20 before 0.19).
+  // The stdio server (no command, or `serve`) keeps running and is left as it was.
+  if ((sub && sub !== "serve") || process.argv.slice(2).some((a) => a === "--help" || a === "-h")) { const { wholeOutput } = await import("./lib/stdio.mjs"); wholeOutput(); }   // serve --help prints and exits too (F-2)
   if (sub === "help" || sub === "--help" || sub === "-h" || process.argv.slice(2).some((a) => a === "--help" || a === "-h")) { cliHelp(); process.exit(0); }
   if (sub === "remember") { await cliRemember(); process.exit(0); }
   if (sub === "brief" && hostOf(process.argv) === "cursor") {
@@ -3579,12 +3717,27 @@ if (isMain) {
     process.stdout.write(JSON.stringify(text.trim() ? { additional_context: text.trim().slice(0, 20000) } : {}));
     process.exit(0);
   }
+  // A ledger kept in a layout this client cannot read (lib/layout.mjs): said on every run that would have used it, never passed in
+  // silence. The guard does not block (it has nothing to judge by); check and lint fail, so a pull request cannot pass on it.
+  { const alien = ["brief", "scaffold", "prompt", "guard", "check", "lint"].includes(sub) ? foreignLayout(ledgerPath()) : null;
+    if (alien) {
+      const msg = layoutMessage(alien, PKG_VERSION);
+      if (sub === "guard") { process.stderr.write(`${msg}\n`); process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: msg } })); process.exit(0); }
+      if (sub === "check" || sub === "lint") {
+        if (process.argv.includes("--json")) console.log(JSON.stringify({ verdict: "unreadable", reasons: [msg], layout: alien.layout }, null, 2)); else console.error(msg);
+        process.exit(1);
+      }
+      console.log(msg);   // brief, scaffold, prompt: the first thing the session reads
+    } }
   if (sub === "brief") { await cliBrief(); await sendUsageQuietly(); process.exit(0); }
   if (sub === "telemetry") { await cliTelemetry(); process.exit(0); }
   if (sub === "scaffold") { await cliScaffold(); process.exit(0); }
   if (sub === "prompt") { await cliPrompt(); process.exit(0); }
   if (sub === "before") { await cliBefore(); process.exit(0); }
   if (sub === "install-hook") { await cliInstallHook(); process.exit(0); }
+  // first run (lib/firstrun.mjs): demo and doctor work in a temporary folder; init runs install-hook and asks the usage question once
+  if (sub === "demo" || sub === "doctor" || sub === "init") { const fr = await import("./lib/firstrun.mjs"), ctx = { server: fileURLToPath(import.meta.url), version: PKG_VERSION, api: API, ledgerPath, askUsageConsent, hookVerbs: HOOK_VERBS };
+    process.exit(await (sub === "demo" ? fr.cliDemo : sub === "doctor" ? fr.cliDoctor : fr.cliInit)(process.argv.slice(3), ctx)); }
   if (sub === "guard") { await cliGuard(); process.exit(0); }
   if (sub === "check") { await cliCheck(); process.exit(0); }
   if (sub === "handoff") { await cliHandoff(); process.exit(0); }
@@ -3599,6 +3752,8 @@ if (isMain) {
   if (sub === "seal") { await cliSeal(); process.exit(0); }
   if (sub === "anchor") cliAnchor();
   if (sub === "state") { await cliState(); process.exit(0); }
+  if (sub === "merge-driver") { const { cliMergeDriver } = await import("./lib/gitmerge.mjs"); process.exit(cliMergeDriver(process.argv.slice(3), teamCore())); }
+  if (sub === "team") { const { cliTeam } = await import("./lib/gitmerge.mjs"); process.exit(cliTeam(process.argv.slice(3), teamCore())); }
   if (sub === "login") { globalThis.__MEMORY_PULSE_CORE__ = { chainAppend, verifyChain, instructionLike, readEvents, buildCapsule, API, KEY }; const { cliLogin } = await import("./lib/login.mjs"); process.exit(await cliLogin(process.argv.slice(3), { api: API, version: PKG_VERSION })); }
   if (sub === "capture") { const { cliCapture } = await import("./lib/capture.mjs"); const host = hostOf(process.argv); process.exit(cliCapture({ ledgerPath, chainAppend, instructionLike, normalize: (h) => normalizeHook(host, h) })); }
   if (sub === "consolidate") { const { cliConsolidate } = await import("./lib/capture.mjs"); const host = hostOf(process.argv); process.exit(cliConsolidate(process.argv.slice(3), { ledgerPath, readEvents, appendEvent, buildCapsule, instructionLike, normalize: (h) => normalizeHook(host, h),
@@ -3628,6 +3783,7 @@ if (isMain) {
   if (sub === "prereg") process.exit(cliPrereg(process.argv.slice(3), { ledgerPath, readEvents, appendEvent, chainRows }));
   if (sub === "ran") process.exit(cliRan(process.argv.slice(3), { ledgerPath, readEvents, chainRows }));
   if (sub === "lint") { await cliLint(); process.exit(0); }
+  if (sub === "pack") { const { cliPack } = await import("./lib/packs.mjs"); process.exit(await cliPack(process.argv.slice(3), { dir: dirname(ledgerPath()) })); }
   if (sub === "report") { cliReport(); process.exit(0); }
   if (sub === "bench") { await cliBench(); process.exit(0); }
   if (sub === "stats") { await cliStats(); process.exit(0); }
@@ -3652,6 +3808,8 @@ if (isMain) {
   });
   rl.on("close", async () => {
     await Promise.allSettled([...inflight]);
+    // the answers just written must leave the process before it exits: a scripted session of 60 requests got 34 answers back
+    const { written } = await import("./lib/stdio.mjs"); await written(process.stdout);
     process.exit(0);
   });
   process.on("uncaughtException", (e) => process.stderr.write(`memory-pulse: ${e.stack}\n`));

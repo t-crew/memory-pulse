@@ -508,7 +508,7 @@ test("F6: of several seals of one id started together, exactly one is written; t
 
 // ---- F8: what the documents and the messages say
 
-const changelog = () => { const t = readFileSync(join(ROOT, "CHANGELOG.md"), "utf8"); const i = t.indexOf("## 0.18.0 (unreleased)"); return t.slice(i, t.indexOf("\n## ", i + 5)).replace(/\s+/g, " "); };
+const changelog = () => { const t = readFileSync(join(ROOT, "CHANGELOG.md"), "utf8"); const i = t.indexOf("## 0.18.0 (19 November 2026)"); return t.slice(i, t.indexOf("\n## ", i + 5)).replace(/\s+/g, " "); };
 
 test("F8: the changelog, help and the seal's own output name the hosts the forbid rule fires on; the changelog names what does not carry a seal", () => {
   const p = project();

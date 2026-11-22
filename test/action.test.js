@@ -104,6 +104,9 @@ test("e2e lint: a governance file that still states a withdrawn value fails the 
   writeFileSync(join(dir, "CLAUDE.md"), "Always quote the price as $49.\n");
   writeFileSync(join(dir, "README.md"), "hello\n");
   git("add", "."); git("commit", "-q", "-m", "base");
+  // the base the runner diffs against. Until 2026-11-21 this fixture had none and passed through the runner's silent fallback to an
+  // empty working-tree diff, which is the failure the runner now reports ("could not read this change").
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
   git("checkout", "-q", "-b", "feature");
   writeFileSync(join(dir, "README.md"), "hello\nnothing the ledger knows\n");
   git("commit", "-q", "-am", "benign");

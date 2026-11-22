@@ -1,0 +1,7 @@
+{"rule":"on-event","path":"app/main.py","hit":"@app.on_event(\"startup\")\nasync def startup():\n    pass\n","miss":"@asynccontextmanager\nasync def lifespan(app):\n    yield\n\napp = FastAPI(lifespan=lifespan)\n"}
+{"rule":"param-regex","path":"app/routes.py","hit":"q: str = Query(None, regex='^fixedquery$')\n","miss":"q: str = Query(None, pattern='^fixedquery$')\n"}
+{"rule":"param-example","path":"app/routes.py","hit":"item_id: int = Path(..., example=42)\n","miss":"item_id: int = Path(..., examples=[42])\n"}
+{"rule":"json-response-classes","path":"app/main.py","hit":"from fastapi.responses import ORJSONResponse\napp = FastAPI(default_response_class=ORJSONResponse)\n","miss":"from fastapi.responses import JSONResponse\nclass CustomORJSONResponseX(Response):\n    pass\n"}
+{"rule":"wsgi-middleware","path":"app/main.py","hit":"from fastapi.middleware.wsgi import WSGIMiddleware\n","miss":"from a2wsgi import WSGIMiddleware\n"}
+{"rule":"root-path-param","path":"app/main.py","hit":"app = FastAPI(title='x', root_path='/api/v1')\n","miss":"app = FastAPI(title='x')\n"}
+{"rule":"openapi-prefix","path":"app/main.py","hit":"app = FastAPI(openapi_prefix='/api/v1')\n","miss":"app = FastAPI(openapi_url='/api/v1/openapi.json')\n"}

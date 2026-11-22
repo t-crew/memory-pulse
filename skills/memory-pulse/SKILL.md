@@ -73,9 +73,10 @@ Rules that decide whether the guard can act on it:
   not `$490`), and a word under five letters cannot run on (`ten` does not
   block `tenant`). `n=14` does not block `N=14`. Record every spelling you
   have seen, and prefer exact tokens (`"1480 rps"`, `"n=14"`) over prose.
-- A replacement anywhere in the same edit releases every term of that
-  correction, so make replacements as specific as withdrawn terms: `$29`,
-  not `29`. Terms under 2 characters are dropped and the result says
+- A replacement releases a withdrawn term only on its own line: a line that
+  states old and new together is a comparison and passes, a line that states
+  only the old value is blocked. Make replacements as specific as withdrawn
+  terms: `$29`, not `29`. Terms under 2 characters are dropped and the result says
   `enforceable: false`.
 - A wrong correction is fixed with a new one carrying `supersedes: [t]`.
   Otherwise the old row still binds. Never edit or append to a ledger file
@@ -96,7 +97,8 @@ A blocked edit starts with `memory-pulse guard: blocked.` and cites the ledger
 row that retired the term and the replacement. Do not retry the same text.
 Use the corrected value from the cited line. If you believe the correction
 itself is wrong, record a new correction with `supersedes` explaining why;
-never bypass. A comparison that names both the old and the new value passes.
+never bypass. A comparison that names both the old and the new value on one
+line passes; the same two values on separate lines are blocked.
 
 ## 5. Ask `before` a risky edit
 
@@ -144,7 +146,9 @@ What not to do:
 
 - **Claude Code**: the guard sees `Edit`, `Write`, `MultiEdit` and `Bash`
   commands whose write target and text are literal in the command (a heredoc,
-  a redirect, a `tee`). A shell write whose content cannot be read from the
+  a redirect, a `tee`, `sed -i` and `perl -i` on the replacement side,
+  `python -c` or `node -e` whose write call is handed a string literal). A
+  command that removes the old value passes. A shell write whose content cannot be read from the
   command string is a miss, not a pass; `check --ci` catches it on the PR.
   Blocked calls return the ledger line that retired the term; use the
   replacement or record a new correction, never paraphrase around the term.

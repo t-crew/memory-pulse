@@ -102,10 +102,14 @@ test("mode <bad> prints one line and exits 1, with no stack trace", () => {
 
 test("observe on a prohibition prints the withdrawn term and no replacement clause", () => {
   const { run } = mk();
-  const r = run(["observe", "--verbose"], JSON.stringify({ prompt: "never cite blockchain in the docs" }));
+  const r = run(["observe", "--verbose"], JSON.stringify({ prompt: "never cite blockchain-as-a-service in the docs" }));
   assert.equal(r.status, 0);
-  assert.match(r.stdout, /"blockchain" withdrawn/);
+  assert.match(r.stdout, /"blockchain-as-a-service" withdrawn/);
   assert.doesNotMatch(r.stdout, /undefined/);
+  // one ordinary word is heard and not enforced (lib/specific.mjs); the line names no replacement either
+  const w = run(["observe", "--verbose"], JSON.stringify({ prompt: "never cite blockchain in the docs" }));
+  assert.match(w.stdout, /heard "blockchain" \(t=2\), not enforced/);
+  assert.doesNotMatch(w.stdout, /undefined|replacement/);
 });
 
 test("handoff with empty stdin or no transcript writes nothing", () => {

@@ -1,0 +1,29 @@
+# The suite on every pull request and on main, on the systems people install on. The release workflow runs it once more
+# before it publishes; this one shows a failure before a release branch is merged. Until 2026-11-22 the suite ran on Linux
+# only at tag time, after the tag was already public.
+name: test
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [20, 22, 24]
+        include:
+          - os: ubuntu-latest
+            node: 18
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm test
