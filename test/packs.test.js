@@ -65,11 +65,12 @@ test("a glob is matched against the project-relative form of an absolute path (C
   assert.equal(globMatch("app/**/*.tsx", "/somewhere/else/app/page.tsx"), false, "outside the project, a rooted glob does not match");
 });
 
-test("a `paths` entry without a `*` is a prefix, exactly as before: startsWith on the path as given", () => {
+test("a `paths` entry without a `*` is a prefix of the path as given or of its project-relative form", () => {
   assert.equal(scopeHas("docs/", "docs/a.md"), true);
   assert.equal(scopeHas("docs/", "src/docs/a.md"), false);
   assert.equal(scopeHas("README.md", "README.md.bak"), true, "a prefix, not a file name");
-  assert.equal(scopeHas("docs/", join(process.cwd(), "docs", "a.md")), false, "a prefix is not made project-relative: unchanged from 0.18.0");
+  assert.equal(scopeHas("docs/", join(process.cwd(), "docs", "a.md")), true, "a prefix is matched against the project-relative path too: an editor sends absolute paths (0.18.0 never matched them, so a scoped rule did not fire in Claude Code)");
+  assert.equal(scopeHas("docs/", join(process.cwd(), "src", "docs", "a.md")), false, "still a prefix of the project-relative path, not a substring");
   assert.equal(scopeHas("app/[slug]/", "app/[slug]/page.tsx"), true); assert.equal(scopeHas("app/[slug]/", "app/s/page.tsx"), false, "brackets never become a pattern");
   assert.equal(scopeHas("src/a?.js", "src/ab.js"), false, "a ? without a * is a literal prefix character");
   assert.equal(scopeHas("**/*.py", "src/a.py"), true); assert.equal(scopeHas("**/*.py", "src/a.js"), false);
