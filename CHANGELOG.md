@@ -66,7 +66,7 @@ glob, and one that starts with `!` takes paths out of scope. A hand-declared `wa
 **Teams: a merge driver for the committed ledger.** `team setup` (also run by `install-hook --project`) makes git merge
 `.memory-pulse/events.jsonl` and `invariants.jsonl` through `memory-pulse merge-driver`. Both sides' rows are kept,
 carried through the writer so the chain verifies; rollback, superseding and override rows keep their effect in every
-shape tested but two rare ones (see Known limits); two
+shape tested but three rare ones (see Known limits); two
 corrections that contradict each other stop the merge with the rows and the settling command named. `team` reports a
 clone that has the attribute and no driver, and a ledger that was merged by hand; `team resolve` rebuilds it without
 dropping a row. 5,000 rows a side merge in about 5 s. Limits: GitHub's merge button runs no merge driver, so merge or
@@ -75,10 +75,12 @@ rebase locally and push; a pre-registration's forbid rule applies only in the cl
 **The pull-request Action.**
 
 - Each changed file is checked under its own path, so `paths` scopes and `guard allow --path` apply as they do in the
-  editor. Files are checked eight at a time; a pull request of a thousand files takes tens of seconds. The ledger, the
+  editor. Files are checked eight at a time: about 13 s for 300 changed files and about 90 s for 1,000, measured on a loaded
+  machine. The ledger, the
   declared rules and the installed packs (and everything under a folder named `.memory-pulse`) are the rules, not
   content: a pull request that only records a correction or declares a rule no longer fails its own check. A file that
-  merely sits beside a ledger kept elsewhere is content and is checked.
+  merely sits beside a ledger kept elsewhere is content and is checked; folders named `packs` and `rows` beside the
+  ledger are read as rules.
 - A pull request that changes any of those rule files is judged by the rules on the base branch as well as its own,
   and the stricter verdict stands. Superseding a correction, recording an override, turning a pack rule off, or moving
   or deleting the ledger in the same change that breaks the rule no longer passes. The comment names the files.
@@ -115,8 +117,12 @@ on every edit (to you and to the agent), the brief opens with it, `doctor` fails
 does not catch a paraphrase, `sed` text supplied on following lines, or an inline script that writes a variable. A
 project's own function named like a removed API can trip a pack rule you have set to block. A pack pattern that
 exceeds its time budget is skipped and reported, not blocked, and bundled packs run without the budget. In the team
-merge, two rare shapes are wrong: after a rollback of a rollback the verdict can depend on who merges, and a row
-recorded while the ledger was unmerged is kept without its `--supersedes`. The suite has run on macOS only; the new
+merge, three rare shapes are wrong: after a rollback of a rollback the verdict can depend on who merges; a row
+recorded while the ledger was unmerged is kept without its `--supersedes`; and after the driver refuses a cherry-pick
+and one row is recorded, `team resolve --no-ancestor` says there is nothing to resolve. With the ledger at the
+repository root, the project's own `packs/` and `rows/` folders are not checked on a pull request and a `layout.json`
+of its own fails it; keep the ledger in `.memory-pulse/`. A rule file that is a symlink is not covered by the
+base-branch pass. The suite has run on macOS only; the new
 `test` workflow runs it on Linux for the first time on the release pull request.
 
 ## 0.18.0 (19 November 2026)
