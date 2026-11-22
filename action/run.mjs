@@ -190,6 +190,7 @@ function packCheck(cli, baseRef, env) {
 }
 
 export async function main() {
+  { const { wholeOutput } = await import("../lib/stdio.mjs"); wholeOutput(); }   // the job log arrives whole on a macOS runner
   const repo = process.env.GITHUB_REPOSITORY;
   const sha = process.env.GITHUB_SHA;
   const base = process.env.MP_ACTION_BASE || process.env.GITHUB_BASE_REF || "";

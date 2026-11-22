@@ -3703,6 +3703,9 @@ try {
 } catch { /* argv[1] missing or unreadable — we are being imported */ }
 if (isMain) {
   const sub = process.argv[2];
+  // A command prints and exits: its output must reach a pipe whole (lib/stdio.mjs; cut at 8 KB on macOS with Node 20 before this).
+  // The stdio server (no command, or `serve`) keeps running and is left as it was.
+  if (sub && sub !== "serve") { const { wholeOutput } = await import("./lib/stdio.mjs"); wholeOutput(); }
   if (sub === "help" || sub === "--help" || sub === "-h" || process.argv.slice(2).some((a) => a === "--help" || a === "-h")) { cliHelp(); process.exit(0); }
   if (sub === "remember") { await cliRemember(); process.exit(0); }
   if (sub === "brief" && hostOf(process.argv) === "cursor") {
@@ -3805,6 +3808,8 @@ if (isMain) {
   });
   rl.on("close", async () => {
     await Promise.allSettled([...inflight]);
+    // the answers just written must leave the process before it exits: a scripted session of 60 requests got 34 answers back
+    const { written } = await import("./lib/stdio.mjs"); await written(process.stdout);
     process.exit(0);
   });
   process.on("uncaughtException", (e) => process.stderr.write(`memory-pulse: ${e.stack}\n`));

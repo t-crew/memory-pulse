@@ -103,6 +103,16 @@ a correction from one to the other. `report` and the brief label a correction th
 **Python client.** `check` follows the same token, line and advisory rules as the Node client; the two agree on a
 shared fixture of twenty texts. It still does not read rollbacks or overrides.
 
+**Output through a pipe arrives whole.** A command prints and then exits. On macOS, when another program captured
+that output (every host runs a hook this way, and so does an agent's shell tool), everything past the first 8,192 bytes
+was dropped on Node 18 and 20, and everything past 65,536 bytes on Node 22 to 26. `help` is 18 KB.
+`scaffold --section corrections` passes 8 KB at about 85 corrections, so an agent on Node 20 read a list of corrections
+that stopped in the middle with nothing to say so. Every command that prints and exits now waits for each write, and
+the stdio server sends its last answers before it exits (a scripted session of 60 requests got 34 answers back).
+Measured after the change on macOS with Node 18, 20, 22, 24 and 26: 2 MB arrives whole, the exit status is the same,
+and a reader that closes early ends the command at once. Linux, a terminal and a file were never affected. Found by
+running the suite on macOS with Node 20 before release; not run on Windows.
+
 **Tests and releases.** `npm test` runs through `scripts/test.mjs`, which clears the caller's ledger, project, board
 and key variables: the suite used to write test rows into whatever ledger the shell named. `scripts/release.sh` moves
 the major tag, skips it for a pre-release, stops when the version it would tag is not the one asked for, can leave the
