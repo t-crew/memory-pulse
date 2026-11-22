@@ -64,7 +64,7 @@ Register the stdio server. For Cursor, put this in `.cursor/mcp.json` (project) 
 { "mcpServers": { "memory-pulse": { "command": "npx", "args": ["-y", "memory-pulse"] } } }
 ```
 
-Any client that starts a stdio MCP server takes the same command and arguments. Hooks do not run in these clients, so enforce corrections in CI with the GitHub Action below, and run `npx -y memory-pulse@0.18.0 lint` over `.cursorrules` and the other rule files. The Cursor entry follows Cursor's documented format and has not yet been verified inside Cursor.
+Any client that starts a stdio MCP server takes the same command and arguments, and gets the four tools. Cursor also runs hooks: `memory-pulse install-hook --cursor` writes the brief and the guard into `~/.cursor/hooks.json` in Cursor's documented format. Those hooks have not been run inside Cursor by us (no Cursor on the build machine as of 2026-11-21), so treat the guard there as untested and keep the GitHub Action below as the check you rely on. In every other MCP client no hook runs: enforce corrections in CI with the Action, and run `npx -y memory-pulse@0.18.0 lint` over `.cursorrules` and the other rule files.
 
 ## Claude Code or Codex without the plugin
 
@@ -138,8 +138,8 @@ npx -y memory-pulse@0.18.0 doctor
 | | Claude Code plugin | Codex plugin | Claude Desktop | Cursor, other MCP clients |
 |---|---|---|---|---|
 | the four tools | yes | yes | yes | yes |
-| brief at session start | yes | after `/hooks` trust | no | no |
-| guard before an edit | yes | after `/hooks` trust | no | no; use the GitHub Action |
+| brief at session start | yes | after `/hooks` trust | no | Cursor: with `install-hook --cursor`, untested inside Cursor; others: no |
+| guard before an edit | yes | after `/hooks` trust | no | Cursor: with `install-hook --cursor`, untested inside Cursor; others: no. Use the GitHub Action |
 | message board tools | with `MEMORY_PULSE_BOARD` set | with `MEMORY_PULSE_BOARD` set | with a board file set | with `MEMORY_PULSE_BOARD` set |
 | CLI and GitHub Action | everywhere | everywhere | everywhere | everywhere |
 

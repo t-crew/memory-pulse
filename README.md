@@ -135,10 +135,13 @@ Then, inside Codex, run `/hooks` and trust the three `memory-pulse` entries
 Codex runs no hook it has not shown you, and installing a plugin does not
 trust its hooks. That is Codex's rule and a good one.
 
-**npm, global install.** `install-hook` writes four hooks into
+**npm, global install.** `install-hook` writes eight hooks into
 `~/.claude/settings.json`: SessionStart brief, UserPromptSubmit prompt,
-PreToolUse guard and PreCompact handoff. `--codex` targets `~/.codex/hooks.json` instead, `--project` writes
-them into the repository, and `--ambient` adds the UserPromptSubmit observer.
+PreToolUse guard, PreCompact handoff, and capture with consolidation
+(PostToolUse, PostToolUseFailure, Stop, SessionEnd; `--no-capture` leaves
+those four out). `--codex` targets `~/.codex/hooks.json` instead, without
+capture; `--cursor` writes `~/.cursor/hooks.json`; `--project` writes them
+into the repository; `--ambient` adds the UserPromptSubmit observer.
 
 ```
 npm i -g memory-pulse
@@ -457,7 +460,7 @@ npx memory-pulse report         # correction re-violation scoreboard, computed l
 npx memory-pulse bench          # instant measured metrics on YOUR ledger
 npx memory-pulse stats          # your telemetry capsule, signature verified by the engine
 npx memory-pulse badge          # README badge markdown from your own signed numbers
-npx memory-pulse install-hook   # four hooks (idempotent); --codex targets Codex; --project commits them; --ambient adds the observer
+npx memory-pulse install-hook   # eight hooks for Claude Code (idempotent); --no-capture writes four; --codex targets Codex; --cursor targets Cursor; --project commits them; --ambient adds the observer
 npx memory-pulse mode [agent|soul|deliberate]   # show or set the mode
 npx memory-pulse identity "<name>, <role>; <stance>"   # pin the agent's self on the agent ledger
 npx memory-pulse soul "<persona, voice, values>"   # soul mode: the agent's soul; confirm / reject held changes; history / revert; import / export --openclaw
