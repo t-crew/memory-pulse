@@ -879,3 +879,69 @@ prereg: 1 seal(s), 0 open
 ```
 
 A rule on shell commands is not only for a prereg. Any line of `invariants.jsonl` can carry `"on": "command"`: `{"id":"no-force-push","on":"command","statement":"history on main is kept","patterns":["/git push .*--force/"],"severity":"block"}`. It is matched against the command of a shell tool call by the guard and by `check --kind command`, never against a file edit, and `paths` does not apply to it. A line without `on` behaves as it always has. Only a prereg's rule has the evaluator exemption.
+
+## 18. Rule packs: rules for a stack, with their sources
+
+A rule pack is a prepared set of rules for one stack. Each rule is an invariant with two more fields: `source`, the vendor page that states the removal or the deprecation, and `verified`, the date that page was read. The packs ship inside the package and no command fetches one. `pack list` shows them, `pack show <name>` prints every rule, and `pack add <name>` installs one as its own file, `.memory-pulse/packs/<name>.jsonl`. Commit that file. It is never written into `invariants.jsonl` and it adds no ledger row.
+
+```sh run
+npx -y memory-pulse@0.18.0 pack list | head -3
+npx -y memory-pulse@0.18.0 pack add python-stdlib
+```
+```text expect
+bundled with memory-pulse:
+installed python-stdlib 1.0.0: 12 rules (5 block, 7 warn) in .memory-pulse/packs/python-stdlib.jsonl
+```
+
+The guard, `check` and `lint` read installed packs with the declared invariants. A block names the pack, the rule, what to use instead, the source and the command that changes the rule:
+
+```sh run
+printf '%s' '{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"net/tls.py","content":"conn = ssl.wrap_socket(sock)"}}' | npx -y memory-pulse@0.18.0 guard; echo "exit $?"
+```
+```text expect
+memory-pulse guard: blocked.
+pack python-stdlib, rule ssl-wrap-socket: ssl.wrap_socket() and ssl.match_hostname() were removed in Python 3.12
+instead: ssl.create_default_context() and SSLContext.wrap_socket(sock, server_hostname=host). Source: https://docs.python.org/3/whatsnew/3.12.html (read 2026-11-21)
+memory-pulse pack rule python-stdlib/ssl-wrap-socket warn (reports, does not block) or memory-pulse pack rule python-stdlib/ssl-wrap-socket off
+exit 2
+```
+
+A `warn` rule does not stop the edit. The guard hands the same line to the agent as context and exits 0:
+
+```sh run
+printf '%s' '{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"src/clock.py","content":"now = datetime.datetime.utcnow()"}}' | npx -y memory-pulse@0.18.0 guard; echo "exit $?"
+```
+```text expect
+an installed rule pack has a warning for this edit. The edit is not blocked:
+warning pack python-stdlib, rule datetime-utcnow: datetime.utcnow() and datetime.utcfromtimestamp() are deprecated since Python 3.12
+exit 0
+```
+
+`pack check` is the dry run: hits per rule with file and line, over a directory, with nothing blocked and nothing written. Run it before `pack add` to see what a pack would say about your code. `pack check --installed` runs every installed pack with this project's choices, and with `--diff origin/main --ci` it reads only the lines a branch adds, each file under its own path, and exits 1 when a block rule hits. That is the form for a pull request, because the GitHub Action checks added lines under the single path `pull-request`, where a path-scoped rule does not fire.
+
+```sh run
+mkdir -p src && printf 'import datetime\nimport ssl\nnow = datetime.datetime.utcnow()\nconn = ssl.wrap_socket(sock)\n' > src/clock.py
+npx -y memory-pulse@0.18.0 pack check python-stdlib src
+```
+```text expect
+pack check: python-stdlib 1.0.0, over src
+clock.py:4: conn = ssl.wrap_socket(sock)
+clock.py:3: now = datetime.datetime.utcnow()
+1 file read, 2 hits (1 from block rules, 1 from warn rules)
+dry run: nothing was blocked and nothing was written
+```
+
+The override is per project and per rule. `pack rule <pack>/<rule> warn` turns a block into a warning, `off` silences the rule, `block` raises a warning, and `default` goes back to the pack's own severity. The choice is one line in `.memory-pulse/packs/overrides.jsonl`, which you commit; the pack file stays as shipped, so installing a newer version of the pack keeps your choices. `pack add <name> --warn-only` and `pack rule <pack> warn` do the same for a whole pack, and `pack remove <name>` deletes its file.
+
+```sh run
+npx -y memory-pulse@0.18.0 pack rule python-stdlib/ssl-wrap-socket warn --reason "the 3.11 image is still in service"
+printf '%s' '{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"net/tls.py","content":"conn = ssl.wrap_socket(sock)"}}' | npx -y memory-pulse@0.18.0 guard > /dev/null 2>&1; echo "exit $?"
+npx -y memory-pulse@0.18.0 pack rule python-stdlib/ssl-wrap-socket default
+```
+```text expect
+python-stdlib/ssl-wrap-socket: block -> warn (recorded in .memory-pulse/packs/overrides.jsonl; the pack file is unchanged)
+exit 0
+python-stdlib/ssl-wrap-socket: warn -> block (the pack's own)
+```
+
+A rule blocks only when the vendor's page says the thing is removed in every version the vendor still maintains and the rule had no false hit in the public repositories it was measured on. The rest warn. `packs/MEASURED.md` in the repository has the hits, true and false, for every rule, and `packs/CONTRIBUTING.md` says what a new rule needs. A pack rule's `paths` are globs: `**/*.py`, `app/**/*.tsx`, and `!**/tests/**` to leave a folder out. The same globs work in `invariants.jsonl`; an entry without a `*` is a prefix, as before. `pack verify <file>` lints a pack you wrote and `pack add <path>` installs it.

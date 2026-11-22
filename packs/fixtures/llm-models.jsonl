@@ -1,0 +1,11 @@
+{"rule":"anthropic-retired-opus","path":"src/llm.py","hit":"client.messages.create(model=\"claude-3-opus-20240229\", max_tokens=1024, messages=m)\n","miss":"client.messages.create(model=\"claude-opus-4-8\", max_tokens=1024, messages=m)\nBEDROCK_MODEL = \"anthropic.claude-3-opus-20240229-v1:0\"\n"}
+{"rule":"anthropic-retired-sonnet","path":"src/llm.ts","hit":"const msg = await anthropic.messages.create({ model: 'claude-3-5-sonnet-20241022', max_tokens: 1024, messages })\n","miss":"const msg = await anthropic.messages.create({ model: 'claude-sonnet-5-5', max_tokens: 1024, messages })\nconst vertexModel = 'claude-3-5-sonnet-v2@20241022'\n"}
+{"rule":"anthropic-retired-haiku","path":"src/llm.py","hit":"MODEL = 'claude-3-haiku-20240307'\n","miss":"MODEL = 'claude-haiku-4-5-20251001'\nNOTE = 'claude-3-haiku-20240307-notes'\n"}
+{"rule":"anthropic-deprecated-sonnet-4-5","path":"src/llm.py","hit":"MODEL = \"claude-sonnet-4-5\"\n","miss":"MODEL = \"claude-sonnet-5-5\"\n"}
+{"rule":"openai-shutdown-gpt-4","path":"src/llm.py","hit":"resp = client.chat.completions.create(model=\"gpt-4\", messages=m)\n","miss":"resp = client.responses.create(model=\"gpt-5.6-sol\", input=m)\nname = \"gpt-4o\"\n"}
+{"rule":"openai-shutdown-gpt-3.5","path":"src/llm.ts","hit":"const model = \"gpt-3.5-turbo\"\n","miss":"const model = \"gpt-5.6-terra\"\n"}
+{"rule":"openai-shutdown-older","path":"src/llm.py","hit":"MODEL = \"text-davinci-003\"\n","miss":"MODEL = \"gpt-5.6-terra\"\n"}
+{"rule":"openai-deprecated","path":"src/llm.py","hit":"MODEL = \"gpt-5\"\n","miss":"MODEL = \"gpt-6.1-sol\"\n"}
+{"rule":"google-shutdown-gemini-2.0","path":"src/llm.py","hit":"model = genai.GenerativeModel(\"gemini-2.0-flash\")\n","miss":"model = \"gemini-3.6-flash\"\n"}
+{"rule":"google-shutdown-gemini-1.5","path":"src/llm.py","hit":"MODEL = \"gemini-1.5-pro\"\n","miss":"MODEL = \"gemini-3.8-flash\"\n"}
+{"rule":"google-deprecated-gemini-2.5","path":"src/llm.py","hit":"MODEL = \"gemini-2.5-pro\"\n","miss":"MODEL = \"gemini-3.8-flash\"\nLITE = \"gemini-2.5-flash-lite\"\n"}

@@ -1,0 +1,4 @@
+{"rule":"auth-helpers-packages","path":"lib/supabase.ts","hit":"import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'\n","miss":"import { createBrowserClient } from '@supabase/ssr'\n"}
+{"rule":"auth-session-user-v1","path":"lib/auth.ts","hit":"const user = supabase.auth.user()\n","miss":"const { data: { user } } = await supabase.auth.getUser()\n"}
+{"rule":"auth-sign-in-v1","path":"lib/auth.ts","hit":"const { error } = await supabase.auth.signIn({ email, password })\n","miss":"const { error } = await supabase.auth.signInWithPassword({ email, password })\n"}
+{"rule":"auth-update-v1","path":"lib/auth.ts","hit":"await supabase.auth.update({ password })\n","miss":"await supabase.auth.updateUser({ password })\n"}
