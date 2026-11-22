@@ -113,6 +113,11 @@ Measured after the change on macOS with Node 18, 20, 22, 24 and 26: 2 MB arrives
 and a reader that closes early ends the command at once. Linux, a terminal and a file were never affected. Found by
 running the suite on macOS with Node 20 before release; not run on Windows.
 
+**The base branch's rules are read on a macOS runner.** A pull request that changes `.memory-pulse/` is also judged by
+the rules on its base branch, which the Action unpacks with `git archive` and `tar`. Through a pipe, macOS `tar` stopped
+reading at the archive's end marker, and on Node 20 the rest of the write failed, so the job stopped before any verdict.
+The archive now goes through a file. Linux was not affected.
+
 **Tests and releases.** `npm test` runs through `scripts/test.mjs`, which clears the caller's ledger, project, board
 and key variables: the suite used to write test rows into whatever ledger the shell named. `scripts/release.sh` moves
 the major tag, skips it for a pre-release, stops when the version it would tag is not the one asked for, can leave the
