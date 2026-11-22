@@ -82,6 +82,63 @@ def _stands_alone(line: str, rep: str, term: str) -> bool:
     ts = _spans(line, term)
     return any(not any(a <= r0 and r1 <= b and (b - a) > (r1 - r0) for a, b in ts) for r0, r1 in _spans(line, rep))
 
+
+# ---- The guard's matching rules, as the npm client has them (server.mjs tokenAt / containsTerm, lib/release.mjs bareTerm,
+# lib/advisory.mjs). Until 2026-11-21 this client matched a withdrawn term as a substring, so it blocked "$490", "$49.00",
+# "tenant" and "v2.10" where the guard passed them. test/fixtures/guard-parity.json holds the texts both must judge alike.
+import unicodedata as _ud
+_DIGITS = "0123456789"
+# The npm client tests one UTF-16 unit at a time: a character outside the BMP is two units there, neither a letter nor a number.
+def _alnum(ch: str) -> bool: return ord(ch) <= 0xFFFF and _ud.category(ch)[0] in ("L", "N")
+def _letter(ch: str) -> bool: return ord(ch) <= 0xFFFF and _ud.category(ch)[0] == "L"
+def _len16(s: str) -> int: return len(s.encode("utf-16-le", "surrogatepass")) // 2
+
+def _token_at(text: str, i: int, term: str) -> bool:
+    """A withdrawn term matches as a token, never inside another word or a longer number. A number may carry a unit (6144px)
+    but not run on into more digits (220, 3.1416); a word of five letters or more keeps its inflections (embeddings); a
+    shorter one may not run on (ten / tenant). An underscore separates words."""
+    j, first, last = i + len(term), term[0], term[-1]
+    if _alnum(first) and i > 0:
+        p = text[i - 1]
+        if _alnum(p): return False
+        if first in _DIGITS and p in ".," and i > 1 and text[i - 2] in _DIGITS: return False
+    if _alnum(last) and j < len(text):
+        n = text[j]
+        if last in _DIGITS:
+            if n in _DIGITS: return False
+            if n in ".," and j + 1 < len(text) and text[j + 1] in _DIGITS: return False
+        elif _alnum(n) and not (_letter(last) and _len16(term) >= 5): return False
+    return True
+
+def _contains_term(text: str, term: str) -> bool:
+    if not text or not term: return False
+    i = text.find(term)
+    while i != -1:
+        if _token_at(text, i, term): return True
+        i = text.find(term, i + 1)
+    return False
+
+def _units(text: str, term: str):
+    """What the release rule is judged on: each line, or, for a term that spans lines, the whole lines each occurrence covers."""
+    if "\n" not in term: return text.split("\n")
+    out = []
+    for a, b in _spans(text, term):
+        nl = text.find("\n", b)
+        out.append(text[text.rfind("\n", 0, a) + 1: len(text) if nl < 0 else nl])
+    return out
+
+def _bare_term(text: str, term: str, replacement=None) -> bool:
+    """Is the term written bare: on a line (for a term that spans lines, on the lines it covers) without one of its replacements?"""
+    reps = [r for r in (replacement or []) if isinstance(r, str) and r]
+    if not reps: return _contains_term(text, term)
+    return any(_contains_term(u, term) and not any(_stands_alone(u, r, term) for r in reps) for u in _units(text, term))
+
+def _advisory(row: dict, term: str) -> bool:
+    """One word of letters only that ambient capture wrote, never a person: not enforced (0.17.1)."""
+    if not isinstance(term, str) or not term or not all(_ud.category(ch)[0] == "L" for ch in term): return False
+    tags = row.get("tags")
+    return "ambient" in tags if isinstance(tags, list) else str(row.get("cause") or "").startswith("user-correction-")
+
 class LedgerLocked(RuntimeError): pass
 
 def _pid_alive(pid) -> bool:
@@ -180,7 +237,8 @@ class Ledger:
         return {"written": True, "t": ev["t"], "stored": ev}
 
     def check(self, text: str) -> dict:
-        """The guard's core rule, locally: a withdrawn term present without its replacement is blocked."""
+        """The guard's core rule, locally: a withdrawn term, matched as a token, on a line without its replacement is blocked.
+        Same verdicts as the npm guard on test/fixtures/guard-parity.json. Not read here: rollbacks and overrides (guard allow)."""
         chain = self.verify()
         if not chain.get("ok"):
             return {"verdict": "blocked", "reasons": [f"ledger chain broken: {chain.get('reason')} — a memory whose own history is in question cannot vouch for anything"]}
@@ -192,11 +250,12 @@ class Ledger:
             if c.get("kind") != "correction" or not c.get("withdrawn") or c.get("t") in retired: continue
             reps = [r for r in (c.get("replacement") or []) if r]
             for term in c["withdrawn"]:
-                if not term or term not in text: continue
-                # a replacement releases the term only on its own line (as the npm client's lib/release.mjs)
-                # ... and only where it stands outside a longer occurrence of the term ("v2" inside "v2.1" is the old value)
-                bare = any(term in line and not any(_stands_alone(line, r, term) for r in reps) for line in text.split("\n"))
-                if not bare: reasons.append(f'"{term}" appears beside its replacement on the same line (comparison or disavowal) — allowed, per ledger t{c.get("t")}'); continue
+                # matched as a token, never inside another word or a longer number (as the npm client's containsTerm)
+                if not isinstance(term, str) or not _contains_term(text, term): continue
+                # a replacement releases the term only on its own line (as the npm client's lib/release.mjs), and only where it
+                # stands outside a longer occurrence of the term ("v2" inside "v2.1" is the old value)
+                if not _bare_term(text, term, reps): reasons.append(f'"{term}" appears beside its replacement on the same line (comparison or disavowal) — allowed, per ledger t{c.get("t")}'); continue
+                if _advisory(c, term): reasons.append(f'"{term}" is advisory, not blocked: t{c.get("t")} came from ambient capture and is one ordinary word'); continue
                 hits.append(term); reasons.append(f'"{term}" was withdrawn at t{c.get("t")} ({c["cause"]} -> {c["effect"]}); use {", ".join(c.get("replacement") or ["the corrected value"])}')
         if hits: return {"verdict": "blocked", "reasons": reasons}
         return {"verdict": "verified" if reasons else "no_evidence", "reasons": reasons or ["no recorded correction bears on this text"]}
