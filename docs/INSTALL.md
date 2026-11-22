@@ -14,9 +14,9 @@ npx -y memory-pulse@0.18.0 doctor
 
 `demo` records one correction in a temporary folder, runs the guard on three edits and prints each verdict as a host gets it: the edit that writes the withdrawn value back is blocked with exit status 2, and the two that follow pass. It removes the folder when it is done.
 
-`init`, run in your repository, prints its plan first: the hosts it found and the files it will write. It asks once, installs the hooks for Claude Code, Codex and Cursor where it finds them, creates `.memory-pulse/` and runs `doctor`. `--dry-run` prints the plan only, `--yes` skips the question, and with no terminal and no `--yes` nothing is changed. A second run changes nothing. It installs hooks only; the sections below add the tools your agent calls.
+`init`, run in your repository, prints its plan first: the hosts it found and the files it will write. It asks once, installs the hooks for Claude Code, Codex and Cursor where it finds them, creates `.memory-pulse/` and runs `doctor`. `--dry-run` prints the plan only, `--yes` skips the question, and with no terminal and no `--yes` nothing is changed. Every file it writes is in the plan; with `--project` in a git work tree that includes `.gitattributes` and this clone's git config. A second run changes nothing. It installs hooks only; the sections below add the tools your agent calls.
 
-`doctor` checks the wiring one line at a time: Node, each host's hooks and the files they run, the guard against a temporary ledger through the installed hook command, and your project's ledger. A check that fails prints the command that fixes it, and the exit is 1.
+`doctor` checks the wiring one line at a time: Node, each host's guard hook (its event, matcher and type), the file every hook runs and that copy's version, the guard on five synthetic edits against a temporary ledger, and your project's ledger. A check that fails prints the command that fixes it, and the exit is 1. It runs the guard from this package or from the pinned copy the hooks name, and never a command it read from a hook file: such a command is shown as text and listed as not run. After you upgrade the package, run `install-hook` or `init` again, because the hooks keep running the copy they were pinned to until you do.
 
 `demo`, `init` and `doctor` arrive in the release after 0.18.0; on 0.18.0 they exit 1 with `unknown command`.
 
@@ -127,7 +127,7 @@ npx -y memory-pulse@0.18.0 verify
 
 The first command creates `.memory-pulse/events.jsonl` and records the correction. The second answers `BLOCKED` and names the row that retired `$49`. The third walks the chain and answers `chain: OK`.
 
-Those three use the ledger and need no hooks. `doctor` checks the hooks: it runs the installed hook command on an edit that writes a withdrawn value, against a temporary ledger, and expects exit status 2.
+Those three use the ledger and need no hooks. `doctor` checks the hooks: where each host's guard hook sits and what its matcher covers, which copy it runs, and that this copy answers a write-back of a withdrawn value with exit status 2.
 
 ```
 npx -y memory-pulse@0.18.0 doctor

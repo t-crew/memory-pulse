@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fixture, tree, snapshot, check, line, ROOT, VERSION } from "./_firstrun.mjs";
+import { fixture, tree, snapshot, check, line, rewrite, ROOT, VERSION } from "./_firstrun.mjs";
 
 const guards = (j) => j.checks.filter((c) => c.id.startsWith("guard"));
 const json = (r) => { try { return JSON.parse(r.out); } catch { assert.fail(`not JSON (exit ${r.status}): ${r.out}\n${r.err}`); } };
@@ -76,15 +76,20 @@ test("doctor: a pinned hook path that no longer exists is a FAIL that names the 
   assert.equal(f.run(["doctor"]).status, 0);
 });
 
-test("doctor: a hook command that exists but does not block is caught by running it", () => {
-  const f = fixture(); mkdirSync(join(f.home, ".claude")); mkdirSync(join(f.root, "fake"));
-  writeFileSync(join(f.root, "fake", "server.mjs"), "process.exit(0);\n");
-  writeFileSync(join(f.home, ".claude", "settings.json"), JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Edit|Write", hooks: [{ type: "command", command: `node "${join(f.root, "fake", "server.mjs")}" guard` }] }] } }));
+test("doctor: a pinned copy that does not block is caught by running it", () => {
+  // the hook is wired as install-hook wires it and its file is there, so only running it shows that it lets the write-back through
+  // (review 2026-11-21, R-1: a copy is run only from the pinned data folder or a plugin cache, so the broken copy is put there)
+  const f = fixture(); mkdirSync(join(f.home, ".claude")); f.run(["install-hook"]);
+  rewrite(join(f.home, ".local", "share", "memory-pulse", VERSION, "server.mjs"), "process.exit(0);\n");
   const r = f.run(["doctor"]);
   assert.equal(r.status, 1, r.out);
-  assert.ok(line(r.out, "ok", "Claude Code"), "the file is there, so the host line passes");
   const g = line(r.out, "FAIL", "guard"); assert.ok(g, r.out);
-  assert.match(g, /exit 0/); assert.match(g, /expected 2/); assert.match(g, /Fix: memory-pulse install-hook$/);
+  assert.match(g, /did not block a file write of the withdrawn value/); assert.match(g, /exit 0/); assert.match(g, /expected 2/); assert.match(g, /Fix: memory-pulse install-hook$/);
+  // a copy that blocks everything is caught by the edits that must pass
+  rewrite(join(f.home, ".local", "share", "memory-pulse", VERSION, "server.mjs"), "process.stderr.write('doctor-withdrawn-7f3a'); process.exit(2);\n");
+  const all = line(f.run(["doctor"]).out, "FAIL", "guard"); assert.match(all ?? "", /blocked an edit that uses the replacement/);
+  // and the fix it names puts the copy back
+  assert.equal(f.run(["install-hook"]).status, 0); assert.equal(f.run(["doctor"]).status, 0);
 });
 
 test("doctor: Codex and Cursor hooks are read in their own files and shapes; Cursor's guard answers with a deny", () => {
@@ -152,9 +157,9 @@ test("doctor: project hooks that run through npx are named with the measured cos
   assert.equal(run.status, "ok", "information, not a failure");
   assert.match(run.detail, /npx/); assert.match(run.detail, /0\.98 to 1\.54 s/); assert.match(run.detail, /0\.06 s/); assert.match(run.detail, /memory-pulse install-hook\b/);
   assert.ok(run.detail.includes(join(".claude", "settings.json")));
-  // the guard check says it ran this copy, because an npx command can need the network
-  assert.equal(guards(j).length, 1); assert.equal(guards(j)[0].status, "ok");
-  assert.match(guards(j)[0].detail, /npx/); assert.match(guards(j)[0].detail, /this copy/);
+  // the npx command is listed as not run, because it can need the network, and this copy's guard answers
+  assert.deepEqual(guards(j).map((g) => g.status), ["ok", "skipped"]);
+  assert.match(guards(j)[0].detail, /this copy/); assert.match(guards(j)[1].detail, /^not run: it runs through npx[^:]*: npx -y memory-pulse guard$/);
 });
 
 test("doctor --json: one object with the same checks; ok is false and the exit is 1 when one fails", () => {
@@ -223,7 +228,7 @@ test("doctor: only memory-pulse's own hook verbs count as its hooks; a path writ
   assert.doesNotMatch(r.out, /theirs/);
   // a hand-written hook without quotes round the path: read, run, and a missing file is a FAIL
   const g = fixture(); mkdirSync(join(g.home, ".claude"));
-  const write = (path) => writeFileSync(join(g.home, ".claude", "settings.json"), JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Edit|Write", hooks: [{ type: "command", command: `node ${path} guard` }] }] } }));
+  const write = (path) => writeFileSync(join(g.home, ".claude", "settings.json"), JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Edit|Write|MultiEdit|Bash", hooks: [{ type: "command", command: `node ${path} guard` }] }] } }));
   write(join(ROOT, "server.mjs"));
   const ok = json(g.run(["doctor", "--json"]));
   assert.equal(ok.ok, true, JSON.stringify(ok.checks)); assert.equal(guards(ok)[0].command, `node ${join(ROOT, "server.mjs")} guard`); assert.match(guards(ok)[0].detail, /installed hook command/);

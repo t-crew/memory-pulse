@@ -45,7 +45,7 @@ import { promptSlice as promptSliceWith, editSlice as editSliceWith } from "./li
 import { recordUsage, consentState, setConsent, hasConsentAnswer, resetInstall, usagePayload, maybeSendUsage } from "./lib/usage.mjs";
 import { lessonBank as lessonBankWith, screenLesson, bankSummary, bankLabel, lessonHead, isLesson, lessonKey, PROBE_EFFECT } from "./lib/lessons.mjs";
 import { savedKey } from "./lib/login.mjs";
-import { hostOf, normalizeHook } from "./lib/hosts.mjs";
+import { hostOf, normalizeHook, matcherCovers } from "./lib/hosts.mjs";
 import { drift as driftWith } from "./lib/drift.mjs";
 import { advisoryTerm } from "./lib/advisory.mjs";
 import { heardOnly, heardLine, broadCaution, blockStats, noisyLine } from "./lib/specific.mjs";
@@ -2756,7 +2756,7 @@ const hookRunner = (project) => (project ? NPX_RUNNER : pinnedRunner());
 // dropped, every other hook is kept. Nested shape (Claude Code, Codex): [{ matcher?, hooks: [{ type, command, ... }] }].
 function upsertHook(settings, event, verb, command, extra = {}, entry = {}) {
   const list = (settings.hooks[event] = settings.hooks[event] || []);
-  let found = false, changed = false; const emptied = new Set();
+  let found = false, changed = false, owner = null, ours = null; const emptied = new Set();
   for (const e of list) {
     if (!Array.isArray(e?.hooks)) continue; // not this shape: someone else's entry, left exactly as it is
     const before = e.hooks.length;
@@ -2764,15 +2764,27 @@ function upsertHook(settings, event, verb, command, extra = {}, entry = {}) {
       const m = typeof h?.command === "string" ? OUR_HOOK.exec(h.command) : null;
       if (!m || m[1].trim() !== verb) return true;
       if (found) { changed = true; return false; }
-      found = true; if (h.command !== command) { h.command = command; changed = true; }
+      found = true; owner = e; ours = h; if (h.command !== command) { h.command = command; changed = true; }
+      if (h.type !== "command") { h.type = "command"; changed = true; } // a hook of another type is not run as a command (review 2026-11-21, R-2)
       return true;
     });
     if (before && !e.hooks.length) emptied.add(e); // only an entry this call emptied is removed
   }
   settings.hooks[event] = list.filter((e) => !emptied.has(e));
+  // review 2026-11-21, R-2: an entry from an older release kept its matcher (Edit|Write before 0.10.0), so MultiEdit and Bash never
+  // reached the guard. A matcher that misses a tool this release names is brought up to date; a wider one is left as it is. Where the
+  // entry also holds someone else's hook, theirs keeps its matcher and ours moves to an entry of its own.
+  if (owner && typeof entry.matcher === "string" && !matcherCovers(owner.matcher, entry.matcher.split("|"))) {
+    if (owner.hooks.length === 1) owner.matcher = entry.matcher;
+    else { owner.hooks = owner.hooks.filter((h) => h !== ours); settings.hooks[event].push({ ...entry, hooks: [ours] }); }
+    changed = true;
+  }
   if (!found) { settings.hooks[event].push({ ...entry, hooks: [{ type: "command", command, ...extra }] }); changed = true; }
   return changed;
 }
+// A "hooks" value that is a list is not a shape a host reads. Hooks set on a list are dropped when the file is written, so an empty
+// one becomes the object it should be and one with entries is refused (review 2026-11-21: "installed 8 hook(s)" with none written).
+const hooksObject = (v, file) => { if (!Array.isArray(v)) return v || {}; if (v.length) { console.error(`refusing to touch ${file}: its "hooks" value is a list, not an object keyed by event`); process.exit(1); } return {}; };
 const isOurHook = (command, verbs) => { const m = typeof command === "string" ? OUR_HOOK.exec(command) : null; return !!m && verbs.includes(m[1].trim()); };
 
 // `npx memory-pulse install-hook` — make re-entry automatic: a Claude Code
@@ -2785,7 +2797,7 @@ function installCursorHooks() {
   const file = join(dir, "hooks.json");
   let cfg = { version: 1, hooks: {} };
   if (existsSync(file)) { try { cfg = JSON.parse(readFileSync(file, "utf8")); } catch { console.error(`refusing to touch ${file}: it is not valid JSON`); process.exit(1); } }
-  cfg.version = cfg.version ?? 1; cfg.hooks = cfg.hooks || {};
+  cfg.version = cfg.version ?? 1; cfg.hooks = hooksObject(cfg.hooks, file);
   const run = hookRunner(project);
   const want = [
     ["sessionStart", { command: `${run} brief --host cursor` }],
@@ -2806,6 +2818,7 @@ function installCursorHooks() {
       if (!m || m[1].trim() !== verb) return true;
       if (found) { changed++; return false; }
       found = true; if (x.command !== h.command) { x.command = h.command; changed++; }
+      if (typeof h.matcher === "string" && !matcherCovers(x.matcher, h.matcher.split("|"))) { x.matcher = h.matcher; changed++; } // an old matcher is brought up to date (R-2)
       return true;
     }));
     if (!found) { list.push(h); changed++; }
@@ -2839,7 +2852,7 @@ async function cliInstallHook() {
     try { settings = JSON.parse(readFileSync(file, "utf8")); }
     catch { console.error(`refusing to touch ${file}: it is not valid JSON`); process.exit(1); }
   }
-  settings.hooks = settings.hooks || {};
+  settings.hooks = hooksObject(settings.hooks, file);
   let changed = 0;
   const run = hookRunner(project);
   changed += upsertHook(settings, "SessionStart", "brief", `${run} brief`);
@@ -2974,8 +2987,8 @@ Commands
   demo [--withdrawn <old>] [--replacement <new>] [--text "<edit>"] [--json]
                                       try it with nothing installed: records one correction in a temporary folder, runs the guard on three edits (and on yours with --text), prints each verdict as a host gets it, removes the folder
   init [--yes] [--dry-run] [--project] [--offline]
-                                      set it up in a repository: prints its plan (hosts found, files it will write), asks once on a terminal (--yes skips the question; with no terminal and no --yes nothing is changed), runs install-hook for each host, creates .memory-pulse/, runs doctor; a second run changes nothing
-  doctor [--json] [--offline]         check the wiring, one line per check (ok, FAIL with the fix, skipped with the reason): Node, each host's hooks and the files they run, the guard against a temporary ledger through the installed hook command, the project ledger (verify), hooks that run through npx; one GET to the engine with no key, as information (--offline skips it)
+                                      set it up in a repository: prints its plan (hosts found, files it will write), asks once on a terminal (--yes skips the question; with no terminal and no --yes nothing is changed), runs install-hook for each host, creates .memory-pulse/, runs doctor; with --project in a git work tree the plan also lists .gitattributes and this clone's git config (team setup); a second run changes nothing
+  doctor [--json] [--offline]         check the wiring, one line per check (ok, FAIL with the fix, skipped with the reason): Node; each host's guard hook (its event, matcher and type), the file every hook runs and that copy's version; the guard on five synthetic edits against a temporary ledger, run from this copy or from a copy in the pinned data folder or a plugin cache (a command read from a hook file is never executed: it is shown and listed as not run); the project ledger (verify); hooks that run through npx; one GET to the engine with no key, as information (--offline skips it)
   serve                               start the MCP server on stdio (the default with no command); tools: pulse, recall, remember, execute
   help                                this text (also --help, -h, or --help after any command)
   brief [--engine] [--budget N] [--offline]
