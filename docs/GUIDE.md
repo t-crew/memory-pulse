@@ -10,6 +10,34 @@ Contents: 1 install, 2 remember and correction, 3 the matching rule, 4 fixing a 
 
 ## 1. Install and confirm the wiring
 
+Try it before installing anything. `demo` records one correction in a temporary folder with `remember`, runs the `guard` command on three edits and removes the folder. What it prints is what the guard returned.
+
+```sh run
+npx -y memory-pulse@0.18.0 demo
+```
+```text expect
+  $ memory-pulse remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29'
+  recorded as row t1 of .memory-pulse/events.jsonl
+1. The edit writes the withdrawn value back: Pro plan: $49 a month
+   exit status 2. The host cancels the edit and the agent reads:
+     | memory-pulse guard: blocked.
+     |   • "$49" was withdrawn at ledger t1: pricing-shipped -> price-corrected — use $29
+2. The edit uses the replacement: Pro plan: $29 a month
+   exit status 0. The edit goes through, and Claude Code hands the agent this note:
+3. The edit names both values, as a comparison: Pro plan: $29 a month (was $49)
+   exit status 0. The edit goes through with the same note.
+The temporary folder is removed. Next, in your repository: npx -y memory-pulse init
+```
+
+Then set it up and check it. The test does not run these two, because `init` writes your real configuration and `doctor` reads it; they are not run here.
+
+```sh
+npx -y memory-pulse@0.18.0 init      # prints its plan, asks once, runs install-hook for each host it finds, creates .memory-pulse/, runs doctor
+npx -y memory-pulse@0.18.0 doctor    # one line per check: ok, FAIL with the command that fixes it, or skipped with the reason; exit 1 when a check fails
+```
+
+`init --dry-run` prints the plan and stops, `--yes` skips the question, and with no terminal and no `--yes` nothing is changed. A second run changes nothing. `doctor` runs the installed hook command itself on an edit that writes a withdrawn value, against a temporary ledger, and expects exit status 2, so a hook that points at a file that is gone shows as a `FAIL`. `demo`, `init` and `doctor` arrive in the release after 0.18.0; `init` installs hooks only, and the routes below also register the tools.
+
 Six routes. Pick one.
 
 | route | command | what runs afterwards |
@@ -80,7 +108,7 @@ memory-pulse guard: stdin was not hook JSON, allowing
 exit 0
 ```
 
-Cost of the hook path, measured on 0.8.0 on an M1 Pro on 2026-10-16 (median per edit, process start included): `node server.mjs guard` (the plugin path) took 52 ms on a 5-row ledger and 53 ms on a 1,000-row chained ledger. `npx -y memory-pulse guard`, the command `install-hook` writes, took 0.99 s warm and 1.4 s cold with an empty npm cache, because npx resolves the package on every call. If that cost matters, install the plugin or run `npm i -g memory-pulse` and edit the hook command to `memory-pulse guard`.
+Cost of the hook path (median per edit, process start included). The hook command `install-hook` writes for your own machine is `node "<data dir>/<version>/server.mjs" guard` (since 0.16.1): on a 1-row ledger the pinned copy took 63 ms for an edit that passes and 66 ms for one that is blocked, 12 runs each on an M1 Pro on 2026-11-21 with 0.18.0. The plugin runs `node server.mjs guard` from its own folder: 52 ms on a 5-row ledger and 53 ms on a 1,000-row chained ledger, measured on 0.8.0 on an M1 Pro on 2026-10-16. `install-hook --project` still writes `npx -y memory-pulse guard`, because a committed file has to run on every clone, and npx resolves the package on every call: 0.99 s warm and 1.4 s cold with an empty npm cache on that M1 Pro on 2026-10-16, and 0.98 to 1.54 s per hook call on a clean machine on 2026-10-23. `doctor` names the files whose hooks run through npx; `install-hook` without `--project` writes the pinned form for one machine.
 
 ## 2. remember and correction
 

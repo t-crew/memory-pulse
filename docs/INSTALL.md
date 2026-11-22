@@ -2,6 +2,24 @@
 
 Pick the agent you use. Each route installs the same thing: a ledger file in your project that keeps every correction, four tools your agent calls, and, where the host runs hooks, a brief at session start and a guard before each edit. Node 18 or newer. The free tier needs no key and no account.
 
+## Start here
+
+Three commands. The first installs nothing.
+
+```
+npx -y memory-pulse@0.18.0 demo
+npx -y memory-pulse@0.18.0 init
+npx -y memory-pulse@0.18.0 doctor
+```
+
+`demo` records one correction in a temporary folder, runs the guard on three edits and prints each verdict as a host gets it: the edit that writes the withdrawn value back is blocked with exit status 2, and the two that follow pass. It removes the folder when it is done.
+
+`init`, run in your repository, prints its plan first: the hosts it found and the files it will write. It asks once, installs the hooks for Claude Code, Codex and Cursor where it finds them, creates `.memory-pulse/` and runs `doctor`. `--dry-run` prints the plan only, `--yes` skips the question, and with no terminal and no `--yes` nothing is changed. A second run changes nothing. It installs hooks only; the sections below add the tools your agent calls.
+
+`doctor` checks the wiring one line at a time: Node, each host's hooks and the files they run, the guard against a temporary ledger through the installed hook command, and your project's ledger. A check that fails prints the command that fixes it, and the exit is 1.
+
+`demo`, `init` and `doctor` arrive in the release after 0.18.0; on 0.18.0 they exit 1 with `unknown command`.
+
 ## Claude Code
 
 Typed inside Claude Code:
@@ -57,7 +75,7 @@ npx -y memory-pulse@0.18.0 install-hook
 npx -y memory-pulse@0.18.0 install-hook --codex
 ```
 
-`install-hook` writes the hooks into `~/.claude/settings.json`, or `~/.codex/hooks.json` with `--codex`. Add `--project` to write them into the repository instead; commit that and every clone is re-entered and guarded with nothing to install.
+`install-hook` writes the hooks into `~/.claude/settings.json`, or `~/.codex/hooks.json` with `--codex`. Add `--project` to write them into the repository instead; commit that and every clone is re-entered and guarded with nothing to install. With `--project` the hooks run through npx, which costs about a second per hook call, because a committed file has to run on every clone; without it they run `node` on a pinned copy of the package, 63 ms per edit that passes on an M1 Pro on 2026-11-21.
 
 ## One line, any shell
 
@@ -108,6 +126,12 @@ npx -y memory-pulse@0.18.0 verify
 ```
 
 The first command creates `.memory-pulse/events.jsonl` and records the correction. The second answers `BLOCKED` and names the row that retired `$49`. The third walks the chain and answers `chain: OK`.
+
+Those three use the ledger and need no hooks. `doctor` checks the hooks: it runs the installed hook command on an edit that writes a withdrawn value, against a temporary ledger, and expects exit status 2.
+
+```
+npx -y memory-pulse@0.18.0 doctor
+```
 
 ## What each host runs
 

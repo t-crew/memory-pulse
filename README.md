@@ -53,6 +53,25 @@ floor it returns an empty result, and the brief says so.
 
 Every route, host by host, with what runs on each: [docs/INSTALL.md](docs/INSTALL.md) (also at pulse.strategic-innovations.ai/install).
 
+**Try it, set it up, check it.** Three commands. The first installs nothing.
+
+```
+npx -y memory-pulse demo     # one correction and three edits in a temporary folder: the guard blocks the write-back (exit status 2) and passes the other two
+npx -y memory-pulse init     # in your repository: prints its plan, asks once, installs the hooks for the hosts it finds, creates .memory-pulse/, runs doctor
+npx -y memory-pulse doctor   # checks the wiring one line at a time; a failed check prints the command that fixes it, and the exit is 1
+```
+
+`demo` records the correction with `remember` and runs the `guard` command on each edit, so what it prints
+is what a host gets; `--withdrawn`, `--replacement` and `--text "<edit>"` try your own values. `init`
+writes nothing before it has printed its plan: `--dry-run` stops there, `--yes` skips the question, and with
+no terminal and no `--yes` nothing is changed. It runs `install-hook` for Claude Code, Codex and Cursor where
+it finds them (`--project` writes into the repository instead), and a second run changes nothing. It installs
+hooks only: the routes below also register the MCP server. `doctor` checks Node, each host's hooks and the
+files they run, the guard against a temporary ledger through the installed hook command, and the project
+ledger through `verify`; it sends one GET to the engine with no key, as information, and `--offline` skips
+it. `demo`, `init` and `doctor` arrive in the release after 0.18.0. On 0.18.0 they exit 1 with
+`unknown command`; from a checkout, run `node server.mjs demo`.
+
 Six routes. Pick the row for your agent. Node 18 or newer (`package.json`
 engines); the test suite runs on 22 and 24.
 
@@ -196,12 +215,22 @@ npx -y memory-pulse@0.18.0 remember pricing-shipped price-corrected --kind corre
 git clone https://github.com/t-crew/memory-pulse.git && node memory-pulse/server.mjs remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
 ```
 
-The hook command `install-hook` writes is `npx -y memory-pulse guard`, and npx
-resolves the package on every call: 0.99 s warm and 1.4 s cold (empty npm
-cache) per edit on an M1 Pro on 2026-10-16 with 0.8.0, against 52 ms for
-`node server.mjs guard` on the same ledger, which is the path the plugin runs. If the cost matters,
-install the plugin, or install globally and edit the hook command to
-`memory-pulse guard`.
+The hook command `install-hook` writes for your own machine is
+`node "<data dir>/<version>/server.mjs" guard` (since 0.16.1): node on a copy of
+the package that `install-hook` keeps under `MEMORY_PULSE_DATA_DIR`, one folder
+per version. On a 1-row ledger the pinned copy took 63 ms for an edit that
+passes and 66 ms for one that is blocked, median of 12 runs each, process start
+included, on an M1 Pro on 2026-11-21 with 0.18.0. The plugin runs `server.mjs`
+from its own folder the same way.
+
+`install-hook --project` still writes `npx -y memory-pulse guard`, because a
+committed file has to run on every clone, and npx resolves the package on
+every call: 0.99 s warm and 1.4 s cold (empty npm cache) per edit on an M1 Pro
+on 2026-10-16 with 0.8.0, and 0.98 to 1.54 s per hook call on a clean machine
+on 2026-10-23. A repository that commits its hooks pays that before each edit
+and shell command the guard checks. `doctor` names the files whose hooks run
+through npx; `install-hook` without `--project` writes the pinned form for one
+machine.
 
 ### Where the key goes
 
@@ -284,6 +313,9 @@ is how you tell a miswired hook from "no evidence".
 
 ```
 npx memory-pulse help           # every command and environment variable; also --help, -h
+npx memory-pulse demo           # try it with nothing installed: one correction, three edits and the guard's verdict on each, in a temporary folder; --withdrawn, --replacement, --text "<edit>", --json
+npx memory-pulse init           # set it up in a repository: plan first, one question (--yes skips it, --dry-run stops at the plan), install-hook per host found (--project), .memory-pulse/, then doctor
+npx memory-pulse doctor         # check the wiring: one line per check, the fix after a FAIL, exit 1 when one fails; --json, --offline
 npx memory-pulse serve          # the MCP server on stdio (the default with no command)
 npx memory-pulse brief          # the SessionStart re-entry: the organized memory (scaffold) by default; with a key, --engine or --budget the engine brief
 npx memory-pulse scaffold       # the organized memory: identity and rules, corrections in force, project state, recent findings, open threads; --section S, --all
