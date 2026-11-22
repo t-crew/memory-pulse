@@ -217,11 +217,13 @@ Showing an agent a correction is not enough. TRACE
 re-violating more than half of the corrections they had been shown, with a
 memory tool installed. The PreToolUse guard sees every `Edit`, `Write` and
 `MultiEdit` in Claude Code, plus a `Bash` command whose write is literal in
-the command string (a heredoc, a redirect or a `tee`, read with nothing
+the command string (a heredoc with the redirect before or after its marker, a
+redirect or a `tee`, `sed -i` and `perl -i`, judged on the replacement side
+only, and `python -c` or `node -e` with a write call; all read with nothing
 executed), and every `apply_patch` in Codex, where one patch may touch several
 files and each is checked under its own path. An edit that writes back a
 withdrawn value is **blocked**, and the agent is told which ledger line retired
-it and when. An edit that names the replacement beside the old value passes,
+it and when. A line that names the replacement beside the old value passes,
 because "was $49, now $29" is a comparison. Only a bare reintroduction is
 blocked. A shell command whose write cannot be read from the string returns
 nothing, so it is a miss rather than a false block, and `check --ci` on the
@@ -243,10 +245,13 @@ The rules that decide whether the guard can act on a correction:
   inflections. `n=14` does not block `N=14`. Record every spelling you have
   seen, one term each. `before` matches case-insensitively, and it advises
   rather than blocks.
-- **A replacement anywhere in the edit releases every term of that
-  correction.** Make replacements as specific as withdrawn terms: `$29`, not
-  `29`. Terms under 2 characters are dropped and the result says
-  `enforceable: false`.
+- **A replacement releases a withdrawn term only on its own line.** A line
+  that states both the old value and its replacement is a comparison and
+  passes. A line that states only the old value is blocked, whatever the rest
+  of the edit says: `| Pro | $49/mo |` is blocked even when
+  `<!-- coupon: $29 -->` sits two lines below it. Make replacements as
+  specific as withdrawn terms: `$29`, not `29`. Terms under 2 characters are
+  dropped and the result says `enforceable: false`.
 - **Pass the terms yourself.** When a correction declares no withdrawn term
   and its effect reads `X-corrected-to-Y` (or `-withdrawn-for-`,
   `-superseded-by-`, `-replaced-by-`), the terms are read out of the slug:
@@ -383,6 +388,13 @@ An `AT RISK` block appears after the guard has blocked the same correction
 twice; `before "<what you are about to do>"` names the corrections that bear
 on a change before you make it, and the rows that record the same idea as
 already tried, with the closed or failed ones marked.
+
+`report` and the `AT RISK` block label a rule as noisy when the guard blocked
+it 5 times or more, in 3 directories or more, and its term is one ordinary
+word. The label gives the two ways out on one line: retire the row with
+`remember ... --supersedes <t>`, or scope the term with `guard allow`. A value
+or a phrase blocked that often is a correction doing its work and gets no
+label.
 
 ## Lint: the rules a session loads, checked against the ledger
 
@@ -775,7 +787,7 @@ Four things added on 2026-09-03, each deterministic (no model in the loop):
 
 - **Compaction handoff.** `install-hook` adds a PreCompact hook (the plugin's `hooks.json` does not; see Install). Before Claude Code compacts, `memory-pulse handoff` reads the transcript and records what the session was doing as facts: the last asks, the files edited, the last error, and the assistant's last state. The next session start prints it first, online or offline. An instruction-like message is dropped from the note and never recorded; a call with no transcript writes nothing.
 - **Offline brief.** When the engine is unreachable, whether air-gapped, on a dead network or during an outage, the session no longer starts empty. `brief` prints a local render carrying every binding correction with its withdrawn and replacement terms, the last handoff and the recent rows, labelled as a local render with no ranking applied. `brief --offline` forces it. Guard, check, lint and verify never needed the network. The MCP `pulse` tool returns an error instead, so a client with no hook starts empty when the engine is down.
-- **Ambient correction capture, opt-in.** `install-hook --ambient` adds a UserPromptSubmit hook. A prompt shaped like a correction, such as `the price is $29 not $49`, `change 0.3.1 to 0.3.2` or `500 events -> 924 events`, is recorded as a correction carrying both terms, so the guard enforces it from the next edit on. A prompt that does not yield both terms is left alone. Silent unless `--verbose`.
+- **Ambient correction capture, opt-in.** `install-hook --ambient` adds a UserPromptSubmit hook. A prompt shaped like a correction, such as `the price is $29 not $49`, `change 0.3.1 to 0.3.2` or `500 events -> 924 events`, is recorded as a correction carrying both terms, so the guard enforces it from the next edit on. A prompt that does not yield both terms is left alone. When the withdrawn term is one ordinary word (`no merge`), the row records what was heard and binds nothing: as a withdrawn term the word would block every edit that contains it. The row's note carries the command that enforces the word on purpose. A prompt the transcript shows the agent scheduled for itself is not recorded. Silent unless `--verbose` or a row was written.
 - **Python client.** `python/memory_pulse.py` is a single stdlib-only file with the same ledger format, the same hash chain and the same guard rule. A LangChain or CrewAI agent and a Claude Code session can share one ledger and verify each other's rows. The test suite writes rows from Python and verifies them in Node, and back.
 - **Decode-time guard for local models.** `python/span_guard.py` applies the same rule one layer down. The token that would complete a withdrawn value is masked while the model decodes, so the value cannot be generated, and the replacement's next token is offered in its place. It reads the ledger under the rules `check` uses, so a superseded correction is not enforced and a broken chain refuses to build. Stdlib only, and its suite runs without a model. Measured with mlx-lm on TinyLlama-1.1B and Qwen2.5-1.5B on 2026-09-03, the same prompt whose plain decode wrote the withdrawn price wrote the corrected one under the guard, and the sentence around it stayed intact. It blocks the spellings it was given, including the written variants you record, and a paraphrase nobody enumerated gets through.
 

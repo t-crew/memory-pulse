@@ -2,6 +2,79 @@
 
 This file starts at 0.16.0. Earlier releases are described in their tagged commits.
 
+## 0.18.1 (unreleased)
+
+**Capture no longer writes one ordinary word as a withdrawn term.** 0.17.1
+stopped the guard blocking on a single word that ambient capture had recorded
+by itself. The row was still written as binding, and the rule for "one word"
+was letters only. On one real ledger, 125 of the 166 term blocks recorded
+between 1 September and 20 November 2026 came from seven such rows (merge 85,
+send 16, ten 9, trigger 5, universal 5, just 3, capture 2).
+
+Now a prompt shaped like "no merge" is recorded as a correction with no
+withdrawn terms. Its note says what was heard, that it is not enforced because
+one ordinary word would block every edit that contains it, and gives the
+command that enforces the word on purpose. The brief lists the row as not
+enforced.
+
+One rule decides what is specific, in `lib/specific.mjs`: two or more words, a
+digit, a symbol, a capital inside the word, or a capital word of three letters
+or more. It was set from a count over 5,917 files: a lowercase word sampled by
+occurrence appears in a median 7.2% of files, a Capitalized word in 1.2%, a
+two-letter capital word in 1.3%, a capital word of three letters or more in
+0.34%, a camelCase name in 0.20% and a value with a digit or a symbol in
+0.24%. The guard reads rows already in your ledger by the same rule, so an
+ambient `useEffect` or `JSON`, advisory since 0.17.1, is enforced again.
+
+A word you record yourself with `remember --withdrawn` still binds. The result
+now carries `broad: true` and one `caution` line that names the word and the
+`guard allow "<term>" --path <prefix> "<reason>"` command that scopes it.
+
+A prompt the agent scheduled for itself is no longer read as a person's
+correction. The UserPromptSubmit payload names no origin, so the observer reads
+the end of the transcript the payload points to: a prompt that the assistant
+put in a tool call (a scheduled wake-up), that the harness logged as a
+scheduled task firing, or whose own entry is marked as not typed, records
+nothing. A prompt scheduled in another session and not yet written to this
+transcript when the hook runs is still read as typed.
+
+**`report` and the brief name a noisy rule.** A correction the guard blocked 5
+times or more, in 3 distinct directories or more, whose term is one ordinary
+word, gets one line in `report` and under its row in the brief's AT RISK
+block. The line says the rule is noisy and gives the two ways out: retire the
+row with `remember ... --supersedes <t>`, or scope the term with
+`guard allow "<term>" --path <prefix> "<reason>"`. The thresholds are
+`NOISY_MIN_BLOCKS` and `NOISY_MIN_DIRS` in `lib/specific.mjs`. A value or a
+phrase is never labelled.
+
+**Three guard holes from the 0.16.1 audit are closed.** The fixes were written
+on 0.16.1 and never merged; all three holes were still open in 0.18.0.
+
+A replacement releases a withdrawn term only on its own line. It used to
+release every term of its correction anywhere in the edit, so
+`| Pro | $49/mo |` passed when `<!-- coupon: $29 -->` sat two lines below it.
+A line that states old and new together still passes as a comparison. `check`,
+`lint`, the brief's stale marker and the Python client's `check` use the same
+rule.
+
+The guard reads more shell writes from the command: `sed -i` and `perl -i`
+(judged on the replacement side only, so a command that removes a withdrawn
+value passes and one that writes it is blocked), `python -c` and `node -e`
+with a write call, and a heredoc whose redirect comes after its marker
+(`cat <<'EOF' > file`). A write it cannot read from the command is still a
+miss, not a block.
+
+`adopt` and ambient capture read "Never use Postgres 14; use Postgres 16." as
+a correction from `Postgres 14` to `Postgres 16`. They read it as a ban on
+`Postgres`, and the guard then blocked `Postgres 16`.
+
+The fourth hole, running a command the user said to stop using, was closed in
+0.18.0 by a rule on shell commands (`"on": "command"` in `invariants.jsonl`),
+so the unmerged `remember --withdrawn-command` is not added. A hyphenated
+option that `remember` does not know was dropped without a word; it is now
+refused, and `--withdrawn-command` is refused with a pointer to the rule on
+commands.
+
 ## 0.18.0 (unreleased)
 
 **Pre-registered research gets a command for each of three slips.** An agent

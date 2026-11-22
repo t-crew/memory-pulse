@@ -159,7 +159,7 @@ exit 0
 
 Record every spelling you have seen (`$49`, `49/seat`, `49 USD`), one `--withdrawn` each, and choose terms that are not a prefix of a value you still use. `before` (section 7) matches case-insensitively, but it advises; it does not block.
 
-A replacement anywhere in the same edit releases every withdrawn term of that correction. Make replacements as specific as withdrawn terms: `$29`, not `29`. Terms under 2 characters are dropped and the correction is reported as unenforceable:
+A replacement releases a withdrawn term only on its own line. A line that states both the old value and its replacement is a comparison and passes; a line that states only the old value is blocked, whatever the rest of the edit says. Before 0.18.1 a replacement anywhere in the edit released every withdrawn term of that correction, so `| Pro | $49/mo |` passed when `<!-- coupon: $29 -->` sat two lines below it. Make replacements as specific as withdrawn terms: `$29`, not `29`. Terms under 2 characters are dropped and the correction is reported as unenforceable:
 
 ```sh run
 npx -y memory-pulse@0.18.0 remember a b --kind correction --withdrawn 9
@@ -184,7 +184,13 @@ Always pass the terms yourself and read the echoed row. Section 4 fixes this one
 
 ## 4. Fixing a wrong correction: supersedes, and guard allow
 
-One kind of wrong correction no longer needs fixing. Ambient capture reads a prompt shaped like "no X" or "X not Y" and records X as withdrawn. When X is one ordinary word (letters only), blocking every edit that contains it is almost always a false block, so since 0.17.1 the guard treats such a term as advisory: the edit goes through and `check` says why, with the command that enforces the word if you do mean it. A phrase, a value with a digit or a symbol in it, and any term you recorded yourself with `remember` block as before.
+One kind of wrong correction no longer needs fixing. Ambient capture reads a prompt shaped like "no X" or "X not Y" and records X as withdrawn. When X is one ordinary word, blocking every edit that contains it is almost always a false block, so since 0.17.1 the guard treats such a term as advisory: the edit goes through and `check` says why, with the command that enforces the word if you do mean it. A phrase, a value with a digit or a symbol in it, and any term you recorded yourself with `remember` block as before.
+
+From 0.18.1 capture does not write such a word as withdrawn in the first place. The row says what was heard, says it is not enforced, and carries the command that enforces the word; the brief lists it as `not enforced: no withdrawn terms`. One rule decides what "one ordinary word" means everywhere: a term is specific when it has two or more words, a digit, a symbol, a capital inside it (`useEffect`) or is a capital word of three letters or more (`JSON`). Anything else is one ordinary word, including a Capitalized word and a two-letter capital word such as `TO`. A word you record yourself still binds, and the result of `remember` says so in a `caution` line with the way to scope it:
+
+```text
+"merge" is one ordinary word: the guard blocks every edit that contains it. To let it through under one path: memory-pulse guard allow "merge" --path <prefix> "<reason>"
+```
 
 The ledger is append-only. A wrong correction is fixed by recording the right one with `--supersedes <t>`, which retires every term of the earlier row. Re-declare what you keep.
 
@@ -325,6 +331,14 @@ AT RISK (1)
 ```
 
 Read AT RISK before editing the paths it names.
+
+A rule can also be too wide. When the guard has blocked one correction 5 times or more, in 3 distinct directories or more, and its term is one ordinary word, `report` and the AT RISK block add one line under it:
+
+```text
+noisy: "users" (t1) is one ordinary word, blocked 6 times in 3 directories. Retire it: memory-pulse remember <cause> <effect> --kind correction --supersedes 1. Or scope it: memory-pulse guard allow "users" --path <prefix> "<reason>"
+```
+
+Both thresholds are constants in `lib/specific.mjs` (`NOISY_MIN_BLOCKS`, `NOISY_MIN_DIRS`). A value or a phrase is never labelled, however often it is blocked.
 
 ## 8. Session end and compaction
 
