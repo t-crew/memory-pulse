@@ -53,7 +53,7 @@ import { scheduledPrompt, tailText } from "./lib/typed.mjs";
 import { commandWrites } from "./lib/shell.mjs";
 import { bareTerm as bareOnLine } from "./lib/release.mjs";
 import { commandHits, invariantsFor, preregRows, COMMAND_HINT, INVARIANT_HINT, PREREG_WRITE, cliPrereg, cliNow, cliRan } from "./lib/prereg.mjs";
-import { installedPackRules, pathInScope, packReason, packHint, packWarnings, packContext, forEngine } from "./lib/packs.mjs";
+import { installedPackRules, pathInScope, packReason, packHint, packHit, packProblems, packWarnings, packContext, forEngine } from "./lib/packs.mjs";
 import { SOUL_WRITE, RESERVED, soulState, soulLines, soulGuard, cliSoul, cliUser, setSection, chainedOnly, heldFromMerge, taintOf, soulCapsule, verifySoulCapsule, continuityLine, soulScreen,
          isExternalTool, externalCmd, externalWhat, markTaint, taintMarked, soulTaintGuard } from "./lib/soul.mjs";
 
@@ -2372,7 +2372,8 @@ export function localCheck(allEvents, action, invariants = [], opts = {}) {
     if (scope.length && !pathInScope(scope, path)) continue;   // a prefix as before; an entry with a * is a glob, and !glob excludes (lib/packs.mjs)
     const tests = (inv.patterns ?? []).map(compilePattern);
     if (tests.some((t) => t === null)) reasons.push(`invariant ${inv.id} ignored: a pattern does not compile`);
-    const hit = tests.find((t) => t && t.test(text));
+    // a pack rule's patterns run under a time budget and do not count a line that only names the old API (lib/packs.mjs packHit)
+    const hit = inv.pack ? packHit(inv, text, path, reasons) : tests.find((t) => t && t.test(text));
     if (!hit) continue;
     const severity = inv.severity === "warn" ? "warn" : "block";
     // `cite`: the ledger rows the invariant rests on; `replacement`: what to do instead — the block names both.
@@ -2569,7 +2570,7 @@ async function cliGuard() {
   }
   recordUsage("guard_check");
   if (!blocked.length) {
-    for (const w of packNotes) warnings.add(`memory-pulse: ${w}`);
+    { const said = packContext(packNotes, 2000); if (said) warnings.add(said); }   // a pack file that did not load, then the pack warnings, capped
     if (warnings.size) process.stderr.write([...warnings].join("\n") + "\n");
     if (cursor) { process.stdout.write(JSON.stringify({ permission: "allow" })); return; }
     // Allowed: add the memory that bears on this file as context. Never a permissionDecision — "allow" would skip the
@@ -2581,7 +2582,8 @@ async function cliGuard() {
         const sl = editSlice(rows, invariants, { path: a.path ?? "", text: a.text ?? "" }, { agentRows });
         for (const line of sl.split("\n")) if (line && !seen.has(line)) { seen.add(line); parts.push(line); }
       }
-      const ctx = [packContext(packNotes), parts.join("\n")].filter(Boolean).join("\n").slice(0, 2000);
+      // the ledger's own lines come first and are never cut for a pack; pack lines take what is left, PACK_CONTEXT_CHARS at most (review of 0.19.0, P-2)
+      const own = parts.join("\n").slice(0, 2000); const ctx = [own, packContext(packNotes, 1999 - own.length)].filter(Boolean).join("\n");
       if (ctx) { process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: ctx } })); recordUsage("edit_slice"); }
     } catch { /* context is a convenience; the verdict above is what the hook is for */ }
     return;
@@ -2700,7 +2702,9 @@ async function cliCheck() {
     receipt = out.receipt ?? null; integrity = out.integrity ?? null;
     if (out.receiptHint && !receipt) v.reasons.push(out.receiptHint);
   }
-  const code = exitCodeFor(v.verdict, { ci });
+  // an installed pack file that does not load is said on every check, and fails one run with --ci (review of 0.19.0, P-3)
+  const packFail = packProblems().map((p) => p.replace(/^memory-pulse: /, "")); if (packFail.length) v.reasons = [...(v.reasons ?? []), ...packFail];
+  const code = ci && packFail.length ? exitCodeFor(v.verdict, { ci }) || 1 : exitCodeFor(v.verdict, { ci });
   if (has("json")) { console.log(JSON.stringify({ ...v, receipt, integrity }, null, 2)); process.exit(code); }
   console.log(`memory-pulse check: ${v.verdict.toUpperCase()}${ci && v.verdict === "no_evidence" ? " (not a pass — the ledger has nothing to say about this)" : ""}`);
   for (const r of v.reasons) console.log(`  • ${r}`);
@@ -3073,17 +3077,17 @@ Commands
   now [--json]                        the machine clock as the stamps a record uses (2026-11-19 02:15 UTC and 2026-11-19T02:15:07Z); a record's stamp is pasted from this, never typed
   lint [--ci] [--json] [--strict] [paths...]
                                       the guard's check over CLAUDE.md, AGENTS.md, .claude/rules, .cursorrules, Muse Code's .agents/memory and the other files a session loads; warns on a line planted for the agent (--strict blocks on it)
-  pack list [--json]                  rule packs: prepared rules for one stack, each with the vendor page it rests on; bundled with the client, nothing is fetched. Lists them, which are installed, rule counts and the dates the sources were read
-       show <name|path> [--json]      every rule of a pack: what it catches, what to use instead, severity, the source URL and the date it was read
-       add <name|path> [--warn-only]  install a pack as its own file, .memory-pulse/packs/<name>.jsonl (commit it): guard, check and lint read it; never written to invariants.jsonl or the ledger; --warn-only makes every rule report and none block
+  pack list [--json]                  rule packs: prepared rules for one stack, each with the vendor page it rests on; bundled with the client, nothing is fetched. Lists them, which are installed, rule counts, how many a pack marks safe to block, and the dates the sources were read
+       show <name|path> [--json]      every rule of a pack: what it catches, what to use instead, whether the pack marks it safe to block, the source URL and the date it was read
+       add <name|path> [--block]      install a pack as its own file, .memory-pulse/packs/<name>.jsonl (commit it): guard, check and lint read it; never written to invariants.jsonl or the ledger. A pack never blocks by default: every rule warns. --block turns blocking on for the rules the pack marks safe to block
        remove <name>                  delete that file; its rules stop applying
        check <name|path> [dir] [--json]
                                       dry run over a directory tree: hits per rule with file and line; nothing is blocked and nothing is written
        check --installed [dir | --diff [base]] [--ci] [--json]
-                                      the installed packs with this project's choices, over a tree or over the lines a diff adds, each file under its own path; --ci exits 1 when a block rule hits
+                                      the installed packs with this project's choices, over a tree or over the lines a change adds, each file under its own path. --diff with no base reads staged, unstaged and untracked changes; --diff <base> reads what the branch adds since <base>. --ci exits 1 when a rule that blocks here hits, or when a pack file does not load
        rule <pack>/<rule> off|warn|block|default [--reason "..."]
-                                      change one rule for this project without editing the pack file (.memory-pulse/packs/overrides.jsonl); rule <pack> warn|default does it for a whole pack
-       verify <name|path>             lint a pack file: every rule has an id, a pattern that compiles, does not match the empty string and does not stall on a long line, a source URL, a verified date, paths, and a statement or a replacement
+                                      change one rule for this project without editing the pack file (.memory-pulse/packs/overrides.jsonl): block turns it on, default goes back to a warning; rule <pack> block|warn does it for the rules a pack marks safe to block
+       verify <name|path>             lint a pack file: every rule has an id, a pattern that compiles, does not match the empty string and does not stall on a line built from its own characters, a source URL, a verified date, paths, and a statement or a replacement
   guard [--verbose]                   PreToolUse hook: reads the tool call from stdin, exit 2 with the ledger line when an edit writes a withdrawn value back
   guard allow "<term>" [--path <prefix>] "<reason>"
                                       record a false block as an override scoped to a path prefix

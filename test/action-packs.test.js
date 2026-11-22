@@ -15,13 +15,15 @@ import { fileURLToPath } from "node:url";
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 // A repository with the python-stdlib pack installed (or none) and a branch that adds `files`.
-function repo(files, { pack = true } = {}) {
+function repo(files, { pack = true, block = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "mp-action-packs-"));
   const git = (...a) => execFileSync("git", a, { cwd: dir, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@x", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@x" } });
   git("init", "-q", "-b", "main");
   mkdirSync(join(dir, ".memory-pulse", "packs"), { recursive: true });
   writeFileSync(join(dir, ".memory-pulse", "events.jsonl"), JSON.stringify({ t: 1, cause: "project-started", effect: "ledger-opened", note: "first row" }) + "\n");
   if (pack) copyFileSync(join(ROOT, "packs", "python-stdlib.jsonl"), join(dir, ".memory-pulse", "packs", "python-stdlib.jsonl"));
+  // a pack never blocks by default (review of 0.19.0): the project commits the choice that turns blocking on, as pack add --block writes it
+  if (pack && block) writeFileSync(join(dir, ".memory-pulse", "packs", "overrides.jsonl"), JSON.stringify({ rule: "python-stdlib/*", severity: "block" }) + "\n");
   writeFileSync(join(dir, "README.md"), "# project\n");
   git("add", "-A"); git("commit", "-q", "-m", "base");
   git("update-ref", "refs/remotes/origin/main", "HEAD");
@@ -41,7 +43,9 @@ const REMOVED = "import unittest\nclass T(unittest.TestCase):\n    def test_a(se
 const DEPRECATED = "from datetime import datetime\nnow = datetime.utcnow()\n";
 
 test("a pull request that adds a line a pack rule blocks fails the check, and the summary names the rule, the file and the line", () => {
-  const r = run(repo({ "test_a.py": REMOVED }));
+  const asInstalled = run(repo({ "test_a.py": REMOVED }));
+  assert.equal(asInstalled.code, 0, "as installed, the rule is a warning and the check passes"); assert.match(asInstalled.summary, /python-stdlib\/unittest-aliases/);
+  const r = run(repo({ "test_a.py": REMOVED }, { block: true }));
   assert.equal(r.code, 2, r.out);
   assert.match(r.summary, /memory-pulse blocked this change/);
   assert.match(r.summary, /python-stdlib\/unittest-aliases/);

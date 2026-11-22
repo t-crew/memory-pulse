@@ -339,59 +339,84 @@ Eight packs ship inside the package (61 rules); nothing is fetched.
 ```
 $ npx memory-pulse pack list
 bundled with memory-pulse:
-  cloudflare-workers  1.0.0  cloudflare-workers  7 rules (3 block, 4 warn)     verified 2026-11-21   not installed
-  fastapi             1.0.0  fastapi             7 rules (1 block, 6 warn)     verified 2026-11-21   not installed
-  llm-models          1.0.0  llm-apis            11 rules (0 block, 11 warn)   verified 2026-11-21   not installed
-  nextjs-app-router   1.0.0  nextjs              6 rules (2 block, 4 warn)     verified 2026-11-21   not installed
-  pydantic-v2         1.0.0  pydantic            9 rules (0 block, 9 warn)     verified 2026-11-21   not installed
-  python-stdlib       1.0.0  python              12 rules (5 block, 7 warn)    verified 2026-11-21   not installed
-  stripe              1.0.0  stripe              5 rules (0 block, 5 warn)     verified 2026-11-21   not installed
-  supabase-auth       1.0.0  supabase            4 rules (0 block, 4 warn)     verified 2026-11-21   not installed
+  cloudflare-workers  1.0.0  cloudflare-workers  7 rules (3 can block, 4 warn)     verified 2026-11-21   not installed
+  fastapi             1.0.0  fastapi             7 rules (1 can block, 6 warn)     verified 2026-11-21   not installed
+  llm-models          1.0.0  llm-apis            11 rules (0 can block, 11 warn)   verified 2026-11-21   not installed
+  nextjs-app-router   1.0.0  nextjs              6 rules (1 can block, 5 warn)     verified 2026-11-21   not installed
+  pydantic-v2         1.0.0  pydantic            9 rules (0 can block, 9 warn)     verified 2026-11-21   not installed
+  python-stdlib       1.0.0  python              12 rules (3 can block, 9 warn)    verified 2026-11-21   not installed
+  stripe              1.0.0  stripe              5 rules (0 can block, 5 warn)     verified 2026-11-21   not installed
+  supabase-auth       1.0.0  supabase            4 rules (0 can block, 4 warn)     verified 2026-11-21   not installed
 
 $ npx memory-pulse pack add python-stdlib
-installed python-stdlib 1.0.0: 12 rules (5 block, 7 warn) in .memory-pulse/packs/python-stdlib.jsonl
+installed python-stdlib 1.0.0: 12 rules (3 can block, 9 warn) in .memory-pulse/packs/python-stdlib.jsonl
+every rule warns and none blocks. The 3 rules the pack marks safe to block are turned on with memory-pulse pack add python-stdlib --block, or one at a time with memory-pulse pack rule python-stdlib/<rule> block
 ```
 
 An installed pack is one file in your repository. Commit it and it is reviewed
 in a pull request like any other change. It is never written into
 `invariants.jsonl` and it adds no row to the ledger; `pack remove` deletes it.
-From the next edit on, the guard, `check` and `lint` read it. A block names
-the pack, the rule, what to use, the source and the way to change the rule:
+
+**A pack never blocks by default.** Every rule of an installed pack is a
+warning. The guard hands it to the agent as context, after the ledger's own
+corrections, and the edit goes through:
+
+```
+memory-pulse: an installed rule pack has a warning for this edit. The edit is not blocked:
+  warning pack python-stdlib, rule datetime-utcnow: datetime.utcnow() and datetime.utcfromtimestamp() are deprecated since Python 3.12 and return naive datetimes — instead: datetime.now(tz=datetime.UTC) and datetime.fromtimestamp(ts, tz=datetime.UTC). Source: https://docs.python.org/3/whatsnew/3.12.html
+```
+
+Blocking is a choice your project makes. `pack add python-stdlib --block`
+turns it on for the rules the pack marks safe to block (8 of the 61), and
+`pack rule <pack>/<rule> block` for one rule. A block then names the pack, the
+rule, what to use, the source and the way to change the rule:
 
 ```
 memory-pulse guard: blocked.
-  • pack python-stdlib, rule ssl-wrap-socket: ssl.wrap_socket() and ssl.match_hostname() were removed in Python 3.12 (matched /(?<![\w.])ssl\.(?:wrap_socket|match_hostname)\(/) — instead: ssl.create_default_context() and SSLContext.wrap_socket(sock, server_hostname=host). Source: https://docs.python.org/3/whatsnew/3.12.html (read 2026-11-21)
-This rule comes from an installed rule pack (.memory-pulse/packs/python-stdlib.jsonl), not from a correction, so guard allow does not apply. Change the text. If the rule is wrong for this project, change it here without editing the pack: memory-pulse pack rule python-stdlib/ssl-wrap-socket warn (reports, does not block) or memory-pulse pack rule python-stdlib/ssl-wrap-socket off. The choice is written to .memory-pulse/packs/overrides.jsonl.
+  • pack python-stdlib, rule unittest-aliases: seven unittest.TestCase aliases, assertEquals, assertRegexpMatches and assertRaisesRegexp among them, were removed in Python 3.12 (matched /\bself\.(?:assertEquals|assertNotEquals|assertAlmostEquals|assertNotAlmostEquals|assertRegexpMatches|assertNotRegexpMatches|assertRaisesRegexp)\(/) — instead: assertEqual, assertNotEqual, assertAlmostEqual, assertRegex, assertNotRegex, assertRaisesRegex. Source: https://docs.python.org/3/whatsnew/3.12.html (read 2026-11-21)
+This rule comes from an installed rule pack (.memory-pulse/packs/python-stdlib.jsonl), where this project turned blocking on, not from a correction, so guard allow does not apply. Change the text. If the rule is wrong for this project, change it here without editing the pack: memory-pulse pack rule python-stdlib/unittest-aliases warn (reports, does not block) or memory-pulse pack rule python-stdlib/unittest-aliases off. The choice is written to .memory-pulse/packs/overrides.jsonl.
 ```
 
-Most rules warn. A `warn` rule is handed to the agent as context with the same
-line, and the edit goes through. A rule blocks only where the vendor says the
-thing is gone in every version it still maintains and no false hit turned up
-in the public repositories it was measured on:
-[`packs/MEASURED.md`](packs/MEASURED.md) has the counts for every rule. Look
-before you turn a pack on. `pack check` is a dry run over your tree:
+A rule a pack marks safe to block does not count a line that only names the old
+API: a `#` or `//` comment, a string in Python, JavaScript or TypeScript code,
+any line of a Markdown file. It reads one line at a time, so a mention in the
+middle of a multi-line docstring is still matched. The mark is not a promise:
+[`packs/MEASURED.md`](packs/MEASURED.md) has every rule's hits over 35 public
+repositories and over 110 near misses a review wrote. With every marked rule
+turned on, 2 of the 110 block (a project's own `assertEquals`, a local package
+named `configparser`); as installed, none do. Look before you turn a pack on.
+`pack check` is a dry run over your tree:
 
 ```
-$ npx memory-pulse pack check python-stdlib src
-pack check: python-stdlib 1.0.0, over src
+$ npx memory-pulse pack check python-stdlib .
+pack check: python-stdlib 1.0.0, as the pack marks its rules, over .
 
-ssl-wrap-socket   block  1 hit   ssl.wrap_socket() and ssl.match_hostname() were removed in Python 3.12
-  clock.py:4: conn = ssl.wrap_socket(sock)
-datetime-utcnow   warn   1 hit   datetime.utcnow() and datetime.utcfromtimestamp() are deprecated since Python 3.12 and return naive datetimes
-  clock.py:3: now = datetime.datetime.utcnow()
+unittest-aliases   can block  1 hit   seven unittest.TestCase aliases, assertEquals, assertRegexpMatches and assertRaisesRegexp among them, were removed in Python 3.12
+  tests/test_a.py:3: self.assertEquals(1, 1)
+datetime-utcnow    warn       1 hit   datetime.utcnow() and datetime.utcfromtimestamp() are deprecated since Python 3.12 and return naive datetimes
+  src/clock.py:2: now = datetime.datetime.utcnow()
 
-1 file read, 2 hits (1 from block rules, 1 from warn rules)
+2 files read, 2 hits (1 from rules that can block, 1 from warn rules)
 dry run: nothing was blocked and nothing was written
 ```
 
-`pack add <name> --warn-only` installs a pack so that nothing in it blocks.
 `pack rule <pack>/<rule> off|warn|block|default` changes one rule for this
 project and leaves the pack file as shipped, so a newer pack never fights a
-local choice. A pack rule's `paths` are globs (`**/*.py`, `app/**/*.tsx`, and
-`!**/tests/**` to leave a folder out); the same globs now work in
-`invariants.jsonl`, where an entry without a `*` is still a prefix. On a pull
-request, `pack check --installed --diff origin/main --ci` checks the added lines
-of each file under that file's own path and exits 1 when a block rule hits.
+local choice. A pack rule's `paths` are globs (`**/*.py`, `**/app/**/*.tsx`, and
+`!**/tests/**` to leave a folder out); the same globs work in
+`invariants.jsonl`, where an entry without a `*` is still a prefix.
+`pack check --installed --diff origin/main --ci` checks the lines a branch adds,
+each file under its own path, and exits 1 when a rule that blocks here hits;
+the GitHub Action runs it on a pull request. With no base, `--diff` reads
+staged, unstaged and untracked changes, which is the form for a pre-commit hook.
+
+Two things a pack cannot do quietly. A pack file that does not parse (a merge
+left conflict markers in it) is not applied, and every guard run says so and
+names `pack verify`; `check --ci` and `pack check --ci` fail on it. And a
+pattern of a pack that did not ship with the client runs under a time budget:
+one that uses 400 ms of processor time on an edit without an answer is skipped
+and reported, so a bad pattern cannot hang an edit. `pack verify` refuses such
+a pattern before `pack add` installs it.
 Writing a pack of your own: [`packs/CONTRIBUTING.md`](packs/CONTRIBUTING.md).
 
 ### Commands
@@ -450,10 +475,11 @@ npx memory-pulse now            # the machine clock as the two stamps a record u
 npx memory-pulse lint [--ci]    # do CLAUDE.md / AGENTS.md / .claude/rules still state a value the ledger retired?
 npx memory-pulse pack list      # rule packs bundled with the client: prepared rules for one stack, each with the vendor page it rests on; which are installed
 npx memory-pulse pack show python-stdlib   # every rule: what it catches, what to use instead, severity, source URL, the date the source was read
-npx memory-pulse pack add python-stdlib    # install it as .memory-pulse/packs/python-stdlib.jsonl (commit it); a path to a pack file works too; --warn-only: report, never block
+npx memory-pulse pack add python-stdlib    # install it as .memory-pulse/packs/python-stdlib.jsonl (commit it); a path to a pack file works too. Every rule warns; none blocks
+npx memory-pulse pack add python-stdlib --block   # turn blocking on for the rules the pack marks safe to block
 npx memory-pulse pack check python-stdlib [dir]   # dry run over a tree before turning it on: hits per rule with file and line, nothing blocked
-npx memory-pulse pack check --installed --diff origin/main --ci   # the installed packs over the lines a pull request adds; exit 1 when a block rule hits
-npx memory-pulse pack rule python-stdlib/ssl-wrap-socket warn   # one rule to warn, off, block or default for this project; the pack file is not edited
+npx memory-pulse pack check --installed --diff origin/main --ci   # the installed packs over the lines a branch adds; exit 1 when a rule that blocks here hits. With no base: staged, unstaged and untracked changes
+npx memory-pulse pack rule python-stdlib/unittest-aliases block   # one rule to block, warn, off or default for this project; the pack file is not edited
 npx memory-pulse pack remove python-stdlib   # delete the file; its rules stop applying
 npx memory-pulse pack verify ./my-pack.jsonl   # lint a pack file before sharing it
 npx memory-pulse report         # correction re-violation scoreboard, computed locally

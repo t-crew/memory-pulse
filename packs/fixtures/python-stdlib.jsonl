@@ -3,7 +3,7 @@
 {"rule":"asyncore-asynchat-smtpd","path":"srv/mail.py","hit":"import asyncore\nimport smtpd\n","miss":"import asyncio\nimport smtplib\n"}
 {"rule":"unittest-aliases","path":"tests/test_math.py","hit":"    self.assertEquals(add(1, 2), 3)\n","miss":"    self.assertEqual(add(1, 2), 3)\n    self.assertRegex(s, r'x')\n    self.failUnlessRaises(ValueError, f)\n"}
 {"rule":"safeconfigparser","path":"app/settings.py","hit":"parser = configparser.SafeConfigParser()\n","miss":["parser = configparser.ConfigParser()\n","from ConfigParser import SafeConfigParser as ConfigParser  # the Python 2 branch of a compat module\n"]}
-{"rule":"locale-format","path":"app/report.py","hit":"s = locale.format('%d', n, grouping=True)\n","miss":"s = locale.format_string('%d', n, grouping=True)\n"}
+{"rule":"locale-format","path":"app/report.py","hit":"s = locale.format('%d', n, grouping=True)\n","miss":["s = locale.format_string('%d', n, grouping=True)\n","labels = [locale.format(value) for locale in locales]\n"]}
 {"rule":"ssl-wrap-socket","path":"net/tls.py","hit":"conn = ssl.wrap_socket(sock, certfile=cert)\n","miss":"ctx = ssl.create_default_context()\nconn = ctx.wrap_socket(sock, server_hostname=host)\nconn2 = self.ssl.wrap_socket(sock)\n"}
 {"rule":"datetime-utcnow","path":"app/clock.py","hit":"now = datetime.utcnow()\n","miss":"now = datetime.now(tz=UTC)\nthen = arrow.utcnow()\n"}
 {"rule":"pep594-modules","path":"tools/net.py","hit":"import telnetlib\n","miss":"import cryptography\nfrom .chunk import split\nimport cgi_helpers\n"}

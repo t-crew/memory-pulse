@@ -1,6 +1,6 @@
-{"rule":"node-compat","path":"wrangler.toml","hit":"name = \"api\"\nnode_compat = true\n","miss":"name = \"api\"\ncompatibility_flags = [\"nodejs_compat\"]\n"}
-{"rule":"legacy-assets","path":"wrangler.jsonc","hit":"{\n  \"name\": \"site\",\n  \"legacy_assets\": \"./public\"\n}\n","miss":"{\n  \"name\": \"site\",\n  \"assets\": { \"directory\": \"./public\" }\n}\n"}
-{"rule":"wrangler-publish","path":"package.json","hit":"{\n  \"scripts\": { \"deploy\": \"wrangler publish\" }\n}\n","miss":"{\n  \"scripts\": { \"deploy\": \"wrangler deploy\", \"publish\": \"npm publish\" }\n}\n"}
+{"rule":"node-compat","path":"wrangler.toml","hit":"name = \"api\"\nnode_compat = true\n","miss":["name = \"api\"\ncompatibility_flags = [\"nodejs_compat\"]\n","name = \"d\"\n[vars]\nnode_compat = \"on\"\n"]}
+{"rule":"legacy-assets","path":"wrangler.jsonc","hit":"{\n  \"name\": \"site\",\n  \"legacy_assets\": \"./public\"\n}\n","miss":["{\n  \"name\": \"site\",\n  \"assets\": { \"directory\": \"./public\" }\n}\n","{ \"name\": \"site8\", \"vars\": { \"legacy_assets\": \"https://old.example.com/assets\" } }\n"]}
+{"rule":"wrangler-publish","path":"package.json","hit":"{\n  \"scripts\": { \"deploy\": \"wrangler publish\" }\n}\n","miss":["{\n  \"scripts\": { \"deploy\": \"wrangler deploy\", \"publish\": \"npm publish\" }\n}\n","{ \"scripts\": { \"note\": \"echo wrangler publish is gone && wrangler deploy\" } }\n"]}
 {"rule":"usage-model","path":"wrangler.toml","hit":"usage_model = \"bundled\"\n","miss":"main = \"src/index.ts\"\n"}
 {"rule":"workers-sites","path":"wrangler.toml","hit":"[site]\nbucket = \"./public\"\n","miss":"[assets]\ndirectory = \"./public\"\n"}
 {"rule":"legacy-env","path":"wrangler.toml","hit":"legacy_env = false\n","miss":"[env.staging]\nname = \"api-staging\"\n"}
