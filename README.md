@@ -860,9 +860,16 @@ a row does not verify. With the driver, `git merge`, `git pull` and
 other side added are appended after it through the writer, which computes `t`,
 `prev` and `hash` again. The rules are the ones `state merge` uses, run by the
 same code: each finding lands once, a carried row records the branch and row it
-came from in `origin`, the other side's merge and rollback rows stay with it,
+came from in `origin`, the other side's merge and resume records stay with it,
 a note that reads like an instruction is held back, and one row records the
-merge. `invariants.jsonl` is merged as a set of lines over the three versions:
+merge. A rollback on the other side is carried with its effect: when it put
+rows out of force that this ledger still holds in force, the same rollback is
+recorded here, and the rows of this ledger that stay in force are recorded
+again after it, each naming the row it repeats. A `supersedes` row and a
+`guard allow` row carry as they are. Before anything is written the result is
+checked: ours byte for byte at its start, the chain verifies, and the findings
+in force are the ones the two sides hold against where they started.
+Otherwise the merge is refused and ours is left as it was. `invariants.jsonl` is merged as a set of lines over the three versions:
 a rule either side added is kept once, and a rule either side removed stays
 removed. Git's built-in `merge=union` brings a removed rule back and keeps a
 line both sides added twice (git 2.39.5, measured 2026-11-21), so the driver
@@ -880,6 +887,21 @@ names the rows and the command:
   or its chain is broken. Nothing is merged and ours is left as it was.
 - One rule id carries two different lines in `invariants.jsonl`. Both are kept
   for you to choose from.
+
+`team resolve` runs the same merge on a path git left unmerged, from the three
+versions in the index, and stages a clean result. It keeps a row that was
+recorded while the file held conflict markers, and it replaces the ledger by a
+temp file and a rename, so a failure leaves the file as it was. A ledger whose
+two sides were both kept by hand (the web editor's "accept both", or deleting
+the marker lines) is two chains after one row. `verify`, the guard and `team`
+say it was merged by hand, nothing is moved aside, and `team resolve` rebuilds
+it by the same rule; a clone with the driver that merges such a ledger merges
+its two tails first and says so.
+
+One limit: a `prereg seal` forbid rule fires only in the clone that sealed it.
+The seal records that machine's directory and the rule is scoped to it, so
+another clone lists the seal as open and does not block the command
+(2026-11-21).
 
 What `verify` says afterwards depends on which side was ours:
 
@@ -906,9 +928,10 @@ web editor: rows joined by hand do not verify, and `npx memory-pulse verify`
 in CI fails on them. Update the branch on your machine
 (`git fetch && git rebase origin/main`, or `git merge origin/main`) and push.
 The driver runs there, and the pull request then merges without a conflict
-because the branch already holds the base's ledger. The driver verifies the
-whole ledger on each merge, so its time grows with the ledger's length: about
-one second at 5,000 rows on an M1 Pro (one run, 2026-11-21).
+because the branch already holds the base's ledger. The carried rows are
+appended in one pass: a `git merge` with 5,000 rows on each side of a 1,000-row
+base took 5.1 s and 6.1 s (two runs on an M1 Pro with other work running,
+2026-11-21), and `verify` on the 11,003-row result took 0.6 s.
 
 **Hosted: paid.** A hosted project holds one ledger that every machine pushes
 to and pulls from. The engine merges a diverged push by the rules `state merge`

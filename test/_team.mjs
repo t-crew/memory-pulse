@@ -2,7 +2,7 @@
 // Real git in throwaway repositories: every engineer has a temp HOME, a temp global git config, a temp trust store (writer key and
 // anchors) and a temp data dir (the pinned copy the driver runs), and nothing here touches this checkout's own repository or ledger.
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -14,7 +14,7 @@ process.env.MEMORY_PULSE_DATA_DIR ??= mkdtempSync(join(tmpdir(), "mp-data-"));
 process.env.MEMORY_PULSE_MODE = "deliberate"; process.env.MEMORY_PULSE_AGENT = "/nonexistent/agent/events.jsonl";
 process.env.MEMORY_PULSE_API = "http://127.0.0.1:9";
 const mod = await import("../server.mjs?team=" + Date.now());
-export const { verifyChainLines, contentHeadHex, setHeadHex, inForce } = mod;
+export const { verifyChainLines, contentHeadHex, setHeadHex, inForce, rowHash, sealDigest, buildCapsule, mergeCapsule } = mod;
 export { SERVER };
 
 export const TMP = mkdtempSync(join(tmpdir(), "mp-team-"));
@@ -23,7 +23,24 @@ export const LEDGER = ".memory-pulse/events.jsonl", RULES = ".memory-pulse/invar
 const CLEAN = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(GIT_|MEMORY_PULSE_|MP_)/.test(k)));
 export const out = (r) => `${r.stdout}${r.stderr}`;
 export const ok = (r, what) => { assert.equal(r.status, 0, `${what}: exit ${r.status}\n${out(r)}`); return r; };
-export const hook = (content) => JSON.stringify({ tool_name: "Write", tool_input: { file_path: "/tmp/x.md", content } });
+export const hook = (content, file = "/tmp/x.md") => JSON.stringify({ tool_name: "Write", tool_input: { file_path: file, content } });
+/** Rows for a ledger text, chained after its last row without a process per row (no writer mark, like rows from another machine):
+ *  `chars` is the note's length, and every `every`-th row is a correction. Returns the lines to append. */
+export function chainedRows(text, prefix, count, { chars = 40, every = 0 } = {}) {
+  let prev = null, t = 0;
+  for (const l of text.split("\n")) { if (!l.trim()) continue; const r = JSON.parse(l); if (typeof r.hash === "string") prev = r.hash; if (r.t > t) t = r.t; }
+  const out = [];
+  for (let i = 1; i <= count; i++) {
+    const fix = every > 0 && i % every === 0;
+    const row = { t: ++t, cause: `${prefix}-${fix ? "fix" : "finding"}-${i}`, effect: `effect-${i}`, kind: fix ? "correction" : "event",
+      ...(fix ? { withdrawn: [`${prefix}Old${i}(`], replacement: [`${prefix}New${i}(`] } : { note: `finding ${i} of ${prefix}: ` + "measured value and context. ".repeat(Math.ceil(chars / 28)).slice(0, chars) }), prev };
+    if (prev === null) row.legacy_digest = sealDigest([]);
+    row.hash = rowHash(row); prev = row.hash; out.push(JSON.stringify(row));
+  }
+  return out;
+}
+/** Append `count` such rows to an engineer's ledger. */
+export const bulk = (e, prefix, count, opts) => appendFileSync(e.file(), chainedRows(e.text(), prefix, count, opts).join("\n") + "\n");
 let seq = 0;
 
 /** One engineer's machine: its own HOME, global git config, trust store (writer key, anchors) and pinned copy of the client. */
@@ -44,7 +61,7 @@ export function engineer(name, dir) {
     remember: (cause, effect, ...rest) => ok(e.mp(["remember", cause, effect, ...rest]), `${name} remember ${cause}`),
     correct: (cause, withdrawn, replacement, note = `${withdrawn} was wrong`) => e.remember(cause, `${cause}-corrected`, "--kind", "correction", "--note", note, "--withdrawn", withdrawn, "--replacement", replacement),
     commit: (msg) => { ok(e.git("add", "-A"), `${name} git add`); return ok(e.git("commit", "-q", "-m", msg), `${name} commit`); },
-    blocked: (text) => e.mp(["guard"], hook(text)).status === 2,
+    blocked: (text, file) => e.mp(["guard"], hook(text, file)).status === 2,
   };
   return e;
 }

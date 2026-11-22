@@ -312,8 +312,16 @@ export function inspectChain(input) {
     if (ok && typeof row.hash === "string") ok = rowHash(row) === row.hash && (prevTail === null || row.prev === prevTail);
     if (ok) { selfValid++; lastT = row.t; if (typeof row.hash === "string") prevTail = row.hash; }
   }
+  // 0.19.0: a tail whose first row links to an EARLIER row of the verified part is the other side of a git conflict, kept by hand in a
+  // clone without the merge driver: a chain of its own from that row. It is not a bad tail and is never moved aside (a puller's guard
+  // moved the other engineer's corrections out of the ledger); memory-pulse team resolve rebuilds the file.
+  let forked = null, f = null; try { f = tailRows.length ? JSON.parse(tailRows[0].text) : null; } catch { f = null; }
+  if (f && typeof f.prev === "string" && f.prev !== res.head && typeof f.hash === "string" && rowHash(f) === f.hash) {
+    const at = entries.slice(0, k + 1).find((e) => { try { return JSON.parse(e.text).hash === f.prev; } catch { return false; } });
+    if (at) forked = { afterT: rowT(at.text), line: tailRows[0].line, rows: tailRows.length };
+  }
   return { ...res, firstBad: bad ? { t: rowT(bad.text), line: bad.line } : null,
-    tail: { keepBytes: keep, rows: tailRows.length, allBad: tailRows.length > 0 && selfValid === 0, headT: maxT || null } };
+    tail: { keepBytes: keep, rows: tailRows.length, allBad: tailRows.length > 0 && selfValid === 0 && !forked, headT: maxT || null, forked } };
 }
 
 /** 0.18.0: the ledger's rows as the row chain sees them, [{e, chained, line}], for a reader that must know which rows the writer
@@ -379,7 +387,7 @@ function quarantineTailLocked(path) {
   const buf = readFileSync(path);
   const info = inspectChain(buf);
   if (info.ok) return { quarantined: false, reason: "the chain verifies" };
-  if (!info.tail?.allBad) return { quarantined: false, notTail: true, reason: info.reason, firstBad: info.firstBad };
+  if (!info.tail?.allBad) return { quarantined: false, notTail: true, reason: info.reason, firstBad: info.firstBad, forked: info.tail?.forked ?? null };
   return moveTailAsideLocked(path, buf, { keepBytes: info.tail.keepBytes, rows: info.tail.rows, headT: info.tail.headT, reason: info.reason, firstBad: info.firstBad });
 }
 export function quarantineTail(path) { return withLedgerLock(path, () => quarantineTailLocked(path)); }
@@ -407,11 +415,14 @@ export function quarantineUnmarkedTail(path) { return withLedgerLock(path, () =>
 // Link a finished row to the chain and append it (lock held): t when the caller left it unset (the file's max t
 // plus one, read under the lock, so two writers never share a t), prev = the last chained row's hash, gap_digest =
 // the unchained rows since it (or legacy_digest = every row so far, for the first chained row), then its own hash.
-function appendRowLocked(path, event) {
+const appendRowLocked = (path, event) => appendRowsLocked(path, [event])[0];
+// The same for several rows in one pass (0.19.0: a merge carried each row through its own read of the whole ledger, so 5,000 rows
+// onto 6,000 took about ten minutes): the file is read once, each row is linked to the one before it, and one write appends them all.
+function appendRowsLocked(path, events) {
   if (!existsSync(path)) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, ""); }
   const raw = readFileSync(path, "utf8");
   if (raw.length && !raw.endsWith("\n")) appendFileSync(path, "\n"); // a torn last line stays its own row
-  const lines = raw.split("\n").filter((l) => l.trim()); let last = null, seen = false, maxT = 0; const gap = [];
+  const lines = raw.split("\n").filter((l) => l.trim()); let last = null, seen = false, maxT = 0; let gap = [];
   for (const l of lines) {
     let o = null; try { o = JSON.parse(l); } catch { /* torn */ }
     if (o && Number.isInteger(o.t) && o.t > maxT) maxT = o.t;
@@ -421,14 +432,17 @@ function appendRowLocked(path, event) {
   // existing one from where it stands), and every row carries this machine's mark. A trust store that cannot be written leaves the
   // row unmarked and the ledger unanchored, as before: memory is never refused for it.
   let w = null; try { if (anchoredByWriter(path)) ensureAnchor(path, lines.map((l) => l.trim()), "writer"); w = writerKey({ create: true }); } catch { w = null; }
-  delete event.prev; delete event.hash; delete event.gap_digest; delete event.legacy_digest; delete event.mac;
-  if (!Number.isInteger(event.t)) event.t = maxT + 1;
-  if (seen) { event.prev = last; if (gap.length) event.gap_digest = sealDigest(gap); } else { event.legacy_digest = sealDigest(gap); event.prev = null; }
-  if (w) event.mac = rowMac(event, w);
-  event.hash = rowHash(event);
-  appendFileSync(path, JSON.stringify(event) + "\n");
+  for (const event of events) {
+    delete event.prev; delete event.hash; delete event.gap_digest; delete event.legacy_digest; delete event.mac;
+    if (!Number.isInteger(event.t)) event.t = maxT + 1;
+    if (seen) { event.prev = last; if (gap.length) event.gap_digest = sealDigest(gap); } else { event.legacy_digest = sealDigest(gap); event.prev = null; }
+    if (w) event.mac = rowMac(event, w);
+    event.hash = rowHash(event);
+    seen = true; last = event.hash; gap = []; if (event.t > maxT) maxT = event.t;
+  }
+  if (events.length) appendFileSync(path, events.map((e) => JSON.stringify(e)).join("\n") + "\n");
   try { advanceAnchor(path); } catch { /* read-only trust store */ }
-  return event;
+  return events;
 }
 // The one writer. A bad tail is moved aside before anything is chained onto it, and so (0.16.0) is an unchained tail this machine's
 // writer did not write: the next write used to seal it into the chain.
@@ -441,6 +455,16 @@ export function chainAppend(path, event, { unless } = {}) {
     if (!info.ok && info.tail?.allBad) quarantineTailLocked(path);
     quarantineUnmarkedTailLocked(path);
     return appendRowLocked(path, event);
+  });
+}
+/** Several finished rows under one lock and in one pass (a merge's carried rows): the same checks as chainAppend, once. */
+export function chainAppendMany(path, events) {
+  if (!events.length) return [];
+  return withLedgerLock(path, () => {
+    const info = existsSync(path) ? inspectChain(path) : { ok: true };
+    if (!info.ok && info.tail?.allBad) quarantineTailLocked(path);
+    quarantineUnmarkedTailLocked(path);
+    return appendRowsLocked(path, events);
   });
 }
 
@@ -1368,6 +1392,8 @@ function sealCheckCached(path, chain) {
 }
 const cliPrefixFor = (path) => path === agentPath() ? "memory-pulse" : process.env.MEMORY_PULSE_LEDGER ? `MEMORY_PULSE_LEDGER=${path} memory-pulse` : "memory-pulse";
 const scopeFlagFor = (path) => path === agentPath() ? " --scope agent" : "";
+/** What a ledger merged by hand is, and the command that rebuilds it (inspectChain's `forked`). */
+export const handMergedLine = (path, f) => `memory-pulse: ledger ${path} was merged by hand: after row t=${f.afterT ?? "?"} it holds two tails, each a chain of its own (both sides of a git conflict were kept, in a clone without the merge driver). Every row is still read and nothing was moved aside. Rebuild it by the driver's rule: ${cliPrefixFor(path)} team resolve`;
 /** Verify one ledger for the guard; a bad tail is quarantined here, so the work that follows is not refused. */
 const quarantineWarning = (path, q) => `memory-pulse: quarantined ${q.rows} row${q.rows === 1 ? "" : "s"} from the tail of ${path} (${q.reason}): moved byte-for-byte to ${q.file}, recorded at t=${q.t}, nothing deleted; to re-adopt after review: ${cliPrefixFor(path)} repair${scopeFlagFor(path)} --adopt-quarantine ${q.file}`;
 export function ledgerHealth(path) {
@@ -1379,7 +1405,7 @@ export function ledgerHealth(path) {
       if (q.quarantined) {
         chain = verifyChainCached(path);
         warnings.push(quarantineWarning(path, q));
-      }
+      } else if (q.forked) warnings.push(handMergedLine(path, q.forked));
     } catch { /* locked by another writer or read-only: verified as it stands */ }
   }
   // 0.16.0: the anchor and the writer marks, checked from the bytes (cached in the trust store). An unchained tail this machine's
@@ -3125,7 +3151,7 @@ function cliVerify() {
   const flag = scope === "agent" ? " --scope agent" : "";
   const prefix = scope === "agent" ? "memory-pulse" : cliPrefixFor(ledger);
   const backups = chain.ok || info?.tail?.allBad ? [] : trustedBackups(ledger);
-  const fix = chain.ok ? null : info?.tail?.allBad ? `${prefix} repair${flag} --quarantine-tail` : backups.length ? `cp "${backups[0].file}" "${ledger}"` : null;
+  const fix = chain.ok ? null : info?.tail?.forked ? `${prefix} team resolve` : info?.tail?.allBad ? `${prefix} repair${flag} --quarantine-tail` : backups.length ? `cp "${backups[0].file}" "${ledger}"` : null;
   // 0.16.0: this machine's anchor (rollback) and writer marks; the anchor starts here on first sight of a ledger whose chain verifies
   const hadAnchor = !!readAnchor(ledger), trust = ledgerTrust(ledger, { init: chain.ok, ...(argv.includes("--strict") ? { strict: true } : {}) });
   const ts = (xs) => xs.slice(0, 12).map((x) => `t=${x.t ?? "?"}`).join(", ") + (xs.length > 12 ? `, … (${xs.length})` : "");
@@ -3140,7 +3166,8 @@ function cliVerify() {
   console.log(chain.ok ? `chain: OK — ${chain.chained} chained row(s)${chain.chained ? ` from t=${chain.from}` : ""}, ${chain.legacy} legacy row(s)${chain.sealed ? " sealed" : " (unsealed until the first chained write)"}${chain.head ? ` · head ${chain.head.slice(0, 12)}` : ""}${unsealedNote}` : `chain: BROKEN — ${chain.reason}`);
   if (info) {
     console.log(`first bad row: t=${info.firstBad?.t ?? "?"} (line ${info.firstBad?.line ?? "?"})`);
-    if (info.tail?.allBad) {
+    if (info.tail?.forked) console.log(handMergedLine(ledger, info.tail.forked).replace(/^memory-pulse: /, ""));
+    else if (info.tail?.allBad) {
       console.log(`every row from line ${info.firstBad?.line ?? "?"} on fails on its own (${info.tail.rows} row(s)): a bad tail. Move it aside byte-for-byte, recorded, nothing deleted (the guard also does this on its next run):\n  ${fix}`);
     } else {
       console.log(`the rows after it verify on their own, so this is not a bad tail: a row at or before line ${info.firstBad?.line ?? "?"} was edited, removed or inserted. Writes to this ledger stay blocked; other work is not. Restore it from a copy you trust:`);
@@ -3292,6 +3319,10 @@ async function cliRemember() {
 export const STATE_SCHEMA = "catalyst.rain.state.v1";
 const STATE_TAGS = ["state", "merge", "rollback"];
 const isRollback = (e) => !!e && Array.isArray(e.tags) && e.tags.includes("rollback") && Number.isInteger(e.rollback_to);
+// A branch's own bookkeeping is the row that holds the record: a resume or merge row carries `state`, a rollback row carries
+// rollback_to. A finding a person tagged state (the organized memory's project-state section) is a finding, and a merge carries it
+// (0.19.0: the tag alone left such a row behind, and after a git merge it was on neither tip).
+const isBookkeeping = (r) => isRollback(r) || (!!r && Array.isArray(r.tags) && r.tags.some((t) => STATE_TAGS.includes(t)) && !!r.state && typeof r.state === "object");
 /**
  * The row numbers (t) in force at the head. A rollback row restores the ledger as it stood at its target t and keeps
  * everything recorded after itself, so rolling back past a rollback restores what that rollback removed. Rows without
@@ -3322,7 +3353,7 @@ export function inForce(events) {
 /** What a finding IS, apart from where it sits: the key a merge dedupes on and the order-free content head folds. */
 const contentKey = (r) => canonicalJson({ cause: r.cause, effect: r.effect, kind: r.kind ?? "event", note: r.note ?? "", withdrawn: r.withdrawn ?? [], replacement: r.replacement ?? [], override: r.override ?? null });
 /** Order-free head over the findings in force, bookkeeping rows excluded: two ledgers that carried the same findings in any order fold to the same value. */
-export const contentHeadHex = (rows) => setHeadHex(inForce(rows).filter((r) => !(Array.isArray(r.tags) && r.tags.some((t) => STATE_TAGS.includes(t)))).map((r) => ({ content: contentKey(r) })));
+export const contentHeadHex = (rows) => setHeadHex(inForce(rows).filter((r) => !isBookkeeping(r)).map((r) => ({ content: contentKey(r) })));
 
 const ledgerFor = (scope) => (scope === "agent" ? agentPath() : ledgerPath());
 const linesOf = (path) => (existsSync(path) ? readFileSync(path, "utf8").split("\n").map((l) => l.trim()).filter(Boolean) : []);
@@ -3457,10 +3488,10 @@ export function mergeCapsule(cap, { scope = "project" } = {}) {
   const decidedAtSource = new Set(v.rows.flatMap((x) => (Number.isInteger(x.decides) ? [x.decides] : [])));
   const id = cap.branch?.id ?? "main";
   let next = maxT(localRows) + 1;
-  const carried = [], skipped = [], held = [], atSource = [], conflicts = [];
+  const carried = [], skipped = [], held = [], atSource = [], conflicts = [], batch = [];
   for (const r of foreign) {
     const fromT = r.t;
-    if (isRollback(r) || (Array.isArray(r.tags) && r.tags.some((t) => STATE_TAGS.includes(t)))) { atSource.push(fromT); continue; }
+    if (isBookkeeping(r)) { atSource.push(fromT); continue; }
     if (Number.isInteger(fromT) && !branchForce.has(fromT)) { atSource.push(fromT); continue; }
     const key = contentKey(r);
     if (have.has(key)) { skipped.push(fromT); if (Number.isInteger(fromT) && localByKey.has(key)) tMap.set(fromT, localByKey.get(key)); continue; }
@@ -3475,7 +3506,7 @@ export function mergeCapsule(cap, { scope = "project" } = {}) {
       if (h === null) { atSource.push(fromT); next--; continue; }
       if (h) {
         if (localRows.some((x) => x.origin?.branch === id && x.origin?.t === fromT)) { skipped.push(fromT); next--; continue; }
-        chainAppend(ledger, { ...h, t: row.t, origin: row.origin }); carried.push(row.t); have.add(key); if (Number.isInteger(fromT)) tMap.set(fromT, row.t); continue;
+        batch.push({ ...h, t: row.t, origin: row.origin }); carried.push(row.t); have.add(key); if (Number.isInteger(fromT)) tMap.set(fromT, row.t); continue;
       }
     }
     if (Array.isArray(row.supersedes)) { const m = row.supersedes.map((t) => tMap.get(t)).filter((t) => Number.isInteger(t)); if (m.length) row.supersedes = m; else delete row.supersedes; }
@@ -3488,8 +3519,9 @@ export function mergeCapsule(cap, { scope = "project" } = {}) {
       row.credit = c;
     }
     if (r.kind === "correction" && Array.isArray(row.withdrawn)) for (const term of row.withdrawn) { const lc = localCorr.find((c) => c.withdrawn.includes(term) && canonicalJson(c.replacement ?? []) !== canonicalJson(row.replacement ?? [])); if (lc) conflicts.push({ term, local: lc.t, merged: row.t }); }
-    chainAppend(ledger, row); carried.push(row.t); have.add(key); if (Number.isInteger(fromT)) tMap.set(fromT, row.t);
+    batch.push(row); carried.push(row.t); have.add(key); if (Number.isInteger(fromT)) tMap.set(fromT, row.t);
   }
+  chainAppendMany(ledger, batch);   // one locked pass for every carried row
   if (!carried.length) return { status: "unchanged", reason: `nothing new to carry: ${skipped.length} duplicate(s)${held.length ? `, ${held.length} held back` : ""}${atSource.length ? `, ${atSource.length} applied at source` : ""}`, code: 0, carried, skipped, held, atSource };
   const note = `merged ${carried.length} row(s) from branch ${id} (.rain state capsule ${short(cap.digest)}, head ${short(cap.head)}); fork after t=${fork}; ${skipped.length} duplicate(s) skipped${held.length ? `; ${held.length} row(s) held back, note reads like an instruction` : ""}${atSource.length ? `; ${atSource.length} row(s) applied at source, not carried` : ""}${conflicts.length ? `; ${conflicts.length} conflict(s): ${conflicts.map((c) => `"${c.term}" t${c.local} against t${c.merged}`).join(", ")}` : ""}`;
   const m = appendEvent({ cause: "state-merged", effect: `from-${id}-${short(cap.head)}`, note, tags: ["merge"], scope, fields: { state: { capsule: cap.digest, head: short(cap.head), branch: id, fork, carried: carried.length, conflicts } } });
@@ -3620,8 +3652,8 @@ async function cliState() {
 }
 
 // What lib/gitmerge.mjs is handed (the git merge driver and `team`): the merge is state merge's own, so the driver adds no rule.
-const teamCore = () => ({ ledgerPath, linesOf, parseRows, contentKey, isRollback, STATE_TAGS, inForceSet, supersededSet, instructionLike, verifyChainLines, buildCapsule, mergeCapsule,
-  readAnchor, anchorCheck, anchorPathFor, readSeal, verifyLocalSeal, pinnedRunner, version: PKG_VERSION });
+const teamCore = () => ({ ledgerPath, linesOf, parseRows, contentKey, isRollback, isBookkeeping, inForceSet, supersededSet, instructionLike, verifyChainLines, buildCapsule, mergeCapsule,
+  appendEvent, chainAppendMany, withLedgerLock, inspectChain, handMergedLine, readAnchor, anchorCheck, anchorPathFor, readSeal, verifyLocalSeal, pinnedRunner, version: PKG_VERSION });
 
 // Importable for tests; the transport runs only when this file is the entry
 // point. Compared by REALPATH, not by name: npm invokes the bin through a
