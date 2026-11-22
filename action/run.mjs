@@ -37,7 +37,8 @@ export function conclusionFor(verdict) {
 /** Title line for the check-run / summary. States what was checked, not "passed". */
 export function titleFor(result) {
   const c = result.checked ?? {};
-  if (result.verdict === "blocked") return `memory-pulse blocked this change. ${result.corrections?.length ?? 0} withdrawn value(s) reintroduced${result.invariants?.length ? `, ${result.invariants.length} invariant(s) hit` : ""}`;
+  const packBlocks = new Set((result.packs?.hits ?? []).filter((h) => h.severity === "block").map((h) => h.rule)).size;
+  if (result.verdict === "blocked") return `memory-pulse blocked this change. ${result.corrections?.length ?? 0} withdrawn value(s) reintroduced${result.invariants?.length ? `, ${result.invariants.length} invariant(s) hit` : ""}${packBlocks ? `, ${packBlocks} rule-pack rule(s) hit` : ""}`;
   if (result.verdict === "verified") return `memory-pulse verified this change. ${c.events ?? 0} memories checked, ${result.evidence?.length ?? 0} bear on this change, ${c.corrections ?? "?"} correction(s) enforced`;
   return `memory-pulse found no evidence. ${c.events ?? 0} memories checked, none bear on this change (not a pass)`;
 }
@@ -67,6 +68,13 @@ export function renderComment(result, { receiptId = null, sha = null, receiptNot
     lines.push("", `**Governance files** (lint): ${L.summary.files} checked — ${L.summary.blocked} blocked, ${L.summary.verified} verified, ${L.summary.noEvidence} no evidence`);
     for (const row of L.rows) if (row.verdict === "blocked") { lines.push(`- \`${row.file}\` — BLOCKED`); for (const reason of row.reasons) lines.push(`  - ${reason}`); }
     if (L.ledger?.unenforceableCorrections) lines.push(`- ${L.ledger.unenforceableCorrections} correction(s) carry no withdrawn terms and cannot be enforced`);
+  }
+  if (result.packs) {
+    const P = result.packs, hits = P.hits ?? [];
+    lines.push("", `**Rule packs**: ${(P.rules ?? []).length} installed rule(s) checked over the added lines of ${P.files ?? 0} file(s) — ${P.block ?? 0} blocked, ${P.warn ?? 0} warning(s)`);
+    for (const h of hits.slice(0, 20)) lines.push(`- ${h.severity === "block" ? "BLOCKED" : "warning"} \`${h.rule}\` at \`${h.file}:${h.line}\`: \`${String(h.text ?? "").trim().slice(0, 120)}\``);
+    if (hits.length > 20) lines.push(`- and ${hits.length - 20} more; run \`memory-pulse pack check --installed --diff <base>\` for all of them`);
+    if (hits.length) lines.push("", "A pack rule is changed for this project with `memory-pulse pack rule <pack>/<rule> off|warn|block`, without editing the pack. `memory-pulse pack show <pack>` gives each rule's source.");
   }
   if (foot.length) lines.push("", `<sub>${foot.join(" · ")}</sub>`);
   return lines.join("\n");
@@ -109,6 +117,22 @@ export async function main() {
   } catch (e) {
     // check exits non-zero on blocked / no_evidence; the JSON is still on stdout.
     try { result = JSON.parse(String(e.stdout)); } catch { console.error(String(e.stderr || e.message)); process.exit(1); }
+  }
+  // Rule packs, file by file. The check above runs under one path ("pull-request"), so a pack rule scoped by path cannot fire
+  // there. `pack check --installed --diff` reads each changed file's added lines under the file's own path. With no pack
+  // installed it prints a sentence, not JSON, and nothing is added. A block here blocks the pull request; a warning is listed.
+  {
+    let packs = null;
+    try { packs = JSON.parse(execFileSync(process.execPath, [cli, "pack", "check", "--installed", "--diff", base ? `origin/${base}` : "HEAD~1", "--ci", "--json"], { encoding: "utf8", env: { ...process.env }, stdio: ["ignore", "pipe", "pipe"] })); }
+    catch (e) { try { packs = JSON.parse(String(e.stdout)); } catch { if (e.status !== undefined) console.error(`rule packs were not checked: ${String(e.stderr || e.message).split("\n").find((l) => l.trim()) ?? "no output"}`); } }
+    if (packs && Array.isArray(packs.hits)) {
+      result.packs = packs;
+      const blocks = packs.hits.filter((h) => h.severity === "block");
+      if (blocks.length) {
+        result.verdict = "blocked";
+        for (const h of blocks.slice(0, 20)) result.reasons = [...(result.reasons ?? []), `rule pack ${h.rule} at ${h.file}:${h.line}: ${String(h.text ?? "").trim().slice(0, 120)}`];
+      }
+    }
   }
   // Signed receipt (the api-key input). The verdict above was computed on the runner from files in the repository and it
   // stands: the engine is asked only to sign what it sees. With no key nothing is sent. An engine that is down, or that
