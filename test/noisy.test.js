@@ -49,7 +49,8 @@ test("NOISY_MIN_DIRS: one ordinary word blocked in 2 directories is not noisy, i
 
 test("a specific term is never noisy, however often and however widely it is blocked", async () => {
   const { isNoisy } = await specific();
-  for (const term of ["$49", "two words", "us-east-1", "useEffect", "JSON"]) assert.equal(isNoisy({ term, blocks: 500, dirs: 90 }), false, term);
+  for (const term of ["$49", "two words", "us-east-1", "v2.1"]) assert.equal(isNoisy({ term, blocks: 500, dirs: 90 }), false, term);
+  for (const term of ["JSON", "useEffect"]) assert.equal(isNoisy({ term, blocks: 500, dirs: 90 }), true, `${term} is one word of letters only, whatever its capitals`);
 });
 
 test("blockStats counts blocks and distinct directories per correction from the violation records", async () => {
