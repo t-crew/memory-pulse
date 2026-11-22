@@ -114,3 +114,12 @@ test("A-4: the runner leaves a full clone full", () => {
   assert.equal(c.git("rev-parse", "--is-shallow-repository").trim(), "false");
   assert.equal(c.git("rev-list", "--count", "origin/main").trim(), before);
 });
+
+test("a ledger in a layout this client cannot read fails the pull-request check and the summary says nothing was checked", () => {
+  const c = repo(price, (x) => { x.write("pricing.md", "Pro is $29 a month.\n"); x.write(".memory-pulse/layout.json", JSON.stringify({ layout: "set", version: 1 })); });
+  const r = run(c, { MP_ACTION_RULES: "head" });
+  assert.equal(r.code, 1, r.out + r.summary);
+  assert.match(r.summary, /could not check this change/);
+  assert.match(r.summary, /cannot read this project's ledger/);
+  assert.match(r.summary, /Nothing was checked/);
+});

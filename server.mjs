@@ -52,6 +52,7 @@ import { heardOnly, heardLine, broadCaution, blockStats, noisyLine } from "./lib
 import { scheduledPrompt, tailText } from "./lib/typed.mjs";
 import { commandWrites } from "./lib/shell.mjs";
 import { bareTerm as bareOnLine } from "./lib/release.mjs";
+import { foreignLayout, layoutMessage } from "./lib/layout.mjs";
 import { commandHits, invariantsFor, preregRows, COMMAND_HINT, INVARIANT_HINT, PREREG_WRITE, cliPrereg, cliNow, cliRan } from "./lib/prereg.mjs";
 import { installedPackRules, pathInScope, packReason, packHint, packHit, packProblems, packWarnings, packContext, forEngine } from "./lib/packs.mjs";
 import { SOUL_WRITE, RESERVED, soulState, soulLines, soulGuard, cliSoul, cliUser, setSection, chainedOnly, heldFromMerge, taintOf, soulCapsule, verifySoulCapsule, continuityLine, soulScreen,
@@ -3705,6 +3706,18 @@ if (isMain) {
     process.stdout.write(JSON.stringify(text.trim() ? { additional_context: text.trim().slice(0, 20000) } : {}));
     process.exit(0);
   }
+  // A ledger kept in a layout this client cannot read (lib/layout.mjs): said on every run that would have used it, never passed in
+  // silence. The guard does not block (it has nothing to judge by); check and lint fail, so a pull request cannot pass on it.
+  { const alien = ["brief", "scaffold", "prompt", "guard", "check", "lint"].includes(sub) ? foreignLayout(ledgerPath()) : null;
+    if (alien) {
+      const msg = layoutMessage(alien, PKG_VERSION);
+      if (sub === "guard") { process.stderr.write(`${msg}\n`); process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: msg } })); process.exit(0); }
+      if (sub === "check" || sub === "lint") {
+        if (process.argv.includes("--json")) console.log(JSON.stringify({ verdict: "unreadable", reasons: [msg], layout: alien.layout }, null, 2)); else console.error(msg);
+        process.exit(1);
+      }
+      console.log(msg);   // brief, scaffold, prompt: the first thing the session reads
+    } }
   if (sub === "brief") { await cliBrief(); await sendUsageQuietly(); process.exit(0); }
   if (sub === "telemetry") { await cliTelemetry(); process.exit(0); }
   if (sub === "scaffold") { await cliScaffold(); process.exit(0); }

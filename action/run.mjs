@@ -141,12 +141,13 @@ export function checkFiles(cli, files, range, env) {
     const text = addedLines(git(["diff", range, "--unified=0", "--", f]));
     if (!text.trim()) continue;
     const r = one(text, f);
+    if (r.verdict === "unreadable") throw new Error((r.reasons ?? [])[0] ?? "the ledger is in a layout this client cannot read");
     out.files++; out.checked ??= r.checked ?? null;
     if (r.verdict === "blocked") { out.verdict = "blocked"; for (const x of r.reasons ?? []) if (!/^\d+ recorded event/.test(x)) out.reasons.push(`\`${f}\`: ${x}`); }
     else if (r.verdict === "verified" && out.verdict !== "blocked") out.verdict = "verified";
     add("evidence", r.evidence); add("corrections", r.corrections); add("invariants", r.invariants);
   }
-  if (!out.checked) out.checked = one("", "pull-request").checked ?? null;   // how many memories there were to check, for the title
+  if (!out.checked) { const r = one("", "pull-request"); if (r.verdict === "unreadable") throw new Error((r.reasons ?? [])[0] ?? "the ledger is in a layout this client cannot read"); out.checked = r.checked ?? null; }   // how many memories there were to check, for the title
   return out;
 }
 
@@ -191,9 +192,15 @@ export async function main() {
   const rulesChanged = [...changed.filter(inRules), ...names("D").filter(inRules).map((f) => `${f} (removed)`)];
   const text = content.map((f) => addedLines(git(["diff", range, "--unified=0", "--", f]))).filter((t) => t.trim()).join("\n");
 
+  const unchecked = (why) => {
+    console.error(`memory-pulse could not check this change: ${why}`);
+    if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### memory-pulse could not check this change\n\n${why}\n\nNothing was checked, so this is a failure and not a pass.\n`);
+    if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, "verdict=unchecked\nconclusion=failure\n");
+    process.exit(1);
+  };
   let result;
   try { result = checkFiles(cli, content, range, { ...process.env }); }
-  catch (e) { console.error(String(e.message)); process.exit(1); }
+  catch (e) { unchecked(String(e.message)); }
 
   // Rule packs, file by file, under each file's own path. With no pack installed the command prints a sentence, not JSON,
   // and nothing is added. A block here blocks the pull request; a warning is listed.
@@ -217,7 +224,7 @@ export async function main() {
     const baseDir = rulesMode === "both" ? baseRuleDir(baseRef, ruleDir) : null;
     if (baseDir) {
       const env = { ...process.env, MEMORY_PULSE_LEDGER: join(baseDir, basename(ledger)) };
-      let under; try { under = checkFiles(cli, content, range, env); } catch (e) { console.error(String(e.message)); process.exit(1); }
+      let under; try { under = checkFiles(cli, content, range, env); } catch (e) { unchecked(`under the rules on ${baseName}: ${String(e.message)}`); }
       foldPacks(under, packCheck(cli, baseRef, env), "");
       if (under.verdict === "blocked" && result.verdict !== "blocked") {
         result.verdict = "blocked"; result.blockedUnderBase = true;

@@ -91,6 +91,11 @@ and key variables: the suite used to write test rows into whatever ledger the sh
 the major tag, skips it for a pre-release, stops when the version it would tag is not the one asked for, can leave the
 engine undeployed (`RELEASE_SKIP_WORKER=1`), and runs the IP gate in strict mode.
 
+**A ledger this client cannot read is never passed in silence.** A later release may keep the ledger in another layout
+and will mark it with `.memory-pulse/layout.json`. When this client meets a marker it does not know, the guard says so
+on every edit (to you and to the agent), the brief opens with it, `doctor` fails with the upgrade command, and `check`,
+`lint` and the pull-request Action fail. With no marker nothing changes.
+
 **Known limits.** Cursor's hooks are written by `install-hook --cursor` and have not been run inside Cursor. The guard
 does not catch a paraphrase, `sed` text supplied on following lines, or an inline script that writes a variable. A
 project's own function named like a removed API can trip a pack rule you have set to block.
