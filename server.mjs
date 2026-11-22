@@ -2930,6 +2930,11 @@ function cliHelp() {
 usage: memory-pulse <command> [options]        (npx -y memory-pulse <command> without a global install)
 
 Commands
+  demo [--withdrawn <old>] [--replacement <new>] [--text "<edit>"] [--json]
+                                      try it with nothing installed: records one correction in a temporary folder, runs the guard on three edits (and on yours with --text), prints each verdict as a host gets it, removes the folder
+  init [--yes] [--dry-run] [--project] [--offline]
+                                      set it up in a repository: prints its plan (hosts found, files it will write), asks once on a terminal (--yes skips the question; with no terminal and no --yes nothing is changed), runs install-hook for each host, creates .memory-pulse/, runs doctor; a second run changes nothing
+  doctor [--json] [--offline]         check the wiring, one line per check (ok, FAIL with the fix, skipped with the reason): Node, each host's hooks and the files they run, the guard against a temporary ledger through the installed hook command, the project ledger (verify), hooks that run through npx; one GET to the engine with no key, as information (--offline skips it)
   serve                               start the MCP server on stdio (the default with no command); tools: pulse, recall, remember, execute
   help                                this text (also --help, -h, or --help after any command)
   brief [--engine] [--budget N] [--offline]
@@ -3018,7 +3023,7 @@ Environment
   NO_COLOR, TERM                      colour in the guard's block message only when NO_COLOR is unset, TERM is not dumb and stderr is a TTY
   HOME                                root for the agent ledger, ~/.claude/settings.json and ~/.codex/hooks.json
 
-Exit codes: 0 done; 1 usage or refused (remember, append, repair without --yes, mode, lint --ci with nothing to check, check --ci with no evidence, prereg seal on a failed assertion or a refused forbid pattern); 2 blocked (guard, check, lint), verification failed (verify, anchor), a sealed file changed or the seal row is not on the row chain (prereg verify) or not a tail (repair --quarantine-tail).
+Exit codes: 0 done; 1 usage or refused (remember, append, repair without --yes, mode, lint --ci with nothing to check, check --ci with no evidence, prereg seal on a failed assertion or a refused forbid pattern), a check failed (doctor, init) or the verdicts were not the ones described (demo); 2 blocked (guard, check, lint), verification failed (verify, anchor), a sealed file changed or the seal row is not on the row chain (prereg verify) or not a tail (repair --quarantine-tail).
 Guide: docs/GUIDE.md in the repository (https://github.com/t-crew/memory-pulse/blob/main/docs/GUIDE.md).`);
 }
 
@@ -3585,6 +3590,9 @@ if (isMain) {
   if (sub === "prompt") { await cliPrompt(); process.exit(0); }
   if (sub === "before") { await cliBefore(); process.exit(0); }
   if (sub === "install-hook") { await cliInstallHook(); process.exit(0); }
+  // first run (lib/firstrun.mjs): demo and doctor work in a temporary folder; init runs install-hook and asks the usage question once
+  if (sub === "demo" || sub === "doctor" || sub === "init") { const fr = await import("./lib/firstrun.mjs"), ctx = { server: fileURLToPath(import.meta.url), version: PKG_VERSION, api: API, ledgerPath, askUsageConsent, hookVerbs: HOOK_VERBS };
+    process.exit(await (sub === "demo" ? fr.cliDemo : sub === "doctor" ? fr.cliDoctor : fr.cliInit)(process.argv.slice(3), ctx)); }
   if (sub === "guard") { await cliGuard(); process.exit(0); }
   if (sub === "check") { await cliCheck(); process.exit(0); }
   if (sub === "handoff") { await cliHandoff(); process.exit(0); }
