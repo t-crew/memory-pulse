@@ -322,6 +322,14 @@ npx memory-pulse prereg list    # open and settled seals: id, row, stamp, verdic
 npx memory-pulse ran 'train\.py .*--n (4096|8192)' --since 12   # the recorded shell commands that match, with time and session, since the seal at row 12 (from capture's episodes)
 npx memory-pulse now            # the machine clock as the two stamps a record uses; paste a record's stamp from it, never type one; --json
 npx memory-pulse lint [--ci]    # do CLAUDE.md / AGENTS.md / .claude/rules still state a value the ledger retired?
+npx memory-pulse pack list      # rule packs bundled with the client: prepared rules for one stack, each with the vendor page it rests on; which are installed
+npx memory-pulse pack show python-stdlib   # every rule: what it catches, what to use instead, severity, source URL, the date the source was read
+npx memory-pulse pack add python-stdlib    # install it as .memory-pulse/packs/python-stdlib.jsonl (commit it); a path to a pack file works too; --warn-only: report, never block
+npx memory-pulse pack check python-stdlib [dir]   # dry run over a tree before turning it on: hits per rule with file and line, nothing blocked
+npx memory-pulse pack check --installed --diff origin/main --ci   # the installed packs over the lines a pull request adds; exit 1 when a block rule hits
+npx memory-pulse pack rule python-stdlib/imp-module warn   # one rule to warn, off, block or default for this project; the pack file is not edited
+npx memory-pulse pack remove python-stdlib   # delete the file; its rules stop applying
+npx memory-pulse pack verify ./my-pack.jsonl   # lint a pack file before sharing it
 npx memory-pulse report         # correction re-violation scoreboard, computed locally
 npx memory-pulse bench          # instant measured metrics on YOUR ledger
 npx memory-pulse stats          # your telemetry capsule, signature verified by the engine
