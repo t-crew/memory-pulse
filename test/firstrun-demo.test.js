@@ -71,10 +71,12 @@ test("demo: the verdicts come from the guard reading the demo's ledger; change t
 test("demo: it runs the package's guard command, not a copy of its output (a guard that answers differently shows)", async () => {
   // a copy of the package whose guard always passes: the demo run from that copy must report that the write-back was not blocked
   const f = fixture();
-  const { cpSync } = await import("node:fs"); const { ROOT } = await import("./_firstrun.mjs");
+  // the copy is written, not copied with its modes: a checkout that is read-only gives a copy that could not be changed
+  // (review 2026-11-21: the suite's first run, on a read-only tree, failed here with EACCES)
+  const { readdirSync: ls } = await import("node:fs"); const { ROOT } = await import("./_firstrun.mjs");
   const copy = join(f.root, "copy"); mkdirSync(join(copy, "lib"), { recursive: true });
-  for (const p of ["server.mjs", "package.json", "lib"]) cpSync(join(ROOT, p), join(copy, p), { recursive: true });
-  const src = readFileSync(join(copy, "server.mjs"), "utf8");
+  for (const p of ["package.json", ...ls(join(ROOT, "lib")).filter((x) => x.endsWith(".mjs")).map((x) => join("lib", x))]) writeFileSync(join(copy, p), readFileSync(join(ROOT, p)));
+  const src = readFileSync(join(ROOT, "server.mjs"), "utf8");
   const marker = 'if (sub === "guard") { await cliGuard(); process.exit(0); }';
   assert.ok(src.includes(marker), "the dispatch line this test replaces is still there");
   writeFileSync(join(copy, "server.mjs"), src.replace(marker, 'if (sub === "guard") { process.exit(0); }'));

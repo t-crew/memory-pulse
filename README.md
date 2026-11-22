@@ -66,10 +66,13 @@ is what a host gets; `--withdrawn`, `--replacement` and `--text "<edit>"` try yo
 writes nothing before it has printed its plan: `--dry-run` stops there, `--yes` skips the question, and with
 no terminal and no `--yes` nothing is changed. It runs `install-hook` for Claude Code, Codex and Cursor where
 it finds them (`--project` writes into the repository instead), and a second run changes nothing. It installs
-hooks only: the routes below also register the MCP server. `doctor` checks Node, each host's hooks and the
-files they run, the guard against a temporary ledger through the installed hook command, and the project
-ledger through `verify`; it sends one GET to the engine with no key, as information, and `--offline` skips
-it. `demo`, `init` and `doctor` arrive in the release after 0.18.0. On 0.18.0 they exit 1 with
+hooks only: the routes below also register the MCP server. Every file it writes is in the plan, the `.gitattributes` lines and the git config entry of a
+`--project` install in a git work tree included. `doctor` checks Node; each host's guard hook (its event,
+its matcher and its type), the file every hook runs and that copy's version; the guard on five synthetic edits
+against a temporary ledger; and the project ledger through `verify`. It runs the guard from this package or
+from the pinned copy the hooks name, never a command it read from a hook file: a repository can ship that file,
+so such a command is shown as text and listed as not run. It sends one GET to the engine with no key, as
+information, and `--offline` skips it. `demo`, `init` and `doctor` arrive in the release after 0.18.0. On 0.18.0 they exit 1 with
 `unknown command`; from a checkout, run `node server.mjs demo`.
 
 Six routes. Pick the row for your agent. Node 18 or newer (`package.json`
@@ -221,7 +224,10 @@ the package that `install-hook` keeps under `MEMORY_PULSE_DATA_DIR`, one folder
 per version. On a 1-row ledger the pinned copy took 63 ms for an edit that
 passes and 66 ms for one that is blocked, median of 12 runs each, process start
 included, on an M1 Pro on 2026-11-21 with 0.18.0. The plugin runs `server.mjs`
-from its own folder the same way.
+from its own folder the same way. Upgrading the package changes neither the
+pinned copy nor the settings file, so after an upgrade run `memory-pulse
+install-hook` (or `init`) again; `doctor` fails a hook that still runs the
+older copy and names that command.
 
 `install-hook --project` still writes `npx -y memory-pulse guard`, because a
 committed file has to run on every clone, and npx resolves the package on
