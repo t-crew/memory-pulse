@@ -123,3 +123,72 @@ test("a ledger in a layout this client cannot read fails the pull-request check 
   assert.match(r.summary, /cannot read this project's ledger/);
   assert.match(r.summary, /Nothing was checked/);
 });
+
+// ---- Second review, 2026-11-22 (N-A1 to N-A4), each reproduced here first.
+// A repository like repo(), with the ledger wherever `ledgerRel` says.
+function repoAt(ledgerRel, base, change) {
+  const dir = mkdtempSync(join(tmpdir(), "mp-action-perfile-"));
+  const led = join(dir, ledgerRel);
+  const git = (...a) => execFileSync("git", a, { cwd: dir, encoding: "utf8", env: clean() });
+  const cli = (...a) => execFileSync(process.execPath, [join(ROOT, "server.mjs"), ...a], { cwd: dir, encoding: "utf8", env: clean({ MEMORY_PULSE_LEDGER: led }), stdio: ["ignore", "pipe", "pipe"] });
+  const write = (name, body) => { mkdirSync(dirname(join(dir, name)), { recursive: true }); writeFileSync(join(dir, name), body); };
+  const ctx = { dir, led, git, cli, write };
+  git("init", "-q", "-b", "main");
+  mkdirSync(dirname(led), { recursive: true });
+  write("README.md", "# project\n");
+  cli("remember", "project-started", "ledger-opened", "--note", "first row");
+  base?.(ctx);
+  git("add", "-A"); git("commit", "-q", "-m", "base");
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  git("checkout", "-q", "-b", "change");
+  change(ctx);
+  git("add", "-A"); git("commit", "-q", "-m", "change");
+  return ctx;
+}
+
+test("N-A1: an unscoped literal rule does not fail every pull request through lint, and the rule file is not a governance file lint judges", () => {
+  const rule = (x) => x.write(".memory-pulse/invariants.jsonl", JSON.stringify({ id: "no-moment", statement: "use date-fns", patterns: ["from 'moment'"], severity: "block" }) + "\n");
+  const c = repo(rule, (x) => x.write("README.md", "# project\n\nA new paragraph.\n"));
+  const quiet = run(c, { MP_ACTION_LINT: "true" });
+  assert.equal(quiet.code, 0, quiet.out + quiet.summary);
+  assert.doesNotMatch(quiet.summary, /blocked this change/);
+  assert.doesNotMatch(quiet.summary, /invariants\.jsonl/);
+  // the rule itself still works: a file that writes what it forbids is blocked
+  const broken = run(repo(rule, (x) => x.write("src/a.js", "import moment from 'moment';\n")), { MP_ACTION_LINT: "true" });
+  assert.equal(broken.code, 2, broken.out + broken.summary);
+  assert.match(broken.summary, /no-moment/);
+  // named on the command line, the rule file is not judged against itself either
+  const named = execFileSync(process.execPath, [join(ROOT, "server.mjs"), "lint", ".memory-pulse/invariants.jsonl", "--json"], { cwd: c.dir, encoding: "utf8", env: clean({ MEMORY_PULSE_LEDGER: c.led }) });
+  assert.notEqual(JSON.parse(named).rows[0]?.verdict, "blocked");
+});
+
+test("N-A2: only the ledger, the declared rules and the installed packs are rule files; a file beside the ledger is content", () => {
+  const beside = run(repoAt("docs/events.jsonl", price, (x) => x.write("docs/pricing.md", "The plan is $49 a month.\n")));
+  assert.equal(beside.code, 2, beside.out + beside.summary);
+  assert.match(beside.summary, /docs\/pricing\.md/);
+  assert.doesNotMatch(beside.summary, /changes the rules it is checked by/);
+  // a ledger at the repository root: recording a prohibition is still not a violation of itself
+  const root = run(repoAt("events.jsonl", null, (x) => x.cli("remember", "we-use-pnpm", "npm-install-banned", "--kind", "correction", "--withdrawn", "npm install")));
+  assert.equal(root.code, 0, root.out + root.summary);
+  assert.match(root.summary, /changes the rules it is checked by/);
+});
+
+test("N-A3: moving the ledger out of the way in the same change does not skip the base branch's rules", () => {
+  const c = repo(price, (x) => { x.write("pricing.md", "Pro is $49 a month.\n"); mkdirSync(join(x.dir, "archive")); x.git("mv", ".memory-pulse/events.jsonl", "archive/events.jsonl"); });
+  const r = run(c);
+  assert.equal(r.code, 2, r.out + r.summary);
+  assert.match(r.summary, /changes the rules it is checked by/);
+  assert.match(r.summary, /events\.jsonl \(removed\)/);
+});
+
+test("N-A4: an added line that begins with two plus signs is read", async () => {
+  const c = repo(price, (x) => x.write("docs/pricing.md", "++ Pro is $49 a month\n"));
+  const r = run(c);
+  assert.equal(r.code, 2, r.out + r.summary);
+  const { addedLines } = await import("../lib/diff.mjs");
+  const diff = "diff --git a/x.js b/x.js\n--- a/x.js\n+++ b/x.js\n@@ -0,0 +1,2 @@\n+++i;\n+done();\n";
+  assert.equal(addedLines(diff), "++i;\ndone();");
+  const { addedByFile } = await import("../lib/packs.mjs");
+  const two = addedByFile("diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -0,0 +1,3 @@\n+x = 1\n+++ /dev/null\n+y = 2\n");
+  assert.deepEqual(two.map((f) => [f.file, f.lines.map((l) => l.text)]), [["a.py", ["x = 1", "++ /dev/null", "y = 2"]]]);
+});

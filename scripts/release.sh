@@ -24,6 +24,9 @@ ENGINE="${MEMORY_PULSE_ENGINE:-$HOME/future-research/memory-pulse}"
 noproxy() { env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy "$@"; }
 cd "$CLIENT"
 
+# A version is digits.digits.digits, with an optional pre-release suffix. "v1.2.3" or any other string is refused here: it used to be
+# written into every manifest (second review, 2026-11-22).
+if [ "${1:-}" != "" ] && ! printf '%s' "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then echo "not a version: $1 (expected 1.2.3 or 1.2.3-rc.1)"; exit 1; fi
 if [ "${1:-}" != "" ]; then
   for f in package.json server.json .claude-plugin/plugin.json .codex-plugin/plugin.json mcpb/manifest.json; do
     sed -i '' -E "s/\"version\": \"[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?\"/\"version\": \"$1\"/g" "$f"

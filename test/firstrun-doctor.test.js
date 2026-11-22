@@ -249,3 +249,24 @@ test("doctor: when one host is set up, another host that is present with no hook
   const j = json(f.run(["doctor", "--json"]));
   assert.equal(j.ok, true); assert.equal(check(j, "host:cursor").status, "skipped");
 });
+
+// Second review, 2026-11-22 (F-1): a guard hook doctor did not run is not a pass.
+test("doctor: when an installed guard hook was not run, the last line says so instead of All checks passed", async () => {
+  const f = fixture(); mkdirSync(join(f.home, ".claude"));
+  assert.equal(f.run(["install-hook"]).status, 0);
+  const file = join(f.home, ".claude", "settings.json");
+  const settings = JSON.parse(readFileSync(file, "utf8"));
+  // a second guard hook a person wrote by hand, naming a program that exists, outside the folders doctor runs from
+  // a whole development copy of the client (doctor fails a program that is not a memory-pulse copy, which is a different case)
+  const { cpSync } = await import("node:fs");
+  mkdirSync(join(f.proj, "dev", "memory-pulse"), { recursive: true });
+  for (const part of ["server.mjs", "package.json", "lib"]) cpSync(join(ROOT, part), join(f.proj, "dev", "memory-pulse", part), { recursive: true });
+  settings.hooks.PreToolUse.push({ matcher: "Edit|Write|MultiEdit|Bash", hooks: [{ type: "command", command: `node "${join(f.proj, "dev", "memory-pulse", "server.mjs")}" guard` }] });
+  writeFileSync(file, JSON.stringify(settings, null, 2));
+  const r = f.run(["doctor"]);
+  const last = r.out.trim().split("\n").at(-1);
+  assert.doesNotMatch(last, /All checks passed/, r.out);
+  assert.match(last, /not tested/, r.out);
+  const j = json(f.run(["doctor", "--json"]));
+  assert.ok(j.untested >= 1, JSON.stringify(j.untested));
+});

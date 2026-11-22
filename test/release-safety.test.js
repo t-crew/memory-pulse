@@ -41,7 +41,7 @@ test("T-1: npm test and the release gate both go through scripts/test.mjs", () =
 // The version block of release.sh, cut out unchanged and run on copies of the manifests and docs.
 function bump(arg, prep) {
   const sh = read("scripts/release.sh");
-  const from = sh.indexOf('if [ "${1:-}" != "" ]; then'), to = sh.indexOf('echo "1/4 test gate"');
+  const from = sh.indexOf('# A version is digits.digits.digits'), to = sh.indexOf('echo "1/4 test gate"');
   assert.ok(from > 0 && to > from, "the version block is where this test expects it");
   const dir = mkdtempSync(join(tmpdir(), "mp-release-bump-"));
   for (const f of ["package.json", "server.json", ".claude-plugin/plugin.json", ".codex-plugin/plugin.json", "mcpb/manifest.json", "README.md", "docs/GUIDE.md", "docs/INSTALL.md"]) { mkdirSync(dirname(join(dir, f)), { recursive: true }); copyFileSync(join(ROOT, f), join(dir, f)); }
@@ -84,4 +84,11 @@ test("the release waits for the pull request's checks before it merges, and stop
 
 test("the release gate runs the IP gate in strict mode", () => {
   assert.match(read("scripts/release.sh"), /ip-gate\.mjs" --publish --strict/);
+});
+
+test("release.sh refuses an argument that is not a version before it touches a file", MAC, () => {
+  const b = bump("v1.2.3");
+  assert.notEqual(b.first.status, 0);
+  assert.match(b.first.stdout + b.first.stderr, /not a version: v1\.2\.3/);
+  assert.equal(b.version(), JSON.parse(read("package.json")).version, "no manifest was rewritten");
 });

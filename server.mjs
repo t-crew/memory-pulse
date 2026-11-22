@@ -48,11 +48,12 @@ import { savedKey } from "./lib/login.mjs";
 import { hostOf, normalizeHook, matcherCovers } from "./lib/hosts.mjs";
 import { drift as driftWith } from "./lib/drift.mjs";
 import { advisoryTerm } from "./lib/advisory.mjs";
-import { heardOnly, heardLine, broadCaution, blockStats, noisyLine } from "./lib/specific.mjs";
+import { heardOnly, heardLine, broadCaution, blockStats, noisyLine, broadKind } from "./lib/specific.mjs";
 import { scheduledPrompt, tailText } from "./lib/typed.mjs";
 import { commandWrites } from "./lib/shell.mjs";
 import { bareTerm as bareOnLine } from "./lib/release.mjs";
 import { foreignLayout, layoutMessage } from "./lib/layout.mjs";
+import { addedLines as addedLinesOf } from "./lib/diff.mjs";
 import { commandHits, invariantsFor, preregRows, COMMAND_HINT, INVARIANT_HINT, PREREG_WRITE, cliPrereg, cliNow, cliRan } from "./lib/prereg.mjs";
 import { installedPackRules, pathInScope, packReason, packHint, packHit, packProblems, packWarnings, packContext, forEngine } from "./lib/packs.mjs";
 import { SOUL_WRITE, RESERVED, soulState, soulLines, soulGuard, cliSoul, cliUser, setSection, chainedOnly, heldFromMerge, taintOf, soulCapsule, verifySoulCapsule, continuityLine, soulScreen,
@@ -2358,7 +2359,7 @@ export function localCheck(allEvents, action, invariants = [], opts = {}) {
         if (!bareTerm(text, term, c.replacement)) { reasons.push(`"${term}" appears beside its replacement on the same line (comparison or disavowal) — allowed, per ledger t${c.t}`); continue; }
         const o = overridesFor.find((x) => x.override.term === term && (!x.override.path || (path && path.startsWith(x.override.path))));
         if (o) { overrides.push({ t: o.t, term }); reasons.push(`"${term}" is withdrawn at t${c.t} but overridden at t${o.t}${o.override.reason ? ` (${o.override.reason})` : ""}`); continue; }
-        if (advisoryTerm(c, term)) { reasons.push(`"${safeTerm(term)}" is advisory, not blocked: t${c.t} came from ambient capture and is one ordinary word. To enforce it, record it on purpose: memory-pulse remember <cause> <effect> --kind correction --withdrawn "${safeTerm(term)}"`); continue; }
+        if (advisoryTerm(c, term)) { reasons.push(`"${safeTerm(term)}" is advisory, not blocked: t${c.t} came from ambient capture and is ${broadKind(term)}. To enforce it, record it on purpose: memory-pulse remember <cause> <effect> --kind correction --withdrawn "${safeTerm(term)}"`); continue; }
         corrections.push({ t: c.t, term, replacement: c.replacement ?? [], cause: c.cause, effect: c.effect, note: c.note ?? "" });
       }
     }
@@ -2684,7 +2685,7 @@ async function cliCheck() {
     const { execFileSync } = await import("node:child_process");
     const args = base ? ["diff", `${base}...HEAD`, "--unified=0"] : ["diff", "--unified=0"];
     const out = execFileSync("git", args, { encoding: "utf8" });
-    text = out.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++")).map((l) => l.slice(1)).join("\n");
+    text = addedLinesOf(out);   // by position, so an added line that begins with ++ is read (lib/diff.mjs)
     path = path ?? "git-diff";
   }
   if (text == null) { let raw = ""; for await (const c of process.stdin) raw += c; text = raw; }
@@ -2949,7 +2950,10 @@ async function askUsageConsent() {
 // Muse Code (2026-10-22): .agents/AGENTS.md is one of its instruction files, and .agents/memory/ (a MEMORY.md index plus topic files)
 // is committed project memory, which it loads even in a workspace the user has not trusted. A line in any linted file that reads like
 // an instruction planted for the agent (plantedLines) makes the file BLOCKED too.
-const LINT_DEFAULTS = ["CLAUDE.md", "AGENTS.md", ".claude/CLAUDE.md", ".claude/rules", ".cursorrules", ".cursor/rules", ".github/copilot-instructions.md", ".codex/AGENTS.md", ".agents/AGENTS.md", ".agents/memory", ".memory-pulse/invariants.jsonl"];
+const LINT_DEFAULTS = ["CLAUDE.md", "AGENTS.md", ".claude/CLAUDE.md", ".claude/rules", ".cursorrules", ".cursor/rules", ".github/copilot-instructions.md", ".codex/AGENTS.md", ".agents/AGENTS.md", ".agents/memory"];
+// .memory-pulse/invariants.jsonl was in this list until 0.19.0. The guard never judges a file under .memory-pulse/ against the
+// corrections, so lint could only judge the declared rules against themselves, and a rule's own line holds its pattern: one
+// unscoped literal rule blocked the file, and through the Action every pull request (review 2026-11-22, N-A1).
 // An entry lint cannot read (a dangling symlink, a directory named like a file) is skipped and named on stderr, never a crash and
 // never silent (release review 2026-10-22).
 function lintTargets(args, skipped = []) {
@@ -2983,7 +2987,11 @@ async function cliLint() {
   const lintSeal = verifyLocalSeal(events, readSeal(), lintChain0);
   for (const f of files) {
     let text = ""; try { text = readFileSync(f, "utf8"); } catch { continue; }
-    const v = localCheck(events, { kind: "lint", text, path: f }, invariants, { chain: lintChain, seal: lintSeal });
+    // Named on the command line, the declared-rules file is not judged against the declared rules: it would trip itself (N-A1).
+    // compared through realpath: on macOS the same temp folder is /var/... in one variable and /private/var/... in process.cwd()
+    const realOf = (x) => { try { return realpathSync(x); } catch { return resolvePath(x); } };
+    const isRuleFile = realOf(f) === realOf(invariantsPath());
+    const v = localCheck(events, { kind: "lint", text, path: f }, isRuleFile ? [] : invariants, { chain: lintChain, seal: lintSeal });
     const injections = plantedLines(text);
     // a file blocked for a planted line does not also say "no recorded event bears on this lint" (release review 2026-10-22)
     const reasons = [...v.reasons.filter((r) => !/^\d+ recorded event/.test(r) && !(injections.length && /^no recorded event bears/.test(r))), ...injections.map((i) => `${f}:${i.line} reads like an instruction planted for the agent (${i.patterns.join(", ")}); the line is not printed`)];

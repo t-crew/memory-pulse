@@ -44,7 +44,7 @@ const mk = () => {
 // ---------------------------------------------------------------- the predicate ----
 test("isSpecificTerm: a phrase, a digit or a symbol; one word of letters only is not, whatever its capitals", async () => {
   const { isSpecificTerm } = await specific();
-  for (const t of ["two words", "Player join", "$49", "6144", "0.030", "3/11", "us-east-1", "memory_key", "v2", "em-dashes", "a.b", "@scope", "#general", "don't"])
+  for (const t of ["two words", "Player join", "$49", "3/11", "us-east-1", "memory_key", "v2", "em-dashes", "a.b", "@scope", "#general", "don't", "0.18.0", "48 tests"])
     assert.equal(isSpecificTerm(t), true, `${t} is specific`);
   // 0.17.1's rule, which the first version of this module loosened for capitals and a review put back (2026-11-21): in a fixed
   // sample of 3,000 files JSON is in 14.9%, API 8.6%, URL 7.0%, forEach 4.1%, toString 3.9%, HTTP 2.8%, README 1.9%; merge is in 6.1%
@@ -58,7 +58,9 @@ test("isSpecificTerm separates the recorded blocks: the seven words behind 125 o
   const noisy = { merge: 85, send: 16, ten: 9, trigger: 5, universal: 5, just: 3, capture: 2 };
   assert.equal(Object.values(noisy).reduce((a, b) => a + b, 0), 125);
   for (const t of Object.keys(noisy)) assert.equal(isSpecificTerm(t), false, t);
-  for (const t of ["6144", "0.030", "3/11", "renderer swap", "Player join", "$79"]) assert.equal(isSpecificTerm(t), true, t);
+  for (const t of ["3/11", "renderer swap", "Player join", "$79"]) assert.equal(isSpecificTerm(t), true, t);
+  // a number by itself is as broad as a word (second review, 2026-11-22): 6144 and 0.030 were themselves overheard rows on this ledger
+  for (const t of ["6144", "0.030"]) assert.equal(isSpecificTerm(t), false, t);
 });
 
 test("advisoryTerm is 0.17.1's rule: an ambient word of letters only is never enforced, whatever its capitals", () => {
@@ -94,7 +96,10 @@ test("correctionEvent: one ordinary word is recorded as heard, without withdrawn
   assert.ok(subRow.note.includes('memory-pulse remember deliberate-minutes minutes-withdrawn-for-seconds --kind correction --withdrawn "minutes" --replacement "seconds"'), subRow.note);
 
   const kept = correctionEvent(observeDecision("no, the cap is 20, not 48"), "no, the cap is 20, not 48");
-  assert.deepEqual(kept.withdrawn, ["48"]); assert.deepEqual(kept.replacement, ["20"]); assert.equal(kept.effect, "48-withdrawn-for-20");
+  // a number by itself is heard and not enforced (second review, 2026-11-22: "48" stands in 10.3% of files)
+  assert.equal(kept.withdrawn, undefined); assert.match(kept.effect, /heard-not-enforced$/); assert.match(kept.note, /"48" is a number by itself/);
+  const unit = correctionEvent(observeDecision("no, the plan is $29, not $49"), "no, the plan is $29, not $49");
+  assert.deepEqual(unit.withdrawn, ["$49"]); assert.deepEqual(unit.replacement, ["$29"]);
   const phrase = correctionEvent(observeDecision("renderer swap -> 2x performance"), "renderer swap -> 2x performance");
   assert.deepEqual(phrase.withdrawn, ["renderer swap"]);
 });
@@ -124,7 +129,7 @@ const CAPTURE_CASES = [
   ["we say Vitest, not Jest", "Jest is still used by the legacy package.", "README.md", null, 0, "Jest"],
   ["never use moment", "Wait a moment for the build.", "README.md", null, 0, "moment"],
   ["never use Postgres 14; use Postgres 16.", "We run Postgres 16 in production.", "README.md", ["Postgres 14"], 0, null],
-  ["no, the cap is 20, not 48", "padding: 48px;", "src/a.css", ["48"], 2, "48"],
+  ["no, the cap is 20, not 48", "padding: 48px;", "src/a.css", null, 0, "48"],
   ["never cite $49 in the docs", "| Pro | $49/mo |", "docs/p.md", ["$49"], 2, "$49"],
 ];
 test("the review's capture table: an overheard acronym or camelCase name binds nothing and blocks nothing; a value still binds", () => {

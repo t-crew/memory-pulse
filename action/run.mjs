@@ -22,13 +22,13 @@ import { readFileSync, appendFileSync, existsSync, mkdtempSync, realpathSync } f
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join, relative, basename, resolve } from "node:path";
+import { spawn } from "node:child_process";
+import { addedLines } from "../lib/diff.mjs";
 
 export const MARKER = "<!-- memory-pulse-check -->";
 
-/** Added lines of a unified diff, as one text (what the change INTRODUCES). */
-export function addedLines(diff) {
-  return String(diff ?? "").split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++")).map((l) => l.slice(1)).join("\n");
-}
+// Added lines of a unified diff (lib/diff.mjs): headers are skipped by position, so an added line that begins with ++ is read.
+export { addedLines };
 
 /** Check-run conclusion for a verdict. no_evidence is NEUTRAL, never success. */
 export function conclusionFor(verdict) {
@@ -103,7 +103,7 @@ async function gh(path, { method = "GET", body } = {}) {
 }
 
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-const git = (args, opts = {}) => execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 1 << 28, ...opts });
+const git = (args, opts = {}) => execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 1 << 28, env: { ...process.env, GIT_LITERAL_PATHSPECS: "1" }, ...opts });
 const revExists = (ref) => { try { git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]); return true; } catch { return false; } };
 
 /**
@@ -125,39 +125,63 @@ export function changeRange(base) {
   return { range: `${EMPTY_TREE}..HEAD`, baseRef: null, baseName: null };   // the first commit of a repository
 }
 
-const parseCheck = (run) => { try { return JSON.parse(run()); } catch (e) { try { return JSON.parse(String(e.stdout)); } catch { throw new Error(String(e.stderr || e.message).split("\n").find((l) => l.trim()) ?? "check printed nothing"); } } };
+// One check as its own process, without blocking: stdout is the JSON verdict whatever the exit status.
+const runCheck = (cli, args, input, env) => new Promise((done, fail) => {
+  const p = spawn(process.execPath, [cli, ...args], { env, stdio: ["pipe", "pipe", "pipe"] });
+  let out = "", err = "";
+  p.stdout.on("data", (c) => { out += c; }); p.stderr.on("data", (c) => { err += c; });
+  p.on("error", fail);
+  p.on("close", () => { try { done(JSON.parse(out)); } catch { fail(new Error(err.split("\n").find((l) => l.trim()) ?? "check printed nothing")); } });
+  p.stdin.on("error", () => { /* the check may exit before it has read everything */ });
+  p.stdin.end(input);
+});
+export const CHECKS_AT_ONCE = 8;
 
 /**
  * The ledger check, one file at a time, each under its own path (review 2026-11-21, A-1). A path scope (`paths` on a rule, the
  * prefix of a `guard allow`) means something only when the check is told which file a line is in; under the single path
- * "pull-request" none of them could apply. Returns one verdict: blocked if any file is, else verified if any is, else no evidence.
+ * "pull-request" none of them could apply. Files are checked CHECKS_AT_ONCE at a time: one after another, a pull request of
+ * 1,000 files took over two minutes. Returns one verdict: blocked if any file is, else verified if any is, else no evidence.
  */
-export function checkFiles(cli, files, range, env) {
+export async function checkFiles(cli, files, range, env) {
   const out = { verdict: "no_evidence", reasons: [], evidence: [], corrections: [], invariants: [], checked: null, files: 0 };
   const seen = { evidence: new Set(), corrections: new Set(), invariants: new Set() };
   const add = (key, items) => { for (const x of items ?? []) { const k = JSON.stringify(x); if (!seen[key].has(k)) { seen[key].add(k); out[key].push(x); } } };
-  const one = (text, path) => parseCheck(() => execFileSync(process.execPath, [cli, "check", "--ci", "--json", "--kind", "edit", "--path", path], { input: text, encoding: "utf8", env, stdio: ["pipe", "pipe", "pipe"] }));
-  for (const f of files) {
-    const text = addedLines(git(["diff", range, "--unified=0", "--", f]));
-    if (!text.trim()) continue;
-    const r = one(text, f);
-    if (r.verdict === "unreadable") throw new Error((r.reasons ?? [])[0] ?? "the ledger is in a layout this client cannot read");
+  const one = (text, path) => runCheck(cli, ["check", "--ci", "--json", "--kind", "edit", "--path", path], text, env);
+  const unreadable = (r) => { if (r.verdict === "unreadable") throw new Error((r.reasons ?? [])[0] ?? "the ledger is in a layout this client cannot read"); return r; };
+  const results = new Array(files.length).fill(null);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(CHECKS_AT_ONCE, files.length) }, async () => {
+    for (;;) {
+      const i = next++; if (i >= files.length) return;
+      const text = addedLines(git(["diff", range, "--unified=0", "--", files[i]]));
+      if (text.trim()) results[i] = unreadable(await one(text, files[i]));
+    }
+  }));
+  results.forEach((r, i) => {   // folded in the files' own order, so the comment reads the same on every run
+    if (!r) return;
+    const f = files[i];
     out.files++; out.checked ??= r.checked ?? null;
     if (r.verdict === "blocked") { out.verdict = "blocked"; for (const x of r.reasons ?? []) if (!/^\d+ recorded event/.test(x)) out.reasons.push(`\`${f}\`: ${x}`); }
     else if (r.verdict === "verified" && out.verdict !== "blocked") out.verdict = "verified";
     add("evidence", r.evidence); add("corrections", r.corrections); add("invariants", r.invariants);
-  }
-  if (!out.checked) { const r = one("", "pull-request"); if (r.verdict === "unreadable") throw new Error((r.reasons ?? [])[0] ?? "the ledger is in a layout this client cannot read"); out.checked = r.checked ?? null; }   // how many memories there were to check, for the title
+  });
+  if (!out.checked) out.checked = unreadable(await one("", "pull-request")).checked ?? null;   // how many memories there were to check, for the title
   return out;
 }
 
-/** The rule folder as it stands on the base, unpacked beside nothing of ours: the rules a change is judged by before it changes them. */
-function baseRuleDir(baseRef, ruleDir) {
+/**
+ * The rule files as they stand on the base, unpacked into a temporary folder: the rules a change is judged by before it changes
+ * them. `paths` are the rule files by name (the ledger, the declared rules, the installed packs, the layout marker); the ones the
+ * base does not have are left out. Returns the base ledger's path there, or null when the base has none of them.
+ */
+function baseRules(baseRef, ledgerRel, paths) {
   if (!baseRef) return null;
-  try { git(["cat-file", "-e", `${baseRef}:${ruleDir}`]); } catch { return null; }
+  const there = paths.filter((p) => { try { git(["cat-file", "-e", `${baseRef}:${p}`]); return true; } catch { return false; } });
+  if (!there.length) return null;
   const tmp = mkdtempSync(join(tmpdir(), "mp-base-rules-"));
-  execFileSync("tar", ["-x", "-C", tmp], { input: execFileSync("git", ["archive", "--format=tar", baseRef, ruleDir], { maxBuffer: 1 << 30, stdio: ["ignore", "pipe", "pipe"] }) });
-  return join(tmp, ruleDir);
+  execFileSync("tar", ["-x", "-C", tmp], { input: execFileSync("git", ["archive", "--format=tar", baseRef, "--", ...there], { maxBuffer: 1 << 30, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, GIT_LITERAL_PATHSPECS: "1" } }) });
+  return join(tmp, ledgerRel);
 }
 
 function packCheck(cli, baseRef, env) {
@@ -182,11 +206,20 @@ export async function main() {
   }
   const { range, baseRef, baseName } = where;
   const ledger = process.env.MEMORY_PULSE_LEDGER || ".memory-pulse/events.jsonl";
-  // both sides through realpath: on macOS a temp folder is /var/... to the shell and /private/var/... to process.cwd()
+  // Which changed files are the rules and which are content (review 2026-11-22, N-A2): the rules are the ledger file, the declared
+  // rules, the installed packs and the layout marker beside it, and everything under a folder named .memory-pulse. A file that
+  // merely sits beside a ledger kept somewhere else (docs/events.jsonl) is content and is checked.
+  // Both sides through realpath: on macOS a temp folder is /var/... to the shell and /private/var/... to process.cwd().
   const real = (p) => { try { return realpathSync(p); } catch { return resolve(p); } };
-  const ruleDir = (relative(real(process.cwd()), real(dirname(resolve(ledger)))) || ".").split("\\").join("/");
-  const inRules = (f) => ruleDir !== "." && !ruleDir.startsWith("..") && (f === ruleDir || f.startsWith(`${ruleDir}/`));
-  const names = (filter) => git(["diff", "--name-only", "-z", `--diff-filter=${filter}`, range]).split("\0").filter(Boolean);
+  const ledgerRel = relative(real(process.cwd()), join(real(dirname(resolve(ledger))), basename(ledger))).split("\\").join("/");
+  const outside = ledgerRel.startsWith("..") || resolve(ledgerRel) === ledgerRel;
+  const dirRel = dirname(ledgerRel) === "." ? "" : dirname(ledgerRel);
+  const beside = (name) => (dirRel ? `${dirRel}/${name}` : name);
+  const ruleFiles = [ledgerRel, beside("invariants.jsonl"), beside("layout.json")], ruleDirs = [beside("packs"), beside("rows")];
+  if (basename(dirRel) === ".memory-pulse") ruleDirs.push(dirRel);
+  const inRules = (f) => !outside && (ruleFiles.includes(f) || ruleDirs.some((d) => f.startsWith(`${d}/`)));
+  // --no-renames: a ledger moved out of the way is a removal here, not a rename that hides it (N-A3)
+  const names = (filter) => git(["diff", "--name-only", "-z", "--no-renames", `--diff-filter=${filter}`, range]).split("\0").filter(Boolean);
   const changed = names("d");                                   // every file the change leaves in the tree
   const content = changed.filter((f) => !inRules(f));           // the ledger and the rules are not content checked against themselves (A-1)
   const rulesChanged = [...changed.filter(inRules), ...names("D").filter(inRules).map((f) => `${f} (removed)`)];
@@ -199,7 +232,7 @@ export async function main() {
     process.exit(1);
   };
   let result;
-  try { result = checkFiles(cli, content, range, { ...process.env }); }
+  try { result = await checkFiles(cli, content, range, { ...process.env }); }
   catch (e) { unchecked(String(e.message)); }
 
   // Rule packs, file by file, under each file's own path. With no pack installed the command prints a sentence, not JSON,
@@ -221,10 +254,10 @@ export async function main() {
   const rulesMode = String(process.env.MP_ACTION_RULES || "both") === "head" ? "head" : "both";
   if (rulesChanged.length) {
     result.rulesChanged = rulesChanged; result.rulesMode = rulesMode; result.rulesBase = baseName;
-    const baseDir = rulesMode === "both" ? baseRuleDir(baseRef, ruleDir) : null;
-    if (baseDir) {
-      const env = { ...process.env, MEMORY_PULSE_LEDGER: join(baseDir, basename(ledger)) };
-      let under; try { under = checkFiles(cli, content, range, env); } catch (e) { unchecked(`under the rules on ${baseName}: ${String(e.message)}`); }
+    const baseLedger = rulesMode === "both" && !outside ? baseRules(baseRef, ledgerRel, [...ruleFiles, ...ruleDirs]) : null;
+    if (baseLedger) {
+      const env = { ...process.env, MEMORY_PULSE_LEDGER: baseLedger };
+      let under; try { under = await checkFiles(cli, content, range, env); } catch (e) { unchecked(`under the rules on ${baseName}: ${String(e.message)}`); }
       foldPacks(under, packCheck(cli, baseRef, env), "");
       if (under.verdict === "blocked" && result.verdict !== "blocked") {
         result.verdict = "blocked"; result.blockedUnderBase = true;
