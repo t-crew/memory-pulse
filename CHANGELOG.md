@@ -2,7 +2,7 @@
 
 This file starts at 0.16.0. Earlier releases are described in their tagged commits.
 
-## 0.19.0 (unreleased)
+## 0.19.0 (22 November 2026)
 
 Three new command families, a stricter guard and a reworked pull-request check. Read "What changes for you" first:
 some edits and pull requests that 0.18.0 passed are now stopped.
