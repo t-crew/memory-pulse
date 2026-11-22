@@ -16,7 +16,7 @@
     "python/*.py"
   ],
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "test": "node scripts/test.mjs"
   },
   "keywords": [
     "mcp",
