@@ -97,7 +97,8 @@ A blocked edit starts with `memory-pulse guard: blocked.` and cites the ledger
 row that retired the term and the replacement. Do not retry the same text.
 Use the corrected value from the cited line. If you believe the correction
 itself is wrong, record a new correction with `supersedes` explaining why;
-never bypass. A comparison that names both the old and the new value passes.
+never bypass. A comparison that names both the old and the new value on one
+line passes; the same two values on separate lines are blocked.
 
 ## 5. Ask `before` a risky edit
 
@@ -146,7 +147,8 @@ What not to do:
 - **Claude Code**: the guard sees `Edit`, `Write`, `MultiEdit` and `Bash`
   commands whose write target and text are literal in the command (a heredoc,
   a redirect, a `tee`, `sed -i` and `perl -i` on the replacement side,
-  `python -c` or `node -e` with a write call). A shell write whose content cannot be read from the
+  `python -c` or `node -e` whose write call is handed a string literal). A
+  command that removes the old value passes. A shell write whose content cannot be read from the
   command string is a miss, not a pass; `check --ci` catches it on the PR.
   Blocked calls return the ledger line that retired the term; use the
   replacement or record a new correction, never paraphrase around the term.

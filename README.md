@@ -248,8 +248,8 @@ memory tool installed. The PreToolUse guard sees every `Edit`, `Write` and
 `MultiEdit` in Claude Code, plus a `Bash` command whose write is literal in
 the command string (a heredoc with the redirect before or after its marker, a
 redirect or a `tee`, `sed -i` and `perl -i`, judged on the replacement side
-only, and `python -c` or `node -e` with a write call; all read with nothing
-executed), and every `apply_patch` in Codex, where one patch may touch several
+only, and `python -c` or `node -e` whose write call is handed a string
+literal; all read with nothing executed), and every `apply_patch` in Codex, where one patch may touch several
 files and each is checked under its own path. An edit that writes back a
 withdrawn value is **blocked**, and the agent is told which ledger line retired
 it and when. A line that names the replacement beside the old value passes,
@@ -278,9 +278,20 @@ The rules that decide whether the guard can act on a correction:
   that states both the old value and its replacement is a comparison and
   passes. A line that states only the old value is blocked, whatever the rest
   of the edit says: `| Pro | $49/mo |` is blocked even when
-  `<!-- coupon: $29 -->` sits two lines below it. Make replacements as
-  specific as withdrawn terms: `$29`, not `29`. Terms under 2 characters are
-  dropped and the result says `enforceable: false`.
+  `<!-- coupon: $29 -->` sits two lines below it. Text that states the old
+  value on one line and the new one on the next is blocked too; put both on
+  one line, as the block message says. A term that spans lines is judged on
+  the lines it covers. Make replacements as specific as withdrawn terms:
+  `$29`, not `29`. Terms under 2 characters are dropped and the result says
+  `enforceable: false`.
+
+  Measured by an independent review on 2026-11-21, with the corrections of
+  one real ledger over 6,204 file checks: 0.18.0 blocked 91 files and this
+  version blocks 100. Of the 9 newly blocked files none was a true
+  reintroduction: 3 held a comparison split over lines, and 6 held an
+  unrelated use of a broad phrase that the old rule had released by accident.
+  Of 91 ways to write a withdrawn value back, 0.18.0 caught 13 and this
+  version catches 30.
 - **Pass the terms yourself.** When a correction declares no withdrawn term
   and its effect reads `X-corrected-to-Y` (or `-withdrawn-for-`,
   `-superseded-by-`, `-replaced-by-`), the terms are read out of the slug:
