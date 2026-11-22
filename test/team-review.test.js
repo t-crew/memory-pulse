@@ -13,7 +13,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, statSync, chmodSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { world, branchWith, merge, bulk, chainedRows, noMarkers, out, ok, TMP, verifyChainLines, buildCapsule, mergeCapsule } from "./_team.mjs";
+import { world, branchWith, merge, bulk, chainedRows, noMarkers, engineer, out, ok, TMP, verifyChainLines, buildCapsule, mergeCapsule } from "./_team.mjs";
 
 const pull = (e) => e.git("pull", "--no-rebase", "--no-edit");
 const count = (e, cause) => e.rows().filter((r) => r.cause === cause).length;
@@ -136,4 +136,17 @@ test("a finding the other side tagged state is carried: only a row that holds a 
   assert.equal(m.status, 0, out(m));
   assert.equal(count(bob, "deploy-target"), 1, `a row of the other side is on neither tip after the merge:\n${out(m)}`);
   assert.ok(verifyChainLines(bob.lines()).ok);
+});
+
+test("a percent sign in the pinned copy's path does not break the driver (git reads %A in the command as a placeholder)", () => {
+  const dir = mkdtempSync(join(TMP, "pct-")), e = engineer("pat", dir);
+  e.env.MEMORY_PULSE_DATA_DIR = join(e.home, "pct%Adir", "50%Off");
+  ok(e.git("init", "-q", "-b", "main"), "init");
+  e.remember("x", "one", "--note", "x happened"); ok(e.mp(["team", "setup"]), "team setup"); e.commit("base");
+  ok(e.git("checkout", "-q", "-b", "a"), "a"); e.remember("a-row", "added", "--note", "a went on"); e.commit("a");
+  ok(e.git("checkout", "-q", "-b", "b", "main"), "b"); e.remember("b-row", "added", "--note", "b went on"); e.commit("b");
+  const m = e.git("merge", "--no-edit", "-m", "merge a", "a");
+  assert.equal(m.status, 0, out(m));
+  assert.deepEqual(e.rows().map((r) => r.cause), ["x", "b-row", "a-row", "state-merged"]);
+  assert.equal(e.mp(["team", "status"]).status, 0);
 });
