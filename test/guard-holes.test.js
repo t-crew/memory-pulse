@@ -89,6 +89,40 @@ print(json.dumps([L.check("| Pro | $49/mo |\\n<!-- coupon: $29 -->")["verdict"],
   assert.deepEqual(JSON.parse(r.stdout.trim()), ["blocked", "verified", "blocked"]);
 });
 
+// ---- 1b. a withdrawn term that spans lines (review G-5, 2026-11-21). The text was split into lines before the term was looked for,
+// so a term with a newline in it was found on no line and, once a replacement was recorded, never blocked. 0.18.0 blocked it.
+const POLICY = "retries: 3\n  backoff: none", POLICY_TEXT = "http:\n  retries: 3\n  backoff: none\n  timeout: 10\n";
+test("G-5: a two-line withdrawn term written back whole is blocked, with a replacement recorded and without one", () => {
+  const a = mk("ml-a"); a.remember("retry-policy", "policy-corrected", "--kind", "correction", "--withdrawn", POLICY, "--replacement", "backoff: exponential");
+  assert.equal(a.write("config.yml", POLICY_TEXT).status, 2, "with a replacement (the review's case: 0.18.0 blocked it)");
+  const b = mk("ml-b"); b.remember("retry-policy", "policy-corrected", "--kind", "correction", "--withdrawn", POLICY);
+  assert.equal(b.write("config.yml", POLICY_TEXT).status, 2, "without one");
+  assert.equal(a.write("config.yml", "http:\n  retries: 3\n  backoff: exponential\n").status, 0, "the corrected policy passes");
+  assert.equal(a.write("config.yml", "http:\n  retries: 3\n\n  backoff: none\n").status, 0, "not the term: a blank line stands between its two lines");
+});
+test("G-5: for a term that spans lines the release rule is judged on the lines the occurrence covers", async () => {
+  const { bareTerm: bare } = await import("../lib/release.mjs");
+  process.env.MEMORY_PULSE_LEDGER = join(mkdtempSync(join(tmpdir(), "mp-holes-ml-")), "events.jsonl");
+  const { bareTerm, findViolations, localCheck } = await import("../server.mjs");
+  const rep = ["backoff: exponential"];
+  for (const f of [bare, bareTerm]) {
+    assert.equal(f(POLICY_TEXT, POLICY, rep), true, "the term alone on its lines");
+    assert.equal(f(`# was\n  retries: 3\n  backoff: none  (now backoff: exponential)\n`, POLICY, rep), false, "old and new on the lines the term covers: a comparison");
+    assert.equal(f(`  retries: 3  # backoff: exponential replaces this\n  backoff: none\n`, POLICY, rep), false, "the replacement on the term's first line counts too");
+    assert.equal(f(`${POLICY_TEXT}\n# elsewhere: backoff: exponential\n`, POLICY, rep), true, "a replacement on a line the term does not cover releases nothing");
+    assert.equal(f(`  retries: 3\n  backoff: none  (now backoff: exponential)\n\nlater:\n  retries: 3\n  backoff: none\n`, POLICY, rep), true, "one occurrence compared, another bare: blocked");
+    assert.equal(f("retries: 3\n\n  backoff: none", POLICY, rep), false, "the term is not there");
+    assert.equal(f(POLICY_TEXT, POLICY, []), true);
+  }
+  const events = [{ t: 1, cause: "a", effect: "b", kind: "correction", withdrawn: [POLICY], replacement: rep }];
+  assert.equal(findViolations(events, POLICY_TEXT).length, 1);
+  assert.equal(localCheck(events, { text: POLICY_TEXT }, [], { blockOnly: true }).verdict, "blocked");
+  assert.notEqual(localCheck(events, { text: "  retries: 3\n  backoff: none  (now backoff: exponential)\n" }, [], { blockOnly: true }).verdict, "blocked");
+  // a term on one line is judged line by line, as before
+  assert.equal(bareTerm("Pro is $49.\nCoupon: $29.", "$49", ["$29"]), true);
+  assert.equal(bareTerm("Pro was $49, now $29.", "$49", ["$29"]), false);
+});
+
 // ---- 2. adopt reads "Never X; use Y" as a correction from X to Y, versions included
 test("hole 2: adopt reads 'Never use Postgres 14; use Postgres 16.' as Postgres 14 -> Postgres 16, and the guard passes Postgres 16", () => {
   const t = mk("adopt");
