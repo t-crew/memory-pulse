@@ -2,80 +2,100 @@
 
 This file starts at 0.16.0. Earlier releases are described in their tagged commits.
 
-## 0.18.1 (unreleased)
+## 0.19.0 (unreleased)
 
-**Capture no longer writes one ordinary word as a withdrawn term.** 0.17.1
-stopped the guard blocking on a single word that ambient capture had recorded
-by itself. The row was still written as binding, and the rule for "one word"
-was letters only. On one real ledger, 125 of the 166 term blocks recorded
-between 1 September and 20 November 2026 came from seven such rows (merge 85,
-send 16, ten 9, trigger 5, universal 5, just 3, capture 2).
+Three new command families, a stricter guard and a reworked pull-request check. Read "What changes for you" first:
+some edits and pull requests that 0.18.0 passed are now stopped.
 
-Now a prompt shaped like "no merge" is recorded as a correction with no
-withdrawn terms. Its note says what was heard, that it is not enforced because
-one ordinary word would block every edit that contains it, and gives the
-command that enforces the word on purpose. The brief lists the row as not
-enforced.
+**After upgrading, run `memory-pulse install-hook` again (or `memory-pulse init`).** The hooks run a pinned copy of the
+client, so an upgrade alone leaves them on the old one. `memory-pulse doctor` now fails when a hook runs an older copy
+and prints the command that re-pins it.
 
-One rule decides what is specific, in `lib/specific.mjs`: two or more words, a
-digit, a symbol, a capital inside the word, or a capital word of three letters
-or more. It was set from a count over 5,917 files: a lowercase word sampled by
-occurrence appears in a median 7.2% of files, a Capitalized word in 1.2%, a
-two-letter capital word in 1.3%, a capital word of three letters or more in
-0.34%, a camelCase name in 0.20% and a value with a digit or a symbol in
-0.24%. The guard reads rows already in your ledger by the same rule, so an
-ambient `useEffect` or `JSON`, advisory since 0.17.1, is enforced again.
+**What changes for you.**
 
-A word you record yourself with `remember --withdrawn` still binds. The result
-now carries `broad: true` and one `caution` line that names the word and the
-`guard allow "<term>" --path <prefix> "<reason>"` command that scopes it.
+- A replacement releases a withdrawn value only on the same line. 0.18.0 let `| Pro | $49/mo |` through when `$29`
+  stood anywhere else in the edit. Before-and-after text on two lines is now blocked; put both on one line, as a
+  comparison. Measured with one real ledger (131 corrections that have a replacement) over 6,204 file checks on
+  2026-11-21: 0.18.0 blocked 91 files and this version 100; of the 9 newly blocked none was a true reintroduction
+  (3 comparisons split over two lines, 6 uses of a broad phrase). Of 91 ways of writing a value back, 0.18.0 caught 13
+  and this version 30.
+- A replacement that is part of the old value no longer releases it: with `v2.1` corrected to `v2`, 0.18.0 never
+  blocked `v2.1`.
+- A rule scoped with `paths` now fires when the editor names the file by its absolute path. Claude Code does, so a
+  rule scoped to `docs/` was never enforced there on 0.18.0. Scoped rules you declared will start to apply.
+- `sed -i`, `perl -i`, `python -c` and `node -e` commands that write a withdrawn value are blocked. A command that
+  removes the value, or only reads, passes.
+- A withdrawn term that spans two lines is matched.
+- The pull-request Action checks each file under its own path, judges a pull request that changes the rules by the
+  base branch's rules as well, runs installed rule packs, and fails when it cannot read the change. Details below.
+- `uses: t-crew/memory-pulse@v0` now follows every release. Until this release the tag still served 0.2.2.
+- `install-hook --project` also runs team setup: it writes two lines to `.gitattributes` and a merge driver to this
+  clone's `.git/config`.
+- An unknown option to `remember` is refused instead of dropped.
 
-A prompt the agent scheduled for itself is no longer read as a person's
-correction. The UserPromptSubmit payload names no origin, so the observer reads
-the end of the transcript the payload points to: a prompt that the assistant
-put in a tool call (a scheduled wake-up), that the harness logged as a
-scheduled task firing, or whose own entry is marked as not typed, records
-nothing. A prompt scheduled in another session and not yet written to this
-transcript when the hook runs is still read as typed.
+**Try it, check it, set it up: `demo`, `doctor`, `init`.** `npx memory-pulse demo` records one correction in a temporary
+folder and prints the guard's verdict on three edits, in about 0.3 s, with nothing installed and nothing left behind.
+`doctor` checks the wiring: each host's hooks, their event and matcher, whether the copy they run exists and is
+current, and the guard's answer to a synthetic edit. It exits 1 when a check fails and names the fix. It runs only
+this copy of the client or a pinned memory-pulse copy under your home folder, with an argument list and no shell; a
+command read from a project file is shown, never run. A second editor that is present with no hooks is reported as
+not set up, not as a failure. `init` prints its plan (every file it will write, `.gitattributes` and `.git/config`
+included), asks once, installs the hooks and runs `doctor`. `install-hook` now sets the hook type and repairs a
+matcher that misses a guarded tool.
 
-**`report` and the brief name a noisy rule.** A correction the guard blocked 5
-times or more, in 3 distinct directories or more, whose term is one ordinary
-word, gets one line in `report` and under its row in the brief's AT RISK
-block. The line says the rule is noisy and gives the two ways out: retire the
-row with `remember ... --supersedes <t>`, or scope the term with
-`guard allow "<term>" --path <prefix> "<reason>"`. The thresholds are
-`NOISY_MIN_BLOCKS` and `NOISY_MIN_DIRS` in `lib/specific.mjs`. A value or a
-phrase is never labelled.
+**Rule packs.** A pack is a file of sourced rules for one stack: `pack list`, `show`, `add`, `remove`, `check`,
+`rule` and `verify`. Eight packs and 61 rules ship: Python standard library, Pydantic v2, FastAPI, Next.js App
+Router, Cloudflare Workers, Stripe, Supabase auth and retired model identifiers. Each rule carries the vendor's page
+and the date it was read. `pack add` installs every rule as a warning the agent is shown; a rule blocks only when you
+turn it on (`pack add <name> --block`, or `pack rule <pack>/<rule> block`), and the eight rules marked safe to block
+skip comments, strings and Markdown. Measured over 35 public repositories and 110 near-miss snippets: 0 blocked as
+installed, 2 with every block turned on. `pack check` previews a pack against your tree. A pack file that does not
+load is reported on every guard run and fails `check --ci`. A `paths` entry with a `*` in `invariants.jsonl` is now a
+glob. A hand-declared `warn` rule is still silent in the guard, as before.
 
-**Three guard holes from the 0.16.1 audit are closed.** The fixes were written
-on 0.16.1 and never merged; all three holes were still open in 0.18.0.
+**Teams: a merge driver for the committed ledger.** `team setup` (also run by `install-hook --project`) makes git merge
+`.memory-pulse/events.jsonl` and `invariants.jsonl` through `memory-pulse merge-driver`. Both sides' rows are kept,
+carried through the writer so the chain verifies; rollback, superseding and override rows keep their effect; two
+corrections that contradict each other stop the merge with the rows and the settling command named. `team` reports a
+clone that has the attribute and no driver, and a ledger that was merged by hand; `team resolve` rebuilds it without
+dropping a row. 5,000 rows a side merge in about 5 s. Limits: GitHub's merge button runs no merge driver, so merge or
+rebase locally and push; a pre-registration's forbid rule applies only in the clone that sealed it.
 
-A replacement releases a withdrawn term only on its own line. It used to
-release every term of its correction anywhere in the edit, so
-`| Pro | $49/mo |` passed when `<!-- coupon: $29 -->` sat two lines below it.
-A line that states old and new together still passes as a comparison. `check`,
-`lint`, the brief's stale marker and the Python client's `check` use the same
-rule.
+**The pull-request Action.**
 
-The guard reads more shell writes from the command: `sed -i` and `perl -i`
-(judged on the replacement side only, so a command that removes a withdrawn
-value passes and one that writes it is blocked), `python -c` and `node -e`
-with a write call, and a heredoc whose redirect comes after its marker
-(`cat <<'EOF' > file`). A write it cannot read from the command is still a
-miss, not a block.
+- Each changed file is checked under its own path, so `paths` scopes and `guard allow --path` apply as they do in the
+  editor. Files under `.memory-pulse/` are the rules, not content: a pull request that only records a correction or
+  declares a rule no longer fails its own check.
+- A pull request that changes anything under `.memory-pulse/` is judged by the rules on the base branch as well as its
+  own, and the stricter verdict stands. Superseding a correction, recording an override or turning a pack rule off in
+  the same change that breaks the rule no longer passes. The comment names the files. `rules: head` opts out.
+- When the change cannot be read (no base in the checkout, no shared history) the job fails and says so. It used to
+  check an empty diff and report no evidence. The base is fetched only when missing, and a full clone stays full.
+- Installed rule packs run file by file; a block fails the check and a warning is listed.
+- With `api-key` set the Action requests a signed receipt and the comment names it. The input did nothing before. The
+  verdict is always the one computed on the runner.
 
-`adopt` and ambient capture read "Never use Postgres 14; use Postgres 16." as
-a correction from `Postgres 14` to `Postgres 16`. They read it as a ban on
-`Postgres`, and the guard then blocked `Postgres 16`.
+**Capture.** A prohibition of one ordinary word heard in a prompt ("no merge") is recorded as heard and not enforced,
+with the command that enforces it on purpose. 0.17.1 had stopped the guard blocking on such a word; the row was still
+written as if it were enforceable. On one real ledger, 125 of 166 term blocks between 1 September and 16 November 2026
+had come from seven such rows. A deliberate `remember --withdrawn <word>` still binds and returns a caution. A
+scheduled prompt found in the transcript is not captured. `adopt` reads "Never use Postgres 14; use Postgres 16." as
+a correction from one to the other. `report` and the brief label a correction that was blocked 5 or more times across
+3 or more folders on a non-specific term as noisy, with the two ways out.
 
-The fourth hole, running a command the user said to stop using, was closed in
-0.18.0 by a rule on shell commands (`"on": "command"` in `invariants.jsonl`),
-so the unmerged `remember --withdrawn-command` is not added. A hyphenated
-option that `remember` does not know was dropped without a word; it is now
-refused, and `--withdrawn-command` is refused with a pointer to the rule on
-commands.
+**Python client.** `check` follows the same token, line and advisory rules as the Node client; the two agree on a
+shared fixture of twenty texts. It still does not read rollbacks or overrides.
 
-## 0.18.0 (unreleased)
+**Tests and releases.** `npm test` runs through `scripts/test.mjs`, which clears the caller's ledger, project, board
+and key variables: the suite used to write test rows into whatever ledger the shell named. `scripts/release.sh` moves
+the major tag, skips it for a pre-release, stops when the version it would tag is not the one asked for, can leave the
+engine undeployed (`RELEASE_SKIP_WORKER=1`), and runs the IP gate in strict mode.
+
+**Known limits.** Cursor's hooks are written by `install-hook --cursor` and have not been run inside Cursor. The guard
+does not catch a paraphrase, `sed` text supplied on following lines, or an inline script that writes a variable. A
+project's own function named like a removed API can trip a pack rule you have set to block.
+
+## 0.18.0 (19 November 2026)
 
 **Pre-registered research gets a command for each of three slips.** An agent
 doing pre-registered work (a builder writes a spec, seals it and builds; a

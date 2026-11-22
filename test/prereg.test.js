@@ -311,7 +311,7 @@ test("help, README, guide, skill and changelog all say the forbid rule is a trip
     readme: between(read("README.md"), "## Pre-registered research", "\n## "),
     guide: between(read("docs", "GUIDE.md"), "## 17. Pre-registered research", "\n## "),
     skill: between(read("skills", "memory-pulse", "SKILL.md"), "## 10. Pre-registered research", "\n## "),
-    changelog: between(read("CHANGELOG.md"), "## 0.18.0 (unreleased)", "\n## "),
+    changelog: between(read("CHANGELOG.md"), "## 0.18.0 (19 November 2026)", "\n## "),
   };
   for (const [name, text] of Object.entries(surfaces)) {
     assert.match(text.replace(/\s+/g, " "), /tripwire against inattention, not a security boundary/, `${name} says what the forbid rule is not`);
@@ -335,7 +335,7 @@ test("what this release adds describes behaviour only: none of the words the pub
     "README section": between(read("README.md"), "## Pre-registered research", "\n## "),
     "guide section 17": between(read("docs", "GUIDE.md"), "## 17. Pre-registered research", "\n## "),
     "skill section 10": between(read("skills", "memory-pulse", "SKILL.md"), "## 10. Pre-registered research", "\n## "),
-    "changelog 0.18.0": between(read("CHANGELOG.md"), "## 0.18.0 (unreleased)", "\n## "),
+    "changelog 0.18.0": between(read("CHANGELOG.md"), "## 0.18.0 (19 November 2026)", "\n## "),
     "test/prereg.test.js": read("test", "prereg.test.js").split("// ---- the public surface")[0],
     "test/now.test.js": read("test", "now.test.js"), "test/ran.test.js": read("test", "ran.test.js"), "test/command-invariant.test.js": read("test", "command-invariant.test.js"),
     "test/prereg-review.test.js": read("test", "prereg-review.test.js"),
