@@ -3703,9 +3703,9 @@ try {
 } catch { /* argv[1] missing or unreadable — we are being imported */ }
 if (isMain) {
   const sub = process.argv[2];
-  // A command prints and exits: its output must reach a pipe whole (lib/stdio.mjs; cut at 8 KB on macOS with Node 20 before this).
+  // A command prints and exits: its output must reach a pipe whole and in bounded time (lib/stdio.mjs; cut at 8 KB on macOS with Node 20 before 0.19).
   // The stdio server (no command, or `serve`) keeps running and is left as it was.
-  if (sub && sub !== "serve") { const { wholeOutput } = await import("./lib/stdio.mjs"); wholeOutput(); }
+  if ((sub && sub !== "serve") || process.argv.slice(2).some((a) => a === "--help" || a === "-h")) { const { wholeOutput } = await import("./lib/stdio.mjs"); wholeOutput(); }   // serve --help prints and exits too (F-2)
   if (sub === "help" || sub === "--help" || sub === "-h" || process.argv.slice(2).some((a) => a === "--help" || a === "-h")) { cliHelp(); process.exit(0); }
   if (sub === "remember") { await cliRemember(); process.exit(0); }
   if (sub === "brief" && hostOf(process.argv) === "cursor") {

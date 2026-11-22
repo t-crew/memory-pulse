@@ -73,3 +73,30 @@ test("a reader that stops reading early does not hang the command or change its 
   assert.equal(r.code, 0, r.err);
   assert.doesNotMatch(r.err, /EPIPE|at node:|Error:/, "no stack trace for a closed pipe");
 });
+
+// Review of 01a6482, F-1: with the streams set to blocking, a host that reads stderr only after the hook exits (a third-party
+// hook runner, a Python host doing wait() then read()) hung the guard forever once the block message passed the pipe's buffer,
+// and a host that times a hung hook out lets the edit through. The guard must exit 2 with or without a reader.
+test("F-1: a guard block exits 2 in bounded time when the host does not read stderr until the hook exits", async () => {
+  const p = project(300);
+  const text = Array.from({ length: 300 }, (_, i) => `old-value-${i}-of-the-deployment-region`).join("\n");
+  const payload = JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path: join(p.dir, "notes.md"), content: text }, cwd: p.dir, session_id: "s" });
+  const r = await new Promise((done) => {
+    const c = spawn(process.execPath, [CLI, "guard"], { cwd: p.dir, env: p.env, stdio: ["pipe", "pipe", "pipe"] });
+    const t0 = Date.now(), t = setTimeout(() => { c.kill("SIGKILL"); }, 12000);
+    c.stdin.end(payload);
+    // stdout and stderr are never read while the hook runs
+    c.on("exit", (code, signal) => { clearTimeout(t); done({ code, signal, ms: Date.now() - t0 }); });
+  });
+  assert.equal(r.signal, null, `the guard hung and was killed after ${r.ms} ms`);
+  assert.equal(r.code, 2, "a block stays a block");
+  assert.ok(r.ms < 8000, `${r.ms} ms`);
+});
+
+test("F-2: serve --help reaches a pipe whole", () => {
+  const p = project(1);
+  const a = spawnSync(process.execPath, [CLI, "serve", "--help"], { cwd: p.dir, env: p.env, maxBuffer: 1 << 26 });
+  const b = spawnSync(process.execPath, [CLI, "help"], { cwd: p.dir, env: p.env, maxBuffer: 1 << 26 });
+  assert.equal(a.stdout.length, b.stdout.length);
+  assert.ok(a.stdout.length > 9000);
+});

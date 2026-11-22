@@ -103,15 +103,17 @@ a correction from one to the other. `report` and the brief label a correction th
 **Python client.** `check` follows the same token, line and advisory rules as the Node client; the two agree on a
 shared fixture of twenty texts. It still does not read rollbacks or overrides.
 
-**Output through a pipe arrives whole.** A command prints and then exits. On macOS, when another program captured
-that output (every host runs a hook this way, and so does an agent's shell tool), everything past the first 8,192 bytes
-was dropped on Node 18 and 20, and everything past 65,536 bytes on Node 22 to 26. `help` is 18 KB.
-`scaffold --section corrections` passes 8 KB at about 85 corrections, so an agent on Node 20 read a list of corrections
-that stopped in the middle with nothing to say so. Every command that prints and exits now waits for each write, and
-the stdio server sends its last answers before it exits (a scripted session of 60 requests got 34 answers back).
-Measured after the change on macOS with Node 18, 20, 22, 24 and 26: 2 MB arrives whole, the exit status is the same,
-and a reader that closes early ends the command at once. Linux, a terminal and a file were never affected. Found by
-running the suite on macOS with Node 20 before release; not run on Windows.
+**Output through a pipe arrives whole, in bounded time.** A command prints and then exits. On macOS, when another
+program captured that output (every host runs a hook this way, and so does an agent's shell tool), everything past the
+first 8,192 bytes was dropped on Node 18 and 20, and past about 64 KB on Node 22 to 26; how much survived also depended
+on the program reading. `help` is 18 KB. `scaffold --section corrections` passes 8 KB at about 85 corrections, so an
+agent on Node 20 read a list of corrections that stopped in the middle with nothing to say so. The stdio server also
+lost answers that were still queued when its input closed, on macOS and, in some runs, on Linux. Each write of a
+command to a pipe is now made in full before the next line runs, and given up only when the reader has taken nothing
+for 2 seconds, so a host that never reads cannot hold a hook (a blocked edit still exits 2). The server sends its last
+answers before it exits. Measured after the change on macOS with Node 18, 20, 22, 24 and 26: 2 MB arrives whole, the
+exit status is the same, a reader that closes early ends the command at once, and a guard block with 300 hits exits 2
+within the limit when its host reads nothing until the hook ends. Not run on Windows.
 
 **The base branch's rules are read on a macOS runner.** A pull request that changes `.memory-pulse/` is also judged by
 the rules on its base branch, which the Action unpacks with `git archive` and `tar`. Through a pipe, macOS `tar` stopped

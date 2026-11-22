@@ -180,12 +180,14 @@ function baseRules(baseRef, ledgerRel, paths) {
   const there = paths.filter((p) => { try { git(["cat-file", "-e", `${baseRef}:${p}`]); return true; } catch { return false; } });
   if (!there.length) return null;
   const tmp = mkdtempSync(join(tmpdir(), "mp-base-rules-"));
+  process.once("exit", () => { try { rmSync(tmp, { recursive: true, force: true }); } catch { /* the runner is thrown away anyway */ } });   // F-4
   // Through a file, not a pipe: macOS tar stops reading at the archive's end marker, before git's padding, and on Node 20 the
   // write of the rest failed with EPIPE, so the base branch's rules were never read (found 2026-11-22 on macOS with Node 20).
   const archive = join(tmp, ".base-rules.tar");
-  execFileSync("git", ["archive", "--format=tar", "-o", archive, baseRef, "--", ...there], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, GIT_LITERAL_PATHSPECS: "1" } });
-  execFileSync("tar", ["-x", "-f", archive, "-C", tmp], { stdio: ["ignore", "pipe", "pipe"] });
-  rmSync(archive, { force: true });
+  try {
+    execFileSync("git", ["archive", "--format=tar", "-o", archive, baseRef, "--", ...there], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, GIT_LITERAL_PATHSPECS: "1" } });
+    execFileSync("tar", ["-x", "-f", archive, "-C", tmp], { stdio: ["ignore", "pipe", "pipe"] });
+  } finally { rmSync(archive, { force: true }); }
   return join(tmp, ledgerRel);
 }
 
