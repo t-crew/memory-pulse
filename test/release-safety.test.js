@@ -50,7 +50,9 @@ function bump(arg, prep) {
   return { dir, run, first: run(arg), version: () => JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).version };
 }
 
-test("A-6: a pre-release version can be set and then left: 1.0.0-rc.1, then 1.0.0, in every manifest and in the docs' pins", () => {
+// release.sh is run on the maintainer's Mac and edits files with BSD sed (sed -i ''); these two run its version block, so they run there only.
+const MAC = { skip: process.platform === "darwin" ? false : "scripts/release.sh uses BSD sed" };
+test("A-6: a pre-release version can be set and then left: 1.0.0-rc.1, then 1.0.0, in every manifest and in the docs' pins", MAC, () => {
   const b = bump("1.0.0-rc.1");
   assert.equal(b.first.status, 0, b.first.stdout + b.first.stderr);
   assert.equal(b.version(), "1.0.0-rc.1");
@@ -61,7 +63,7 @@ test("A-6: a pre-release version can be set and then left: 1.0.0-rc.1, then 1.0.
   for (const f of ["README.md", "docs/GUIDE.md", "docs/INSTALL.md"]) assert.doesNotMatch(readFileSync(join(b.dir, f), "utf8"), /memory-pulse@[0-9.]+-rc/, `${f} still pins a release candidate`);
 });
 
-test("A-6: the release stops when the version it would tag is not the version it was asked for", () => {
+test("A-6: the release stops when the version it would tag is not the version it was asked for", MAC, () => {
   const b = bump("2.0.0", (dir) => { const p = join(dir, "package.json"); writeFileSync(p, readFileSync(p, "utf8").replace(/"version": "[^"]+"/, '"version": "not-a-version"')); });
   assert.notEqual(b.first.status, 0, "a manifest the bump cannot rewrite must stop the release");
   assert.match(b.first.stdout + b.first.stderr, /asked for 2\.0\.0/);
@@ -71,6 +73,13 @@ test("A-6: the major tag is not moved for a pre-release", () => {
   const sh = read("scripts/release.sh").split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
   const guard = sh.search(/case "\$VERSION" in\s*\n?\s*\*-\*\)/), move = sh.search(/git tag -f "v\$MAJOR"/);
   assert.ok(guard > 0 && move > guard && move - guard < 500, "the v$MAJOR move sits behind a pre-release test");
+});
+
+test("the release waits for the pull request's checks before it merges, and stops when one fails", () => {
+  const sh = read("scripts/release.sh").split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
+  const create = sh.indexOf("gh pr create"), watch = sh.search(/gh pr checks "\$BR" --watch/), merge = sh.indexOf("gh pr merge");
+  assert.ok(create > 0 && watch > create && merge > watch, "create, then wait for the checks, then merge");
+  assert.match(sh.slice(watch, merge), /exit 1/, "a failed check stops the release before the merge");
 });
 
 test("the release gate runs the IP gate in strict mode", () => {

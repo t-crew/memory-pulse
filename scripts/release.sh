@@ -69,6 +69,11 @@ noproxy git push -f -u origin "$BR" > /dev/null
 if ! noproxy gh pr view "$BR" > /dev/null 2>&1; then
   noproxy gh pr create --base main --head "$BR" --title "release $VERSION" --body "Automated release $VERSION via scripts/release.sh (tests green, manifests consistent)." > /dev/null
 fi
+# The pull request's checks (the suite on Linux and macOS, and Memory CI) finish before anything is merged. A release used to
+# merge at once, so a failure on Linux first showed at tag time, after the tag was public.
+echo "   waiting for the pull request's checks"
+sleep 20
+noproxy gh pr checks "$BR" --watch --interval 20 || { echo "a pull-request check failed or none ran: nothing was merged or tagged. See: gh pr checks $BR"; exit 1; }
 noproxy gh pr merge "$BR" --merge --delete-branch > /dev/null
 noproxy git fetch -q origin && git merge -q --ff-only origin/main || { echo "local main did not fast-forward to origin/main — resolve before tagging"; exit 1; }
 git tag -f "v$VERSION" -m "memory-pulse $VERSION" > /dev/null
