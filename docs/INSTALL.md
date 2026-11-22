@@ -7,9 +7,9 @@ Pick the agent you use. Each route installs the same thing: a ledger file in you
 Three commands. The first installs nothing.
 
 ```
-npx -y memory-pulse@0.18.0 demo
-npx -y memory-pulse@0.18.0 init
-npx -y memory-pulse@0.18.0 doctor
+npx -y memory-pulse@0.19.0 demo
+npx -y memory-pulse@0.19.0 init
+npx -y memory-pulse@0.19.0 doctor
 ```
 
 `demo` records one correction in a temporary folder, runs the guard on three edits and prints each verdict as a host gets it: the edit that writes the withdrawn value back is blocked with exit status 2, and the two that follow pass. It removes the folder when it is done.
@@ -46,7 +46,7 @@ Then run `/hooks` inside Codex and trust the three `memory-pulse` entries (sessi
 
 ## Claude Desktop
 
-Download `memory-pulse-0.18.0.mcpb` from the [latest release](https://github.com/t-crew/memory-pulse/releases/latest) and open it. Claude Desktop asks for three settings:
+Download `memory-pulse-0.19.0.mcpb` from the [latest release](https://github.com/t-crew/memory-pulse/releases/latest) and open it. Claude Desktop asks for three settings:
 
 | Setting | What to put |
 |---|---|
@@ -64,15 +64,15 @@ Register the stdio server. For Cursor, put this in `.cursor/mcp.json` (project) 
 { "mcpServers": { "memory-pulse": { "command": "npx", "args": ["-y", "memory-pulse"] } } }
 ```
 
-Any client that starts a stdio MCP server takes the same command and arguments, and gets the four tools. Cursor also runs hooks: `memory-pulse install-hook --cursor` writes the brief and the guard into `~/.cursor/hooks.json` in Cursor's documented format. Those hooks have not been run inside Cursor by us (no Cursor on the build machine as of 2026-11-21), so treat the guard there as untested and keep the GitHub Action below as the check you rely on. In every other MCP client no hook runs: enforce corrections in CI with the Action, and run `npx -y memory-pulse@0.18.0 lint` over `.cursorrules` and the other rule files.
+Any client that starts a stdio MCP server takes the same command and arguments, and gets the four tools. Cursor also runs hooks: `memory-pulse install-hook --cursor` writes the brief and the guard into `~/.cursor/hooks.json` in Cursor's documented format. Those hooks have not been run inside Cursor by us (no Cursor on the build machine as of 2026-11-21), so treat the guard there as untested and keep the GitHub Action below as the check you rely on. In every other MCP client no hook runs: enforce corrections in CI with the Action, and run `npx -y memory-pulse@0.19.0 lint` over `.cursorrules` and the other rule files.
 
 ## Claude Code or Codex without the plugin
 
 ```
 claude mcp add memory-pulse -- npx -y memory-pulse
 codex  mcp add memory-pulse -- npx -y memory-pulse
-npx -y memory-pulse@0.18.0 install-hook
-npx -y memory-pulse@0.18.0 install-hook --codex
+npx -y memory-pulse@0.19.0 install-hook
+npx -y memory-pulse@0.19.0 install-hook --codex
 ```
 
 `install-hook` writes the hooks into `~/.claude/settings.json`, or `~/.codex/hooks.json` with `--codex`. Add `--project` to write them into the repository instead; commit that and every clone is re-entered and guarded with nothing to install. With `--project` the hooks run through npx, which costs about a second per hook call, because a committed file has to run on every clone; without it they run `node` on a pinned copy of the package, 63 ms per edit that passes on an M1 Pro on 2026-11-21.
@@ -120,9 +120,9 @@ A pull request that writes back a value your ledger retired fails the check, and
 From the project folder:
 
 ```
-npx -y memory-pulse@0.18.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
-npx -y memory-pulse@0.18.0 check --text 'the plan costs $49 a month'
-npx -y memory-pulse@0.18.0 verify
+npx -y memory-pulse@0.19.0 remember pricing-shipped price-corrected --kind correction --withdrawn '$49' --replacement '$29' --note 'measured willingness to pay is $29'
+npx -y memory-pulse@0.19.0 check --text 'the plan costs $49 a month'
+npx -y memory-pulse@0.19.0 verify
 ```
 
 The first command creates `.memory-pulse/events.jsonl` and records the correction. The second answers `BLOCKED` and names the row that retired `$49`. The third walks the chain and answers `chain: OK`.
@@ -130,7 +130,7 @@ The first command creates `.memory-pulse/events.jsonl` and records the correctio
 Those three use the ledger and need no hooks. `doctor` checks the hooks: where each host's guard hook sits and what its matcher covers, which copy it runs, and that this copy answers a write-back of a withdrawn value with exit status 2.
 
 ```
-npx -y memory-pulse@0.18.0 doctor
+npx -y memory-pulse@0.19.0 doctor
 ```
 
 ## What each host runs
