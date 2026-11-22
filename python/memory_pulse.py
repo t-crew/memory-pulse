@@ -69,6 +69,19 @@ def verify_lines(lines) -> dict:
     if chained == 0: return {"ok": True, "legacy": len(gap), "chained": 0, "head": None, "from": None, "sealed": False, "unsealed": 0}
     return out(ok=True, sealed=True, unsealed=len(gap))
 
+
+def _spans(line: str, needle: str):
+    out, i = [], line.find(needle) if needle else -1
+    while i != -1:
+        out.append((i, i + len(needle))); i = line.find(needle, i + 1)
+    return out
+
+
+def _stands_alone(line: str, rep: str, term: str) -> bool:
+    """A replacement counts on a line only where it is not a piece of a longer occurrence of the withdrawn term."""
+    ts = _spans(line, term)
+    return any(not any(a <= r0 and r1 <= b and (b - a) > (r1 - r0) for a, b in ts) for r0, r1 in _spans(line, rep))
+
 class LedgerLocked(RuntimeError): pass
 
 def _pid_alive(pid) -> bool:
@@ -181,7 +194,8 @@ class Ledger:
             for term in c["withdrawn"]:
                 if not term or term not in text: continue
                 # a replacement releases the term only on its own line (as the npm client's lib/release.mjs)
-                bare = any(term in line and not any(r in line for r in reps) for line in text.split("\n"))
+                # ... and only where it stands outside a longer occurrence of the term ("v2" inside "v2.1" is the old value)
+                bare = any(term in line and not any(_stands_alone(line, r, term) for r in reps) for line in text.split("\n"))
                 if not bare: reasons.append(f'"{term}" appears beside its replacement on the same line (comparison or disavowal) — allowed, per ledger t{c.get("t")}'); continue
                 hits.append(term); reasons.append(f'"{term}" was withdrawn at t{c.get("t")} ({c["cause"]} -> {c["effect"]}); use {", ".join(c.get("replacement") or ["the corrected value"])}')
         if hits: return {"verdict": "blocked", "reasons": reasons}
