@@ -177,10 +177,12 @@ class Ledger:
         reasons, hits = [], []
         for c in self.events():
             if c.get("kind") != "correction" or not c.get("withdrawn") or c.get("t") in retired: continue
-            disavowed = any(r and r in text for r in (c.get("replacement") or []))
+            reps = [r for r in (c.get("replacement") or []) if r]
             for term in c["withdrawn"]:
                 if not term or term not in text: continue
-                if disavowed: reasons.append(f'"{term}" appears beside its replacement (comparison or disavowal) — allowed, per ledger t{c.get("t")}'); continue
+                # a replacement releases the term only on its own line (as the npm client's lib/release.mjs)
+                bare = any(term in line and not any(r in line for r in reps) for line in text.split("\n"))
+                if not bare: reasons.append(f'"{term}" appears beside its replacement on the same line (comparison or disavowal) — allowed, per ledger t{c.get("t")}'); continue
                 hits.append(term); reasons.append(f'"{term}" was withdrawn at t{c.get("t")} ({c["cause"]} -> {c["effect"]}); use {", ".join(c.get("replacement") or ["the corrected value"])}')
         if hits: return {"verdict": "blocked", "reasons": reasons}
         return {"verdict": "verified" if reasons else "no_evidence", "reasons": reasons or ["no recorded correction bears on this text"]}

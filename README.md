@@ -217,11 +217,13 @@ Showing an agent a correction is not enough. TRACE
 re-violating more than half of the corrections they had been shown, with a
 memory tool installed. The PreToolUse guard sees every `Edit`, `Write` and
 `MultiEdit` in Claude Code, plus a `Bash` command whose write is literal in
-the command string (a heredoc, a redirect or a `tee`, read with nothing
+the command string (a heredoc with the redirect before or after its marker, a
+redirect or a `tee`, `sed -i` and `perl -i`, judged on the replacement side
+only, and `python -c` or `node -e` with a write call; all read with nothing
 executed), and every `apply_patch` in Codex, where one patch may touch several
 files and each is checked under its own path. An edit that writes back a
 withdrawn value is **blocked**, and the agent is told which ledger line retired
-it and when. An edit that names the replacement beside the old value passes,
+it and when. A line that names the replacement beside the old value passes,
 because "was $49, now $29" is a comparison. Only a bare reintroduction is
 blocked. A shell command whose write cannot be read from the string returns
 nothing, so it is a miss rather than a false block, and `check --ci` on the
@@ -243,10 +245,13 @@ The rules that decide whether the guard can act on a correction:
   inflections. `n=14` does not block `N=14`. Record every spelling you have
   seen, one term each. `before` matches case-insensitively, and it advises
   rather than blocks.
-- **A replacement anywhere in the edit releases every term of that
-  correction.** Make replacements as specific as withdrawn terms: `$29`, not
-  `29`. Terms under 2 characters are dropped and the result says
-  `enforceable: false`.
+- **A replacement releases a withdrawn term only on its own line.** A line
+  that states both the old value and its replacement is a comparison and
+  passes. A line that states only the old value is blocked, whatever the rest
+  of the edit says: `| Pro | $49/mo |` is blocked even when
+  `<!-- coupon: $29 -->` sits two lines below it. Make replacements as
+  specific as withdrawn terms: `$29`, not `29`. Terms under 2 characters are
+  dropped and the result says `enforceable: false`.
 - **Pass the terms yourself.** When a correction declares no withdrawn term
   and its effect reads `X-corrected-to-Y` (or `-withdrawn-for-`,
   `-superseded-by-`, `-replaced-by-`), the terms are read out of the slug:

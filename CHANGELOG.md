@@ -47,6 +47,34 @@ row with `remember ... --supersedes <t>`, or scope the term with
 `NOISY_MIN_BLOCKS` and `NOISY_MIN_DIRS` in `lib/specific.mjs`. A value or a
 phrase is never labelled.
 
+**Three guard holes from the 0.16.1 audit are closed.** The fixes were written
+on 0.16.1 and never merged; all three holes were still open in 0.18.0.
+
+A replacement releases a withdrawn term only on its own line. It used to
+release every term of its correction anywhere in the edit, so
+`| Pro | $49/mo |` passed when `<!-- coupon: $29 -->` sat two lines below it.
+A line that states old and new together still passes as a comparison. `check`,
+`lint`, the brief's stale marker and the Python client's `check` use the same
+rule.
+
+The guard reads more shell writes from the command: `sed -i` and `perl -i`
+(judged on the replacement side only, so a command that removes a withdrawn
+value passes and one that writes it is blocked), `python -c` and `node -e`
+with a write call, and a heredoc whose redirect comes after its marker
+(`cat <<'EOF' > file`). A write it cannot read from the command is still a
+miss, not a block.
+
+`adopt` and ambient capture read "Never use Postgres 14; use Postgres 16." as
+a correction from `Postgres 14` to `Postgres 16`. They read it as a ban on
+`Postgres`, and the guard then blocked `Postgres 16`.
+
+The fourth hole, running a command the user said to stop using, was closed in
+0.18.0 by a rule on shell commands (`"on": "command"` in `invariants.jsonl`),
+so the unmerged `remember --withdrawn-command` is not added. A hyphenated
+option that `remember` does not know was dropped without a word; it is now
+refused, and `--withdrawn-command` is refused with a pointer to the rule on
+commands.
+
 ## 0.18.0 (unreleased)
 
 **Pre-registered research gets a command for each of three slips.** An agent

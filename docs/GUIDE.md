@@ -159,7 +159,7 @@ exit 0
 
 Record every spelling you have seen (`$49`, `49/seat`, `49 USD`), one `--withdrawn` each, and choose terms that are not a prefix of a value you still use. `before` (section 7) matches case-insensitively, but it advises; it does not block.
 
-A replacement anywhere in the same edit releases every withdrawn term of that correction. Make replacements as specific as withdrawn terms: `$29`, not `29`. Terms under 2 characters are dropped and the correction is reported as unenforceable:
+A replacement releases a withdrawn term only on its own line. A line that states both the old value and its replacement is a comparison and passes; a line that states only the old value is blocked, whatever the rest of the edit says. Before 0.18.1 a replacement anywhere in the edit released every withdrawn term of that correction, so `| Pro | $49/mo |` passed when `<!-- coupon: $29 -->` sat two lines below it. Make replacements as specific as withdrawn terms: `$29`, not `29`. Terms under 2 characters are dropped and the correction is reported as unenforceable:
 
 ```sh run
 npx -y memory-pulse@0.18.0 remember a b --kind correction --withdrawn 9

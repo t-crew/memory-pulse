@@ -50,6 +50,8 @@ import { drift as driftWith } from "./lib/drift.mjs";
 import { advisoryTerm } from "./lib/advisory.mjs";
 import { heardOnly, heardLine, broadCaution, blockStats, noisyLine } from "./lib/specific.mjs";
 import { scheduledPrompt, tailText } from "./lib/typed.mjs";
+import { commandWrites } from "./lib/shell.mjs";
+import { bareTerm as bareOnLine } from "./lib/release.mjs";
 import { commandHits, invariantsFor, preregRows, COMMAND_HINT, INVARIANT_HINT, PREREG_WRITE, cliPrereg, cliNow, cliRan } from "./lib/prereg.mjs";
 import { SOUL_WRITE, RESERVED, soulState, soulLines, soulGuard, cliSoul, cliUser, setSection, chainedOnly, heldFromMerge, taintOf, soulCapsule, verifySoulCapsule, continuityLine, soulScreen,
          isExternalTool, externalCmd, externalWhat, markTaint, taintMarked, soulTaintGuard } from "./lib/soul.mjs";
@@ -778,8 +780,8 @@ export function appendEvent({ cause, effect, note, kind, tags, pinned, withdrawn
   // Replacement terms let the guard tell a REINTRODUCTION ("price is $49")
   // apart from a DISAVOWAL or comparison ("was $49, now $29"): an edit that
   // carries a replacement alongside the withdrawn term is allowed.
-  // A replacement anywhere in an edit releases every withdrawn term of its correction, so a one-character
-  // replacement ("8") would release the block on nearly any text. Same floor as withdrawn terms.
+  // A replacement on the same line releases a withdrawn term of its correction (lib/release.mjs), so a one-character
+  // replacement ("8") would release the block on nearly any line. Same floor as withdrawn terms.
   if (Array.isArray(replacement)) {
     const all = replacement.map((w) => String(w).trim()).filter(Boolean);
     const terms = all.filter((w) => w.length >= 2);
@@ -1018,7 +1020,7 @@ export const TOOLS = [
         kind: { type: "string", enum: ["event", "correction"], description: "Default event." },
         scope: { type: "string", enum: ["project", "agent"], description: "agent = the agent's own cross-project ledger (agent mode)." },
         withdrawn: { type: "array", items: { type: "string" }, description: "For corrections: the exact strings that were withdrawn (a number, a name, a claim). The guard hook blocks an edit that writes them back." },
-        replacement: { type: "array", items: { type: "string" }, description: "For corrections: the corrected value(s). An edit containing both a withdrawn term and a replacement (a comparison or disavowal) is allowed through the guard." },
+        replacement: { type: "array", items: { type: "string" }, description: "For corrections: the corrected value(s). A line that states both a withdrawn term and a replacement (a comparison or disavowal) is allowed through the guard." },
         supersedes: { type: "array", items: { type: "number" }, description: "For corrections: ledger t values of earlier corrections whose withdrawn terms no longer bind." },
         tags: { type: "array", items: { type: "string" } },
         pinned: { type: "boolean", description: "Never decays out of the brief." },
@@ -1861,7 +1863,11 @@ const CORRECTION_SHAPES = [
 // Measured against this repo's own session corpus: recall 3/11 -> 11/11 with
 // precision unchanged at 1.00 over 19 negatives, including the pasted-document
 // shape that caused the t918 false positive.
-const OBJ_P = `((?:"[^"]{2,48}"|'[^']{2,48}'|\`[^\`]{2,48}\`|[A-Za-z$][\\w$.\\-/]*(?:[ -][A-Za-z][\\w$.\\-/]*){0,3}))`;
+// A later token may be a number (2026-10-23, ported 2026-11-21): "Never use Postgres 14" withdrew "Postgres", so the guard then blocked "Postgres 16".
+const OBJ_P = `((?:"[^"]{2,48}"|'[^']{2,48}'|\`[^\`]{2,48}\`|[A-Za-z$][\\w$.\\-/]*(?:[ -][A-Za-z0-9][\\w$.\\-/]*){0,3}))`;
+// "Never use X; use Y" / "Don't use X, use Y instead": a ban that names what to use is a correction from X to Y, not a
+// prohibition of X alone.
+const BAN_THEN_USE = new RegExp(`\\b(?:never|do\\s?n['’]?t|don['’]?t|do not|stop|avoid)\\s+(?:use|using)\\s+${OBJ_P}\\s*(?:[;,:]|\\.\\s|\\s[-–—]+)\\s*(?:and\\s+|instead\\s*,?\\s*|but\\s+)?(?:use|prefer|switch to)\\s+${OBJ_P}`, "i");
 const SAY_NOT = new RegExp(`\\b(?:say|use|write|call it|make it|put)\\s+${OBJ_P}\\s*,?\\s+not\\s+${OBJ_P}`, "i");
 const PROHIBIT_SHAPES = [
   ["no-x",    new RegExp(`(?:^|[.;!?]\\s+|,\\s*)(?:absolutely\\s+)?no\\s+${OBJ_P}`, "i")],
@@ -1906,6 +1912,11 @@ export function detectProhibition(prompt) {
   if (sn) {
     const keep = cleanTerm(sn[1] ?? ""), drop = cleanTerm(sn[2] ?? "");
     if (ok(drop)) return { withdrawn: [drop], replacement: keep ? [keep] : [], cue: "say-not" };
+  }
+  const bu = BAN_THEN_USE.exec(p);
+  if (bu) {
+    const drop = cleanTerm(bu[1] ?? ""), keep = cleanTerm(bu[2] ?? "");
+    if (ok(drop) && ok(keep) && drop.toLowerCase() !== keep.toLowerCase()) return { withdrawn: [drop], replacement: [keep], cue: "ban-use" };
   }
   for (const [cue, re] of PROHIBIT_SHAPES) {
     const m = re.exec(p);
@@ -2236,7 +2247,8 @@ export function patchSections(input) {
 export function shellWrites(input) {
   const cmd = typeof input === "string" ? input
     : input && typeof input === "object"
-      ? Object.values(input).find((v) => typeof v === "string" && /[><]|tee\b/.test(v))
+      // the command field first (a sed -i has no > or tee, so the search below never found it)
+      ? (typeof input.command === "string" ? input.command : Object.values(input).find((v) => typeof v === "string" && /[><]|tee\b/.test(v)))
       : null;
   if (!cmd) return [];
   const out = [];
@@ -2257,6 +2269,8 @@ export function shellWrites(input) {
     const lit = /(?:echo|printf)\s+(-\w+\s+)*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')\s*\|/.exec(cmd);
     if (lit) push(m[1], lit[2].slice(1, -1));
   }
+  // a heredoc with the redirect after its marker, sed -i / perl -i (the replacement side only), python -c / node -e with a write call (lib/shell.mjs)
+  try { for (const w of commandWrites(cmd)) push(w.path, w.text); } catch { /* unreadable: a miss, never a block */ }
   return out;
 }
 
@@ -2306,10 +2320,9 @@ export function localCheck(allEvents, action, invariants = [], opts = {}) {
     const retired = supersededSet(events);
     for (const c of events) {
       if (c.kind !== "correction" || !Array.isArray(c.withdrawn) || retired.has(c.t)) continue;
-      const disavowed = Array.isArray(c.replacement) && c.replacement.some((r) => r && text.includes(r));
       for (const term of c.withdrawn) {
         if (!containsTerm(text, term)) continue;
-        if (disavowed) { reasons.push(`"${term}" appears beside its replacement (comparison or disavowal) — allowed, per ledger t${c.t}`); continue; }
+        if (!bareTerm(text, term, c.replacement)) { reasons.push(`"${term}" appears beside its replacement on the same line (comparison or disavowal) — allowed, per ledger t${c.t}`); continue; }
         const o = overridesFor.find((x) => x.override.term === term && (!x.override.path || (path && path.startsWith(x.override.path))));
         if (o) { overrides.push({ t: o.t, term }); reasons.push(`"${term}" is withdrawn at t${c.t} but overridden at t${o.t}${o.override.reason ? ` (${o.override.reason})` : ""}`); continue; }
         if (advisoryTerm(c, term)) { reasons.push(`"${safeTerm(term)}" is advisory, not blocked: t${c.t} came from ambient capture and is one ordinary word. To enforce it, record it on purpose: memory-pulse remember <cause> <effect> --kind correction --withdrawn "${safeTerm(term)}"`); continue; }
@@ -2404,6 +2417,9 @@ export function containsTerm(text, term) {
   return false;
 }
 
+/** A withdrawn term on a line that does not also hold one of its replacements (lib/release.mjs): the rule localCheck, findViolations and the brief's stale marker share. */
+export const bareTerm = (text, term, replacement = []) => bareOnLine(text, term, replacement, containsTerm);
+
 // An ambient single word is advisory (0.17.1): lib/advisory.mjs.
 export { advisoryTerm };
 
@@ -2418,12 +2434,10 @@ export function findViolations(allEvents, text, filePath = "") {
   for (const e of events) {
     if (e.kind !== "correction" || !Array.isArray(e.withdrawn)) continue;
     if (retired.has(e.t)) continue; // a later correction narrowed or replaced it
-    // A comparison or disavowal names the old value next to the new one;
+    // A comparison or disavowal names the old value next to the new one, on the same line (bareTerm);
     // only a bare reintroduction is blocked. (Adversarial review, 2026-08-31:
     // a guard that fires on "the $49 figure is withdrawn" livelocks the agent.)
-    const disavowed = Array.isArray(e.replacement) && e.replacement.some((r) => r && text.includes(r));
-    if (disavowed) continue;
-    for (const term of e.withdrawn) if (!advisoryTerm(e, term) && containsTerm(text, term)) hits.push({ term, t: e.t, cause: e.cause, effect: e.effect, note: e.note ?? "", replacement: e.replacement ?? [] });
+    for (const term of e.withdrawn) if (!advisoryTerm(e, term) && bareTerm(text, term, e.replacement)) hits.push({ term, t: e.t, cause: e.cause, effect: e.effect, note: e.note ?? "", replacement: e.replacement ?? [] });
   }
   return hits;
 }
@@ -2564,7 +2578,7 @@ async function cliGuard() {
       : blocked.every((b) => b.command) ? COMMAND_HINT
       // 0.18.0 (review): an override answers a withdrawn value. A block with none (an invariant, a rule on commands) does not offer one
       : !withdrawnHit ? (blocked.some((b) => b.command) ? `${INVARIANT_HINT}\n${COMMAND_HINT}` : INVARIANT_HINT)
-      : 'Use the corrected value (mentioning both old and new in a comparison is fine), record a new correction if the old one is wrong, or `memory-pulse guard allow "<term>" --path <prefix> "<reason>"` if this is a false block.';
+      : 'Use the corrected value (naming old and new together on one line, as a comparison, is fine), record a new correction if the old one is wrong, or `memory-pulse guard allow "<term>" --path <prefix> "<reason>"` if this is a false block.';
   if (cursor) {
     const plain = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
     process.stdout.write(JSON.stringify({ permission: "deny", user_message: `memory-pulse guard: blocked.\n${plain}`, agent_message: `memory-pulse guard blocked this ${command ? "command" : "edit"}.\n${plain}\n${hint}` }));
@@ -3207,10 +3221,11 @@ async function cliRemember() {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--pinned") { opts.pinned = true; continue; }
-    const m = /^--([a-z]+)(?:=(.*))?$/.exec(a);
+    // a hyphenated option (--withdrawn-command) used to fall through as a positional and was dropped without a word
+    const m = /^--([a-z][a-z-]*)(?:=(.*))?$/.exec(a);
     if (!m) { pos.push(a); continue; }
     const [, k, inline] = m;
-    if (!multi.has(k) && !single.has(k)) { console.error(`memory-pulse remember: unknown option --${k} (run memory-pulse help)`); process.exit(1); }
+    if (!multi.has(k) && !single.has(k)) { console.error(`memory-pulse remember: unknown option --${k} (run memory-pulse help)${k === "withdrawn-command" ? '. A command to stop running is a rule on shell commands: one line in .memory-pulse/invariants.jsonl with "on": "command"' : ""}`); process.exit(1); }
     const v = inline ?? argv[++i];
     if (v == null) { console.error(`memory-pulse remember: --${k} needs a value`); process.exit(1); }
     if (multi.has(k)) opts[k].push(v); else opts[k] = v;
