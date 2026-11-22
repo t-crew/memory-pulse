@@ -20,7 +20,9 @@ const ESTATE = ["MEMORY_PULSE_LEDGER", "MP_LEDGER", "MEMORY_PULSE_PROJECT", "MEM
 
 test("T-1: scripts/test.mjs runs test files with the shell's ledger, project, board and key variables cleared", () => {
   const dir = mkdtempSync(join(tmpdir(), "mp-test-env-"));
-  const probe = join(dir, "probe.test.js");
+  // .mjs: the probe is an ES module outside any package, and Node 18 reads a bare .js there as CommonJS (found 2026-11-22 by
+  // running the suite on Linux with Node 18, where this test failed on the probe's own syntax and proved nothing)
+  const probe = join(dir, "probe.test.mjs");
   writeFileSync(probe, `import { test } from "node:test"; import assert from "node:assert/strict";\ntest("no estate variable reaches a test", () => { for (const k of ${JSON.stringify(ESTATE)}) assert.equal(process.env[k], undefined, k); });\n`);
   const decoy = Object.fromEntries(ESTATE.map((k) => [k, join(dir, "decoy", k)]));
   // a test runner started from inside a test file reports to its parent unless this variable is gone; the probe must run on its own

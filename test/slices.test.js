@@ -64,7 +64,10 @@ test("promptSlice on a 100 KB prompt and a 50,000-event ledger returns in under 
   const events = big(50000); const prompt = "lorem ipsum dolor sit amet term49990 ".repeat(2800);
   promptSlice(events, prompt);
   // CPU time, not wall time: the suite runs files in parallel and wall time measures the neighbours too
-  const c0 = process.cpuUsage(); const s = promptSlice(events, prompt); const c = process.cpuUsage(c0); const ms = (c.user + c.system) / 1000;
+  // The least of three runs: process CPU time also counts the garbage collector and the compiler's threads, so one sample read
+  // 65 ms on Node 18 and 160 ms on a loaded machine for a call that takes under 20 (2026-11-22). The least is the call's own cost.
+  let s = "", ms = Infinity;
+  for (let i = 0; i < 3; i++) { const c0 = process.cpuUsage(); s = promptSlice(events, prompt); const c = process.cpuUsage(c0); ms = Math.min(ms, (c.user + c.system) / 1000); }
   assert.match(s, /term49990/); assert.ok(ms < 50 * SLACK, `${ms.toFixed(1)} ms`);
 });
 
