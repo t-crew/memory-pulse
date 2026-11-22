@@ -231,3 +231,16 @@ test("doctor: only memory-pulse's own hook verbs count as its hooks; a path writ
   const bad = g.run(["doctor"]);
   assert.equal(bad.status, 1); assert.match(line(bad.out, "FAIL", "Claude Code") ?? "", /does not exist/, bad.out);
 });
+
+// Added 2026-11-21 at integration: a second editor that merely exists on the machine is not a broken install.
+test("doctor: when one host is set up, another host that is present with no hooks is reported as not set up, not as a failure", () => {
+  const f = fixture(); mkdirSync(join(f.home, ".claude")); mkdirSync(join(f.home, ".cursor"));
+  assert.equal(f.run(["install-hook"]).status, 0);
+  const r = f.run(["doctor"]);
+  assert.equal(r.status, 0, r.out + r.err);
+  assert.ok(line(r.out, "ok", "Claude Code"), r.out);
+  const c = line(r.out, "skipped", "Cursor"); assert.ok(c, r.out);
+  assert.match(c, /present, not set up/); assert.match(c, /memory-pulse install-hook --cursor/);
+  const j = json(f.run(["doctor", "--json"]));
+  assert.equal(j.ok, true); assert.equal(check(j, "host:cursor").status, "skipped");
+});
