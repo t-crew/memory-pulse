@@ -110,7 +110,11 @@ on the program reading. `help` is 18 KB. `scaffold --section corrections` passes
 agent on Node 20 read a list of corrections that stopped in the middle with nothing to say so. The stdio server also
 lost answers that were still queued when its input closed, on macOS and, in some runs, on Linux. Each write of a
 command to a pipe is now made in full before the next line runs, and given up only when the reader has taken nothing
-for 2 seconds, so a host that never reads cannot hold a hook (a blocked edit still exits 2). The server sends its last
+for 2 seconds, so a host that never reads cannot hold a hook (a blocked edit still exits 2). One case is left: if
+another Node process writes to the same pipe and exits during those 2 seconds, it can set the pipe back to waiting, and
+a host that never reads then holds the hook; it needs a shared pipe and a reader that never reads. On Linux a very
+slow reader can still lose the end of a long output, as before: in the review's test, one that took a byte every 100 ms
+received 65,536 of 87,961 bytes. The server sends its last
 answers before it exits. Measured after the change on macOS with Node 18, 20, 22, 24 and 26: 2 MB arrives whole, the
 exit status is the same, a reader that closes early ends the command at once, and a guard block with 300 hits exits 2
 within the limit when its host reads nothing until the hook ends. Not run on Windows.
