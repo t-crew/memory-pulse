@@ -449,7 +449,43 @@ Commit `.memory-pulse/events.jsonl` and `.memory-pulse/invariants.jsonl`. Leave 
 
 The ledger is read from the directory the agent started in. Start the agent at the repository root, or set `MEMORY_PULSE_LEDGER`.
 
-Two branches that both append conflict on merge, because rows chain on `t` and `prev`. Never keep both sides: take one, re-record the losing rows with `remember`, and run `verify`.
+### Two engineers, two branches, one ledger
+
+Rows chain on `t` and `prev`, so when two branches each record a row, git sees a conflict in `events.jsonl`, and the two tails joined by hand do not verify. The git merge driver settles it without leaving git. It is free and local: no key, no network. Set it once in the repository and commit the attribute; `team` and `merge-driver` are in releases after 0.18.0. These commands need a git repository with two branches, so they are not run when this guide is tested; `test/team-merge.test.js` runs them in throwaway repositories:
+
+```sh
+npx -y memory-pulse@0.18.0 team setup     # writes two lines to .gitattributes and sets merge.memory-pulse.driver in this clone's .git/config
+git add .gitattributes .memory-pulse/events.jsonl
+git commit -m "share the memory-pulse ledger"
+npx -y memory-pulse@0.18.0 team           # exit 0: ready; 1: not set up; 2: the attribute is there and the driver is not
+```
+
+`.gitattributes` travels with the repository. The driver definition does not, because git never shares `.git/config`: every other clone runs `team setup` once, and `install-hook --project` runs it too. The definition names node by absolute path and a pinned copy of the client (the data dir, as the hooks do), not `npx`: the file belongs to one machine, a git client whose PATH has no node still merges, and no merge waits on a download. After an upgrade, `team setup` again pins the new copy, and `team` says when the pinned copy is an older version. A clone that has the attribute and no driver is the case to watch, because git falls back to its text merge and says nothing: `team` exits 2 there, and the session brief prints one line that names `team setup`.
+
+With the driver, `git merge`, `git pull` and `git rebase` keep ours byte for byte and append the rows the other side added after it through the writer, which computes `t`, `prev` and `hash` again. The code is the code `state merge` runs (section 14), so the rules are the same: each finding lands once, a carried row records the branch and row it came from in `origin`, the other side's merge and rollback rows stay with it, a note that reads like an instruction is held back, and one `state-merged` row records the merge. `invariants.jsonl` goes through the same driver as a set of lines over the three versions: a rule either side added is kept once, and a rule either side removed (`prereg settle` removes a seal's rules) stays removed. Git's built-in `merge=union` brings the removed rule back and keeps a line both sides added twice (git 2.39.5, measured 2026-11-21). A criss-cross merge (two common ancestors) runs the driver once: `team setup` also sets `merge.memory-pulse.recursive` to `binary`, so git's internal merge of the ancestors takes one ancestor's file.
+
+The merge stops, with the path left unmerged in git, in three cases:
+
+- Two corrections that both still bind withdraw one term with different replacements, or one side's replacement is a value the other side withdraws. The merged ledger is in the working tree and verifies, with both rows binding. The message names both rows and the command: one `remember` row with `--supersedes` for each, then `git add .memory-pulse/events.jsonl`. A correction the other side already superseded is not a conflict.
+- A side no longer holds a row of the common ancestor, or its chain is broken. Nothing is merged, ours is left as it was, and the message names the row. `team resolve --no-ancestor` carries the other side's rows anyway, after you have read them.
+- One rule id has two different lines in `invariants.jsonl`. Both are kept in the file; delete one and `git add` it.
+
+`team resolve` runs the same merge on a ledger git left unmerged, from the three versions in the index, and stages a clean result. Use it after a merge that ran in a clone without the driver.
+
+What `verify` says afterwards depends on which side was ours, because a chain has one order and one side's rows end up after the other's:
+
+| how the rows arrived | what `verify` says |
+|---|---|
+| `git merge` or `git pull`: ours is your branch | exit 0. The seal holds (no row at or below its watermark changed), the anchor holds (the ledger still begins with the rows this machine last saw), and the carried rows carry this machine's writer mark, with `origin` naming where each came from. |
+| `git rebase` or `git pull --rebase`: ours is the branch you rebase onto | exit 2 until you run the commands the driver prints: `memory-pulse anchor accept "<why>"`, and `memory-pulse seal accept "<why>"` when a seal is stored. The other branch's rows come first, so the ledger no longer begins with the rows this machine last saw. |
+| a fast-forward onto a teammate's new rows: no merge runs | exit 0. The rows carry the teammate's writer mark, so they are named as rows this machine did not write and accepted; `verify --strict` refuses them. |
+| a fast-forward onto a branch that merged your rows after its own | exit 2, `anchor: ROLLED BACK`, until `memory-pulse anchor accept "<why>"` (and `seal accept` when a seal is stored). |
+
+On a shared main branch, rebase onto main before landing (`git rebase origin/main`, or `git pull --rebase` when you commit on main). Main's ledger then only grows at its end, and the accept step is run once, by the engineer who rebased, when the driver prints it. A branch that merges main into itself and then lands puts main's newer rows after its own, and every machine that already held those rows needs `anchor accept` after its next pull. The anchor is one per ledger path on a machine, so `git checkout` of a branch whose ledger is shorter reads as ROLLED BACK too (measured 2026-11-21, with or without the driver).
+
+GitHub's merge button does not run merge drivers. A pull request whose branch and base both recorded a row shows a conflict there. Do not resolve it in the web editor: `verify` fails on rows joined by hand. Update the branch on your machine (`git fetch`, then `git rebase origin/main` or `git merge origin/main`) and push; the driver runs there, and the pull request then merges without a conflict because the branch already holds the base's ledger. The driver verifies the whole ledger on each merge, so its time grows with the ledger's length: about one second at 5,000 rows on an M1 Pro (one run, 2026-11-21).
+
+The other way to share a ledger is hosted and paid: `login` (section 15, "Connect a machine without copying a key") and `state push` and `state pull` (section 14) need Starter, Pro or Enterprise, and seat keys are Enterprise only (section 11).
 
 Invariants are declared, never inferred: one JSON object per line in `.memory-pulse/invariants.jsonl`. A `warn` rule reports; a `block` rule blocks. A line with `"on": "command"` is a rule on shell commands instead of edits (section 17). `lint` runs the same check over the governance files a session loads, Muse Code's `.agents/AGENTS.md` and `.agents/memory/` included. A line that reads like an instruction planted for the agent (an order to ignore previous instructions, to send keys or tokens to an address, to keep something from the user, or a `<system>` tag) is reported as a warning with its line number and pattern, never printed, and exit stays 0; `lint --strict` blocks on it. The warning cannot tell every API doc from a planted line, so it informs rather than fails a pull request:
 
@@ -481,6 +517,8 @@ The GitHub Action, `uses: t-crew/memory-pulse@v0`, checks the added lines of eve
 ## 11. Pricing and keys
 
 Free: ledgers to 500 events and 200 engine reads per IP address per day (`worker/api.js`, read 2026-09-09). A session start is one read. Past the limit the brief falls back to the local render and says why. Starter, $7 a month: 5,000 events, 1,000 reads a day counted per key, no signed receipts (2026-10-12). Pro, $19 a month: 20,000 events, unlimited reads, signed check receipts. Enterprise, $79 a month: 250,000 events, ten revocable seat keys, ledger receipts through `/v1/certify` that anyone verifies keyless at `/v1/verify`, 14-day refund (site pricing, 2026-09-09).
+
+Seat keys (Enterprise only): the subscription's primary key makes up to ten, one for each teammate or CI job, and revokes them one at a time; a seat key stops working when it is revoked or when the subscription lapses. There is no `memory-pulse` command for them: make them in the console, or with `POST /v1/keys` (header `x-mp-key`, optional body `{"label":"ci"}`), list them with `GET /v1/keys`, and revoke one with `POST /v1/keys/revoke` and `{"prefix":"..."}` (`worker/api.js`, read 2026-11-21; these need the engine and are not run when this guide is tested). Hosted memory and the key `login` saves need Starter, Pro or Enterprise (`worker/hosted.js` and `worker/accounts.js`, read 2026-11-21).
 
 Where the key goes: `export MEMORY_PULSE_KEY=mp_live_...` in the shell that starts Claude Code or Codex, because the plugins and the hooks read the shell environment; `--env MEMORY_PULSE_KEY=...` on `claude mcp add`; the `env` block in Cursor's `mcp.json`. Do not also run `claude mcp add` on a plugin install; you would get two servers. The request shape of `/v1/limits` for checking a key is unverified on 2026-09-09; `stats` verifies the telemetry capsule's signature and is the check that is measured.
 
