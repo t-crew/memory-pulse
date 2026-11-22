@@ -10,6 +10,7 @@
   "files": [
     "server.mjs",
     "lib/*.mjs",
+    "packs/*.jsonl",
     "README.md",
     "LICENSE",
     "python/*.py"

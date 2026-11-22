@@ -53,6 +53,7 @@ import { scheduledPrompt, tailText } from "./lib/typed.mjs";
 import { commandWrites } from "./lib/shell.mjs";
 import { bareTerm as bareOnLine } from "./lib/release.mjs";
 import { commandHits, invariantsFor, preregRows, COMMAND_HINT, INVARIANT_HINT, PREREG_WRITE, cliPrereg, cliNow, cliRan } from "./lib/prereg.mjs";
+import { installedPackRules, pathInScope, packReason, packHint, packWarnings, packContext, forEngine } from "./lib/packs.mjs";
 import { SOUL_WRITE, RESERVED, soulState, soulLines, soulGuard, cliSoul, cliUser, setSection, chainedOnly, heldFromMerge, taintOf, soulCapsule, verifySoulCapsule, continuityLine, soulScreen,
          isExternalTool, externalCmd, externalWhat, markTaint, taintMarked, soulTaintGuard } from "./lib/soul.mjs";
 
@@ -2286,13 +2287,16 @@ export function supersededSet(events) {
 const invariantsPath = () => join(dirname(ledgerPath()), "invariants.jsonl");
 /** Declared invariants: .memory-pulse/invariants.jsonl, one {id, statement, patterns[], severity?} per line. Never inferred. */
 export function readInvariants(path = invariantsPath()) {
-  if (!existsSync(path)) return [];
+  // rule packs (lib/packs.mjs): installed packs, .memory-pulse/packs/<name>.jsonl, are read after the project's declared rules. A
+  // path given by the caller (a capsule's invariants) reads that file alone.
+  const packs = arguments.length ? [] : installedPackRules(join(dirname(path), "packs"));
+  if (!existsSync(path)) return packs;
   const out = [];
   for (const line of readFileSync(path, "utf8").split("\n")) {
     const l = line.trim(); if (!l) continue;
     try { const inv = JSON.parse(l); if (inv && typeof inv.id === "string" && Array.isArray(inv.patterns)) out.push(inv); } catch { /* a torn line is reported by check, not fatal here */ }
   }
-  return out;
+  return packs.length ? out.concat(packs) : out;
 }
 const compilePattern = (p) => {
   const m = typeof p === "string" ? p.match(/^\/(.+)\/([a-z]*)$/s) : null;
@@ -2339,7 +2343,7 @@ export function localCheck(allEvents, action, invariants = [], opts = {}) {
     // `paths`: prefixes the invariant applies to; absent = every path. A rule
     // about public wording must not fire on a proofs file or a test fixture.
     const scope = Array.isArray(inv.paths) ? inv.paths.filter((x) => typeof x === "string" && x) : [];
-    if (scope.length && !scope.some((p) => path.startsWith(p))) continue;
+    if (scope.length && !pathInScope(scope, path)) continue;   // a prefix as before; an entry with a * is a glob, and !glob excludes (lib/packs.mjs)
     const tests = (inv.patterns ?? []).map(compilePattern);
     if (tests.some((t) => t === null)) reasons.push(`invariant ${inv.id} ignored: a pattern does not compile`);
     const hit = tests.find((t) => t && t.test(text));
@@ -2350,6 +2354,7 @@ export function localCheck(allEvents, action, invariants = [], opts = {}) {
     const replacement = typeof inv.replacement === "string" ? inv.replacement : "";
     invHits.push({ id: inv.id, severity, pattern: hit.src, cite, replacement });
     reasons.push(`${severity === "warn" ? "warning" : "invariant"} ${inv.id}${inv.statement ? `: ${inv.statement}` : ""} (matched ${hit.src})${cite.length ? ` — ledger ${cite.join(", ")}` : ""}${replacement ? ` — instead: ${replacement}` : ""}`);
+    if (inv.pack) reasons[reasons.length - 1] = packReason(inv, severity, hit.src);   // a pack rule's line names the pack, the rule and the vendor page
   }
   // 0.18.0: an invariant declared with "on": "command" is matched against a shell command and nothing else, and `paths` does not
   // apply to it (lib/prereg.mjs). Here that is a check of kind command; the guard matches a tool call's command itself.
@@ -2505,10 +2510,11 @@ async function cliGuard() {
   const command = typeof payload.tool_input?.command === "string" ? payload.tool_input.command : "";
   const invariants = readInvariants();
   const health = { project: ledgerHealth(ledgerPath()), agent: existsSync(agentPath()) ? ledgerHealth(agentPath()) : null };
-  const blocked = []; const warnings = new Set();
+  const blocked = []; const warnings = new Set(); const packNotes = new Set();
   for (const a of actions) {
     const v = guardVerdict({ kind: "edit", text: a.text, path: a.path, ...(command ? { command } : {}) }, { invariants, health });
     for (const w of v.warnings ?? []) warnings.add(w);
+    for (const w of packWarnings(v)) packNotes.add(w);   // a pack's warn rule that matched: shown to the agent below, never a block
     // no_evidence and verified pass SILENTLY here: a hook that warns on every
     // edit the ledger has nothing to say about livelocks the agent. The loud
     // form of no_evidence is `check --ci`. A quarantine or a broken chain that
@@ -2526,6 +2532,7 @@ async function cliGuard() {
   }
   recordUsage("guard_check");
   if (!blocked.length) {
+    for (const w of packNotes) warnings.add(`memory-pulse: ${w}`);
     if (warnings.size) process.stderr.write([...warnings].join("\n") + "\n");
     if (cursor) { process.stdout.write(JSON.stringify({ permission: "allow" })); return; }
     // Allowed: add the memory that bears on this file as context. Never a permissionDecision — "allow" would skip the
@@ -2537,7 +2544,7 @@ async function cliGuard() {
         const sl = editSlice(rows, invariants, { path: a.path ?? "", text: a.text ?? "" }, { agentRows });
         for (const line of sl.split("\n")) if (line && !seen.has(line)) { seen.add(line); parts.push(line); }
       }
-      const ctx = parts.join("\n").slice(0, 2000);
+      const ctx = [packContext(packNotes), parts.join("\n")].filter(Boolean).join("\n").slice(0, 2000);
       if (ctx) { process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: ctx } })); recordUsage("edit_slice"); }
     } catch { /* context is a convenience; the verdict above is what the hook is for */ }
     return;
@@ -2571,7 +2578,7 @@ async function cliGuard() {
   const sealStale = !chainBroken && !inQuestion && allReasons.some((r) => /^sealed head mismatch/.test(r));
   const envPrefix = process.env.MEMORY_PULSE_LEDGER ? `MEMORY_PULSE_LEDGER=${process.env.MEMORY_PULSE_LEDGER} ` : "";
   const withdrawnHit = allReasons.some((r) => /" was withdrawn at (?:agent )?ledger t\d+/.test(r));
-  const hint = inQuestion
+  let hint = inQuestion
     ? `The rows verify as a chain, but not against what this machine last saw: an older copy of the ledger was put back, or rows this machine's writer marked were changed and re-chained. Writes to the ledger, its files and the trust store are blocked until the newer copy is restored, or \`${envPrefix}memory-pulse anchor accept "<why>"\` records that you trust the ledger as it stands. Other work is not blocked. \`memory-pulse verify\` names what differs.`
     : chainBroken
     ? "The ledger's own row chain is broken mid-file: a row was edited, removed or inserted and rows after it still verify, so writes to the ledger and its sidecars are blocked until it is restored from a copy you trust (`memory-pulse verify` names the first broken row and lists backups that verify). Other work is not blocked. Do not delete the ledger to clear this; the rows are the record. An override cannot repair a chain."
@@ -2581,6 +2588,7 @@ async function cliGuard() {
       // 0.18.0 (review): an override answers a withdrawn value. A block with none (an invariant, a rule on commands) does not offer one
       : !withdrawnHit ? (blocked.some((b) => b.command) ? `${INVARIANT_HINT}\n${COMMAND_HINT}` : INVARIANT_HINT)
       : 'Use the corrected value (naming old and new together on one line, as a comparison, is fine), record a new correction if the old one is wrong, or `memory-pulse guard allow "<term>" --path <prefix> "<reason>"` if this is a false block.';
+  hint = packHint(blocked, invariants, hint);   // a block by a pack rule names its own way out: memory-pulse pack rule <pack>/<rule> warn|off
   if (cursor) {
     const plain = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
     process.stdout.write(JSON.stringify({ permission: "deny", user_message: `memory-pulse guard: blocked.\n${plain}`, agent_message: `memory-pulse guard blocked this ${command ? "command" : "edit"}.\n${plain}\n${hint}` }));
@@ -2650,7 +2658,7 @@ async function cliCheck() {
   let receipt = null, integrity = null;
   if (wantReceipt) {
     // the engine does not know "on": it is sent the invariants that apply to this kind of action, so both verdicts judge by one rule (0.18.0)
-    const out = await callApi("/v1/check", { action: { kind, text, path }, events, invariants: invariantsFor(kind, text, invariants, prereg), ...(readMemoryKey() ? { verifyKey: true } : {}) });
+    const out = await callApi("/v1/check", { action: { kind, text, path }, events, invariants: forEngine(invariantsFor(kind, text, invariants, prereg), path), ...(readMemoryKey() ? { verifyKey: true } : {}) });
     v = { ...out, local: v.verdict };
     receipt = out.receipt ?? null; integrity = out.integrity ?? null;
     if (out.receiptHint && !receipt) v.reasons.push(out.receiptHint);
@@ -3015,6 +3023,17 @@ Commands
   now [--json]                        the machine clock as the stamps a record uses (2026-11-19 02:15 UTC and 2026-11-19T02:15:07Z); a record's stamp is pasted from this, never typed
   lint [--ci] [--json] [--strict] [paths...]
                                       the guard's check over CLAUDE.md, AGENTS.md, .claude/rules, .cursorrules, Muse Code's .agents/memory and the other files a session loads; warns on a line planted for the agent (--strict blocks on it)
+  pack list [--json]                  rule packs: prepared rules for one stack, each with the vendor page it rests on; bundled with the client, nothing is fetched. Lists them, which are installed, rule counts and the dates the sources were read
+       show <name|path> [--json]      every rule of a pack: what it catches, what to use instead, severity, the source URL and the date it was read
+       add <name|path> [--warn-only]  install a pack as its own file, .memory-pulse/packs/<name>.jsonl (commit it): guard, check and lint read it; never written to invariants.jsonl or the ledger; --warn-only makes every rule report and none block
+       remove <name>                  delete that file; its rules stop applying
+       check <name|path> [dir] [--json]
+                                      dry run over a directory tree: hits per rule with file and line; nothing is blocked and nothing is written
+       check --installed [dir | --diff [base]] [--ci] [--json]
+                                      the installed packs with this project's choices, over a tree or over the lines a diff adds, each file under its own path; --ci exits 1 when a block rule hits
+       rule <pack>/<rule> off|warn|block|default [--reason "..."]
+                                      change one rule for this project without editing the pack file (.memory-pulse/packs/overrides.jsonl); rule <pack> warn|default does it for a whole pack
+       verify <name|path>             lint a pack file: every rule has an id, a pattern that compiles, does not match the empty string and does not stall on a long line, a source URL, a verified date, paths, and a statement or a replacement
   guard [--verbose]                   PreToolUse hook: reads the tool call from stdin, exit 2 with the ledger line when an edit writes a withdrawn value back
   guard allow "<term>" [--path <prefix>] "<reason>"
                                       record a false block as an override scoped to a path prefix
@@ -3680,6 +3699,7 @@ if (isMain) {
   if (sub === "prereg") process.exit(cliPrereg(process.argv.slice(3), { ledgerPath, readEvents, appendEvent, chainRows }));
   if (sub === "ran") process.exit(cliRan(process.argv.slice(3), { ledgerPath, readEvents, chainRows }));
   if (sub === "lint") { await cliLint(); process.exit(0); }
+  if (sub === "pack") { const { cliPack } = await import("./lib/packs.mjs"); process.exit(await cliPack(process.argv.slice(3), { dir: dirname(ledgerPath()) })); }
   if (sub === "report") { cliReport(); process.exit(0); }
   if (sub === "bench") { await cliBench(); process.exit(0); }
   if (sub === "stats") { await cliStats(); process.exit(0); }

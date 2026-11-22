@@ -1,0 +1,6 @@
+{"rule":"pages-data-fetching","path":"app/posts/page.tsx","hit":"export async function getServerSideProps(ctx) {\n  return { props: {} }\n}\n","miss":"export async function generateStaticParams() {\n  return []\n}\nexport default async function Page() {\n  const data = await fetch(url)\n}\n"}
+{"rule":"next-router-import","path":"app/nav.tsx","hit":"import { useRouter } from 'next/router'\n","miss":"import { useRouter, usePathname } from 'next/navigation'\nimport type { NextRouter } from 'next/router'\nimport { useRouter as useCompatRouter } from 'next/compat/router'\n"}
+{"rule":"next-head-import","path":"app/layout.tsx","hit":"import Head from 'next/head'\n","miss":"export const metadata = { title: 'Home' }\nimport { headers } from 'next/headers'\n"}
+{"rule":"sync-request-apis","path":"app/api/me/route.ts","hit":"const token = cookies().get('token')\n","miss":"const token = (await cookies()).get('token')\nconst jar = await cookies()\nconst h = res.headers().get('x')\n"}
+{"rule":"revalidate-tag-single-argument","path":"app/actions.ts","hit":"revalidateTag('posts')\n","miss":"revalidateTag('posts', 'max')\nupdateTag('posts')\n"}
+{"rule":"next-legacy-image","path":"components/hero.tsx","hit":"import Image from 'next/legacy/image'\n","miss":"import Image from 'next/image'\n"}
